@@ -1,6 +1,55 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🔐 FIX P0 — "errore di autenticazione dopo redeploy" + pulsante Traccia percorso
+**Bug utente**: dopo un redeploy non riusciva più ad accedere ("errore di autenticazione").
+**Root cause (confermata da RCA + testing agent)**: in `deps.py`, se `JWT_SECRET` mancava nel
+`.env` (caso produzione), il backend generava una chiave JWT **casuale effimera ad ogni avvio**
+(e diversa per ogni worker/replica) → tutti i token già emessi diventavano invalidi ad ogni
+riavvio/deploy → login impossibile. In preview il `.env` ha JWT_SECRET quindi il problema non
+si vedeva.
+**Fix** (`deps.py`): priorità (1) env JWT_SECRET forte (comportamento invariato in preview);
+(2) se assente/default → secret **PERSISTENTE su Mongo** (`db.system_config` _id='jwt_secret',
+upsert `$setOnInsert` race-safe, condiviso tra riavvii e repliche) con **retry 5x + fail-fast**
+(niente più chiavi effimere). Testato: login→2FA→/me→refresh→endpoint protetto OK (9/9 pytest
+iter121), idempotenza del secret verificata. ⚠️ In produzione è comunque consigliato impostare
+un `JWT_SECRET` forte nel `.env`.
+**Feature — pulsante "Traccia percorso"**: nella card WAN di ogni cliente (`WanClientTab.jsx`,
+testid `wan-trace-btn-<id>`) un pulsante apre `/tools/path-trace?target=<public_ip>` con l'IP WAN
+**già precompilato** (`NetworkPathDiagnosisPage` legge il query param `target`). Verificato dal
+testing agent (navigazione + prefill).
+Suite regressione auth riutilizzabile: `backend/tests/test_auth_jwt_persistent_iter121.py`.
+
+
+
+## 2026-06 🌐 Profilo HPE 1620 + Diagnosi Percorso (traceroute/MTR via agent-sonda)
+**1. Profilo `hpe_officeconnect_1620`** (`device_profiles/__init__.py`, SEED_VERSION 5→6,
+definito PRIMA di hp_procurve): smart switch web-managed 1620-8G/24G/48G. Espone via SNMP
+SOLO MIB standard → identità/porte/LLDP/MAC OK, CPU/mem/temp NON disponibili (limite HW).
+Fingerprint su sysDescr (officeconnect/1620/JG91xA). Test: 1620→profilo dedicato, ProCurve
+e Comware 5130 invariati.
+
+**2. Diagnosi Percorso (traceroute/MTR)** — VERIFICA + IMPLEMENTAZIONE:
+- **Vincolo verificato**: il Center in cloud NON può fare traceroute/MTR (CAP_NET_RAW rimosso,
+  nessun binario, e la NAT di egress k8s non ritorna gli ICMP time-exceeded — testato anche il
+  metodo unprivileged IP_RECVERR: nessun hop). Inoltre il percorso cloud≠percorso del NOC.
+- **Soluzione**: comando `net_trace` nel Go agent → si installa UN agent-SONDA nella sede del NOC
+  (non serve toccare gli agent dei clienti). Da lì il percorso rispecchia quello reale del NOC e
+  funziona anche durante il blackout del cliente.
+- **Go** (`noc-agent/internal/nettrace/` + `cmd/agent/nettrace.go`, registrato in main.go):
+  esegue il tool nativo (Linux/mac: `mtr --report`/`traceroute -T -p`; Windows: `tracert`) e
+  normalizza in hop {ip, loss%, avg_ms, timeout}. Modalità icmp/tcp/udp (default TCP :443 per
+  aggirare i blocchi ICMP). Parser unit-testati (4/4 PASS), cross-build Windows+Linux OK.
+- **Backend**: riusa l'endpoint generico `POST /api/agents/{agent_id}/command` (name=net_trace).
+- **Frontend** `pages/NetworkPathDiagnosisPage.js` (rotta `/tools/path-trace` + card in SettingsPage):
+  selettore agent-sonda, target, modalità/porta, tabella hop con loss%/latenza colorata.
+**Testing**: profilo (unit), Go (compile cross-build + parser test), UI (screenshot render).
+⚠️ Il trace LIVE è validabile solo con un agent-sonda reale connesso (Windows/Linux con
+mtr/traceroute): richiede build+deploy del Go agent dalla pipeline (nel pod non c'è il compilatore
+Go e nessun agent è connesso in preview). Attivo in PROD dopo Save to GitHub + build agent + redeploy.
+
+
+
 ## 2026-06 ✨ Banner SITE DOWN + Alert Nebula + Storico metriche Zyxel
 Tre feature (refactor liveness rinviato a backlog su scelta utente).
 **1. Banner SITE DOWN globale** (`components/SiteDownBanner.js`, montato in `Layout.js` in cima

@@ -23,6 +23,7 @@ import WireGuardPage from "@/pages/WireGuardPage";
 import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
 import DattoRmmSettingsPage from "@/pages/DattoRmmSettingsPage";
 import ZyxelNebulaSettingsPage from "@/pages/ZyxelNebulaSettingsPage";
+import NetworkPathDiagnosisPage from "@/pages/NetworkPathDiagnosisPage";
 import AlertEngineSettingsPage from "@/pages/AlertEngineSettingsPage";
 import FingerbankSettingsPage from "@/pages/FingerbankSettingsPage";
 import EncryptionPage from "@/pages/EncryptionPage";
@@ -251,6 +252,7 @@ function App() {
               <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
               <Route path="settings/datto" element={<DattoRmmSettingsPage />} />
               <Route path="settings/zyxel" element={<ZyxelNebulaSettingsPage />} />
+              <Route path="tools/path-trace" element={<NetworkPathDiagnosisPage />} />
               <Route path="settings/alert-engine" element={<AlertEngineSettingsPage />} />
               <Route path="settings/fingerbank" element={<FingerbankSettingsPage />} />
               <Route path="settings/encryption" element={<EncryptionPage />} />

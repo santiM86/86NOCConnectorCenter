@@ -1,0 +1,33 @@
+{
+  "summary": "ITER 121 — Verified P0 auth regression fix (persistent JWT secret) end-to-end plus the new 'Traccia percorso' WAN button. Backend: 9/9 pytest passed (login->requires_2fa->verify-2fa->full token+refresh_token->/api/auth/me 200->/api/clients 200, refresh token rotation, negative auth cases, and deps._load_or_create_persistent_jwt_secret idempotency + db.system_config persistence). Frontend: real UI login with TOTP succeeded, WAN tab trace button navigates to /tools/path-trace?target=<public_ip> with prefilled input, path-trace page defaults (TCP, 443) correct and the no-agent case is handled gracefully with a toast (no crash). No regressions found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/verify-2fa", "issue": "Response returns {token, refresh_token, verified} but no 'user' object (login returns it). Not a bug for the current frontend (TwoFactorPage doesn't use it) — just an API inconsistency worth noting."},
+      {"endpoint": "/api/auth/me", "issue": "Unauthenticated requests return 403 (HTTPBearer default) instead of 401; produces a console 403 error on every /login page load. Cosmetic."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_jwt_persistent_iter121.py",
+    "/app/test_reports/pytest/iter121.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "deps._load_or_create_persistent_jwt_secret() is correct and race-safe ($setOnInsert upsert on db.system_config _id='jwt_secret'); verified idempotent (same 64-hex value on repeated calls) and the doc persists in Mongo. Env JWT_SECRET still takes priority in preview — no behavior change there.",
+    "Final fallback path returns an ephemeral secrets.token_hex(32) when Mongo is unreachable at import time: in that (unlikely) case tokens would again be invalidated per-process. Consider failing fast / retrying instead of silently using an ephemeral key, since this is exactly the failure mode that caused the P0.",
+    "NetworkPathDiagnosisPage correctly uses process.env.REACT_APP_BACKEND_URL and has loading/error states (toasts) for both agent fetch and trace run; 'Nessun agent connesso' is rendered as a disabled SelectItem (only visible when the dropdown is open) — acceptable, but an inline hint under the select would be clearer."
+  ],
+  "updated_files": ["/app/backend/tests/test_auth_jwt_persistent_iter121.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None — used existing client 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36) and existing WAN targets 2f5880c0 (8.8.8.8) / 6c73806f (1.1.1.1). No real traces executed.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works, 2FA verify OK)",
+  "context_for_next_testing_agent": "Reusable auth regression suite: /app/backend/tests/test_auth_jwt_persistent_iter121.py (pyotp-based full 2FA flow + refresh + persistent JWT secret checks). WAN trace button testid is wan-trace-btn-<targetId>; reachable via /client/da3d6e40-b3e5-4d46-9787-dde328a3aa36 -> [data-testid=tab-wan]. path-trace page: path-trace-page / -target-input / -probe-select / -mode-select / -port-input / -run-btn. No agent-sonda is live in preview so real traces cannot be executed.",
+  "rca_of_the_issue": "Production P0 root cause confirmed by code review: without JWT_SECRET in .env the old code generated a random key at each process start (and per replica), invalidating all previously issued tokens -> 'errore di autenticazione'. The fix persists the secret in db.system_config via an idempotent $setOnInsert upsert; verified stable across calls and persisted in Mongo, while env-provided secret keeps priority (preview unchanged)."
+}

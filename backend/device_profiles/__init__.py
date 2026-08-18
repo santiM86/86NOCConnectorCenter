@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 5  # v2026-06: aggiunto profilo Zyxel USG FLEX H (uOS) con OID sessioni/CPU/mem specifici
+SEED_VERSION = 6  # v2026-06: aggiunto profilo HPE OfficeConnect 1620 (smart switch, solo MIB standard)
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -302,6 +302,36 @@ PROFILES: list[dict[str, Any]] = [
         "thresholds": {"battery_pct_warn": 75, "battery_pct_crit": 30, "runtime_min_warn": 15, "runtime_min_crit": 5, "load_pct_warn": 70, "load_pct_crit": 90, "temp_warn_c": 40, "temp_crit_c": 55},
         "polling_interval_seconds": 60,
         "capabilities": ["snmp_basic", "battery_monitoring", "input_voltage", "rfc1628_ups_mib"],
+    },
+
+    # ---------------- HPE OfficeConnect 1620 (smart / web-managed) ----------------
+    # IMPORTANTE: definito PRIMA di hp_procurve. Il 1620 (1620-8G/24G/48G, JG912A..JG917A)
+    # e' uno smart switch WEB-MANAGED: espone via SNMP SOLO MIB standard (IF-MIB, BRIDGE-MIB,
+    # LLDP-MIB, RFC1213, RMON). NON ha la MIB enterprise HP-ICF → niente CPU/memoria/temperatura
+    # via SNMP (limite HARDWARE, non di Argus). Questo profilo evita che hp_procurve provi OID
+    # HP-ICF inesistenti (letture a vuoto/timeout) e imposta le capability corrette.
+    {
+        "key": "hpe_officeconnect_1620",
+        "vendor": "HPE",
+        "family": "switch",
+        "label": "HPE OfficeConnect 1620 (web-managed)",
+        "description": "Smart switch HPE OfficeConnect serie 1620 (1620-8G/24G/48G, incl. PoE+). SNMP v1/v2c/v3 ma solo MIB standard (IF-MIB/BRIDGE-MIB/LLDP-MIB/RFC1213/RMON): identita', porte, uptime, LLDP e tabella MAC OK. CPU/memoria/temperatura NON disponibili via SNMP su questo hardware (servirebbe scraping della web UI).",
+        "fingerprint": {
+            # Il segnale primario e' il sysDescr (OfficeConnect/1620/SKU JG91xA). Il prefisso
+            # HP tree e' condiviso con altri modelli, quindi il discriminante e' la descrizione.
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.11.2.3.7.11."],
+            "sysdescr_patterns": [r"officeconnect", r"\b1620\b", r"jg91[2-7]a"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 80, "scheme": "http", "path": "/", "alt_ports": [443], "notes": "Web UI HTTP 80 (alcune build supportano HTTPS 443). Login: admin, password vuota di default. CPU/mem visibili solo qui (support.lsp), non via SNMP."},
+        "oids": {
+            **COMMON_OIDS,
+            # Solo MIB-II / standard: nessun OID CPU/mem/temp (il 1620 non li espone).
+            "ifSpeed": "1.3.6.1.2.1.2.2.1.5",
+        },
+        "thresholds": {},
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "port_traffic", "lldp", "mac_table"],
     },
 
     # ---------------- HP / Aruba ProCurve / Aruba CX ----------------

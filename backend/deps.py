@@ -25,17 +25,64 @@ from security_hardening import SecurityHardening
 
 logger = logging.getLogger(__name__)
 
-# JWT Config — fail-safe: se il secret manca o è il default noto, usa una
-# chiave casuale effimera (mai una chiave nota/hardcoded in produzione).
+# JWT Config — priorità: (1) env JWT_SECRET forte; (2) altrimenti secret
+# PERSISTENTE su DB (condiviso tra riavvii e repliche/worker); (3) come ultima
+# spiaggia, chiave effimera di processo.
+# FIX P0 ricorrente "errore di autenticazione dopo redeploy": in produzione
+# senza JWT_SECRET nel .env il vecchio codice generava una chiave casuale AD OGNI
+# avvio (e diversa per ogni pod/worker), invalidando tutti i token già emessi →
+# nessuno riusciva più ad accedere. Ora, se manca l'env, si legge/crea UNA volta
+# un secret casuale su db.system_config (upsert idempotente) che sopravvive a
+# riavvii e resta identico tra le repliche.
 _DEFAULT_JWT_SECRET = 'noc-alert-command-center-secret-key-2024'
-JWT_SECRET = os.environ.get('JWT_SECRET') or ''
-if not JWT_SECRET or JWT_SECRET == _DEFAULT_JWT_SECRET:
-    logger.critical(
-        "JWT_SECRET debole o mancante nel .env: uso una chiave casuale effimera. "
-        "Imposta un JWT_SECRET forte (32+ byte casuali) nel .env di produzione!"
-    )
-    JWT_SECRET = secrets.token_hex(32)
 JWT_ALGORITHM = "HS256"
+
+
+def _load_or_create_persistent_jwt_secret() -> str:
+    """Legge/crea un JWT secret persistente su MongoDB (sincrono, all'import).
+    Usa pymongo con MONGO_URL/DB_NAME. Race-safe via upsert $setOnInsert.
+    Con retry + fail-fast: NON usiamo mai una chiave effimera (era proprio la
+    causa del P0 'errore di autenticazione dopo redeploy')."""
+    import time as _time
+    from pymongo import MongoClient
+    mongo_url = os.environ['MONGO_URL']
+    db_name = os.environ['DB_NAME']
+    last_err = None
+    for attempt in range(5):
+        try:
+            client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
+            coll = client[db_name].system_config
+            new_secret = secrets.token_hex(32)
+            coll.update_one(
+                {"_id": "jwt_secret"},
+                {"$setOnInsert": {"value": new_secret, "created_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+            doc = coll.find_one({"_id": "jwt_secret"})
+            client.close()
+            if doc and doc.get("value"):
+                return doc["value"]
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            logger.error("JWT secret persistente: tentativo %d/5 fallito: %s", attempt + 1, e)
+            _time.sleep(2)
+    # Fail-fast: senza secret stabile l'auth sarebbe rotta ad ogni riavvio.
+    raise RuntimeError(
+        f"Impossibile ottenere un JWT secret persistente da MongoDB dopo 5 tentativi: {last_err}. "
+        "Imposta un JWT_SECRET forte nel .env oppure verifica la connessione a MongoDB."
+    )
+
+
+_env_secret = os.environ.get('JWT_SECRET') or ''
+if _env_secret and _env_secret != _DEFAULT_JWT_SECRET:
+    JWT_SECRET = _env_secret
+else:
+    logger.warning(
+        "JWT_SECRET assente/debole nel .env: uso un secret PERSISTENTE su DB "
+        "(stabile tra riavvii e repliche). Per la produzione è comunque consigliato "
+        "impostare un JWT_SECRET forte nel .env."
+    )
+    JWT_SECRET = _load_or_create_persistent_jwt_secret()
 
 # Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
