@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import {
   Globe, ShieldCheck, HardDrives, WifiHigh, Lightning, Plus, Trash,
   ArrowClockwise, CheckCircle, Warning, MapPin, Pulse, Gauge,
@@ -87,6 +88,7 @@ function HeroCard({ clientName, diagnosis, gateway, isOnline }) {
 
 // =================== TARGET CARD (firewall/router) ===================
 function TargetCard({ target, onDelete, onHistory }) {
+  const navigate = useNavigate();
   const r = target.result;
   const color = STATUS_COLOR[r?.status] || "#555";
   const Icon = target.device_type === "firewall" ? ShieldCheck : HardDrives;
@@ -118,6 +120,16 @@ function TargetCard({ target, onDelete, onHistory }) {
           <button onClick={() => onHistory(target)} className="text-[9px] px-2 py-0.5 rounded border border-indigo-500/40 hover:bg-indigo-500/10 text-indigo-300" title="Storico" data-testid={`wan-history-btn-${target.id}`}>
             <ChartLine size={11} weight="bold" />
           </button>
+          {target.public_ip && (
+            <button
+              onClick={() => navigate(`/tools/path-trace?target=${encodeURIComponent(target.public_ip)}`)}
+              className="text-[9px] px-2 py-0.5 rounded border border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-300"
+              title={`Traccia percorso verso ${target.public_ip}`}
+              data-testid={`wan-trace-btn-${target.id}`}
+            >
+              <Path size={11} weight="bold" />
+            </button>
+          )}
           <AlertRulesButton target={target} />
           <button onClick={() => onDelete(target)} className="p-1 rounded hover:bg-red-500/15 text-red-400" title="Rimuovi" data-testid={`wan-target-delete-${target.id}`}>
             <Trash size={12} />

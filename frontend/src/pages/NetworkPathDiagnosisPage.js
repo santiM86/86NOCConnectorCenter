@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -21,13 +21,14 @@ function lossColor(loss, timeout) {
 
 export default function NetworkPathDiagnosisPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const token = localStorage.getItem("noc_token");
   const headers = { Authorization: `Bearer ${token}` };
 
   const [agents, setAgents] = useState([]);
   const [clients, setClients] = useState({});
   const [probe, setProbe] = useState("");
-  const [target, setTarget] = useState("");
+  const [target, setTarget] = useState(searchParams.get("target") || "");
   const [mode, setMode] = useState("tcp");
   const [port, setPort] = useState("443");
   const [running, setRunning] = useState(false);

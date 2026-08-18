@@ -1,6 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🔐 FIX P0 — "errore di autenticazione dopo redeploy" + pulsante Traccia percorso
+**Bug utente**: dopo un redeploy non riusciva più ad accedere ("errore di autenticazione").
+**Root cause (confermata da RCA + testing agent)**: in `deps.py`, se `JWT_SECRET` mancava nel
+`.env` (caso produzione), il backend generava una chiave JWT **casuale effimera ad ogni avvio**
+(e diversa per ogni worker/replica) → tutti i token già emessi diventavano invalidi ad ogni
+riavvio/deploy → login impossibile. In preview il `.env` ha JWT_SECRET quindi il problema non
+si vedeva.
+**Fix** (`deps.py`): priorità (1) env JWT_SECRET forte (comportamento invariato in preview);
+(2) se assente/default → secret **PERSISTENTE su Mongo** (`db.system_config` _id='jwt_secret',
+upsert `$setOnInsert` race-safe, condiviso tra riavvii e repliche) con **retry 5x + fail-fast**
+(niente più chiavi effimere). Testato: login→2FA→/me→refresh→endpoint protetto OK (9/9 pytest
+iter121), idempotenza del secret verificata. ⚠️ In produzione è comunque consigliato impostare
+un `JWT_SECRET` forte nel `.env`.
+**Feature — pulsante "Traccia percorso"**: nella card WAN di ogni cliente (`WanClientTab.jsx`,
+testid `wan-trace-btn-<id>`) un pulsante apre `/tools/path-trace?target=<public_ip>` con l'IP WAN
+**già precompilato** (`NetworkPathDiagnosisPage` legge il query param `target`). Verificato dal
+testing agent (navigazione + prefill).
+Suite regressione auth riutilizzabile: `backend/tests/test_auth_jwt_persistent_iter121.py`.
+
+
+
 ## 2026-06 🌐 Profilo HPE 1620 + Diagnosi Percorso (traceroute/MTR via agent-sonda)
 **1. Profilo `hpe_officeconnect_1620`** (`device_profiles/__init__.py`, SEED_VERSION 5→6,
 definito PRIMA di hp_procurve): smart switch web-managed 1620-8G/24G/48G. Espone via SNMP
