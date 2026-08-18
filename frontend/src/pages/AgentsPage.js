@@ -37,6 +37,49 @@ export default function AgentsPage() {
   const [ipHistory, setIpHistory] = useState(null);   // {agent, changes} | null
   const [ipHistoryLoading, setIpHistoryLoading] = useState(false);
 
+  const [showInstall, setShowInstall] = useState(false);
+  const [instClient, setInstClient] = useState("");
+  const [instRole, setInstRole] = useState("master");
+  const [instLabel, setInstLabel] = useState("");
+  const [instVersion, setInstVersion] = useState("v4.25.1");
+  const [instBusy, setInstBusy] = useState(false);
+  const [instResult, setInstResult] = useState(null);
+
+  const generateInstall = async () => {
+    setInstBusy(true);
+    setInstResult(null);
+    try {
+      const res = await axios.get(`${API}/clients/${instClient}`);
+      const clientData = res.data;
+      if (!clientData || !clientData.api_key) {
+        toast.error("Errore: cliente non trovato o api_key mancante");
+        return;
+      }
+      const wsBase = (window.location.origin || "https://argus.86bit.it").replace(/^http/, "ws");
+      const raw = "https://raw.githubusercontent.com/santiM86/86NOCConnectorCenter/main/noc-agent/build/install-noc-agent.ps1";
+      let cmd = `powershell -ExecutionPolicy Bypass -Command "iwr -useb ${raw} -OutFile $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1 -Token '${clientData.api_key}' -ClientId '${instClient}' -BackendUrl '${wsBase}/api/agent/ws' -Role '${instRole}'`;
+      if (instLabel) {
+        cmd += ` -Label '${instLabel}'`;
+      }
+      if (instVersion !== "latest") {
+        cmd += ` -Version '${instVersion}'`;
+      }
+      cmd += `"`;
+      setInstResult({ cmd });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore recupero dati cliente");
+    } finally {
+      setInstBusy(false);
+    }
+  };
+
+  const copyInstall = () => {
+    if (instResult?.cmd) {
+      navigator.clipboard.writeText(instResult.cmd);
+      toast.success("Comando copiato negli appunti");
+    }
+  };
+
   const runTcpProbe = async (a) => {
     if (!a.public_ip) return;
     setProbing((p) => ({ ...p, [a.agent_id]: true }));
