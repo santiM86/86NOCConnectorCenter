@@ -1,6 +1,34 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🌐 Profilo HPE 1620 + Diagnosi Percorso (traceroute/MTR via agent-sonda)
+**1. Profilo `hpe_officeconnect_1620`** (`device_profiles/__init__.py`, SEED_VERSION 5→6,
+definito PRIMA di hp_procurve): smart switch web-managed 1620-8G/24G/48G. Espone via SNMP
+SOLO MIB standard → identità/porte/LLDP/MAC OK, CPU/mem/temp NON disponibili (limite HW).
+Fingerprint su sysDescr (officeconnect/1620/JG91xA). Test: 1620→profilo dedicato, ProCurve
+e Comware 5130 invariati.
+
+**2. Diagnosi Percorso (traceroute/MTR)** — VERIFICA + IMPLEMENTAZIONE:
+- **Vincolo verificato**: il Center in cloud NON può fare traceroute/MTR (CAP_NET_RAW rimosso,
+  nessun binario, e la NAT di egress k8s non ritorna gli ICMP time-exceeded — testato anche il
+  metodo unprivileged IP_RECVERR: nessun hop). Inoltre il percorso cloud≠percorso del NOC.
+- **Soluzione**: comando `net_trace` nel Go agent → si installa UN agent-SONDA nella sede del NOC
+  (non serve toccare gli agent dei clienti). Da lì il percorso rispecchia quello reale del NOC e
+  funziona anche durante il blackout del cliente.
+- **Go** (`noc-agent/internal/nettrace/` + `cmd/agent/nettrace.go`, registrato in main.go):
+  esegue il tool nativo (Linux/mac: `mtr --report`/`traceroute -T -p`; Windows: `tracert`) e
+  normalizza in hop {ip, loss%, avg_ms, timeout}. Modalità icmp/tcp/udp (default TCP :443 per
+  aggirare i blocchi ICMP). Parser unit-testati (4/4 PASS), cross-build Windows+Linux OK.
+- **Backend**: riusa l'endpoint generico `POST /api/agents/{agent_id}/command` (name=net_trace).
+- **Frontend** `pages/NetworkPathDiagnosisPage.js` (rotta `/tools/path-trace` + card in SettingsPage):
+  selettore agent-sonda, target, modalità/porta, tabella hop con loss%/latenza colorata.
+**Testing**: profilo (unit), Go (compile cross-build + parser test), UI (screenshot render).
+⚠️ Il trace LIVE è validabile solo con un agent-sonda reale connesso (Windows/Linux con
+mtr/traceroute): richiede build+deploy del Go agent dalla pipeline (nel pod non c'è il compilatore
+Go e nessun agent è connesso in preview). Attivo in PROD dopo Save to GitHub + build agent + redeploy.
+
+
+
 ## 2026-06 ✨ Banner SITE DOWN + Alert Nebula + Storico metriche Zyxel
 Tre feature (refactor liveness rinviato a backlog su scelta utente).
 **1. Banner SITE DOWN globale** (`components/SiteDownBanner.js`, montato in `Layout.js` in cima
