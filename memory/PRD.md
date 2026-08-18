@@ -1,6 +1,145 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Banner SITE DOWN + Alert Nebula + Storico metriche Zyxel
+Tre feature (refactor liveness rinviato a backlog su scelta utente).
+**1. Banner SITE DOWN globale** (`components/SiteDownBanner.js`, montato in `Layout.js` in cima
+a main-content sopra AgentUpgradeBanner):
+- Barra rossa fissa/animata su TUTTE le pagine quando ≥1 sede è in blackout confermato.
+- Mostra nome sede + timer "giù da X min/h" + rotazione se più sedi + click → `/client/{id}`.
+- Endpoint `GET /api/overview/site-down` (overview.py): usa `build_blackout_clients` (verità live),
+  `down_since` da `site_blackout_state.first_at` o dall'alert corr attivo. Polling frontend 20s.
+**2. Alert Nebula push+Telegram** (`routes/zyxel_nebula.py` in `sync_client_devices`):
+- Su transizione ONLINE→OFFLINE di un device Zyxel: alert `critical` (source `zyxel_offline`) +
+  recovery `low` al ritorno online. Soglie firewall (CPU 70/90, Mem 80/95, Sessioni 50k/100k):
+  alert `high`/`critical` al superamento + recovery al rientro. Dedup via `alert_state` sul doc
+  device (no spam). Riusa il pipeline `alert_engine._mk_alert/_dispatch_notification` (push+Telegram).
+**3. Storico metriche Zyxel** (`pages/ZyxelNebulaSettingsPage.js` + `GET
+/api/clients/{cid}/zyxel/devices/{dev_id}/metrics?hours=24`): pulsante "grafico" per firewall →
+Dialog con LineChart recharts CPU%/Mem% + Sessioni (dati da `zyxel_metrics`, TTL 30gg).
+**Testing**: banner verificato via screenshot (blackout simulato → barra "giù da 12 min");
+grafico verificato via screenshot (FLEX 700H, CPU 4%/Mem 38%/Sessioni ~1300); alert verificati
+via test backend (`_threshold_level` + `_emit_zyxel_alert` inserisce alert critical); endpoint
+site-down/metrics via curl. Tutti i dati di test QA ripuliti.
+NOTA: la consegna push richiede subscription web-push attive; Telegram richiede token/chat_id
+configurati (canali già presenti nell'app). ⚠️ Attivo in PROD dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 🚨 FIX P0 — Blackout/Site-Down: rilevazione lenta + discrepanza pagine
+**Bug utente (GualdiGroup, ricorrente 5+)**: durante un blackout reale (agent giù + WAN
+giù al 100%) i device apparivano ONLINE/verde, ClientOverviewPage e ClientsPage mostravano
+stati DIVERSI, e comunque compariva "stale" (giallo) invece di "offline" (rosso). Troppo lento.
+**Root cause (RCA troubleshoot + testing agent)**:
+1. `liveness_resolver.build_wan_down_clients`: (a) NESSUN filtro di freschezza su
+   `wan_probe_results` → un vecchio doc "online" (target rimosso/probe ferma) bloccava per
+   sempre il blackout; (b) logica OR tra target → bastava UN target/doc stantio "reachable"
+   per tenere il cliente "su". → blackout mai confermato → device "stale" non "offline".
+2. `routes/devices.py get_devices`: l'override liveness girava sugli oggetti Pydantic
+   `DeviceResponse` con API da dict (`r.get`) dentro `try/except: pass` → `AttributeError`
+   inghiottito → **override MAI applicato** → `/api/devices` restava "online"/"pending" mentre
+   `/api/overview/clients` (compute_status) mostrava offline → DISCREPANZA tra le pagine.
+**Fix implementati**:
+- `liveness_resolver.py`: `build_wan_down_clients` riscritta (freschezza `WAN_PROBE_FRESHNESS_SECONDS`=180s
+  su `checked_at` + logica ALL-targets: WAN giù = ha risultati freschi e NESSUNO raggiungibile).
+  `AGENT_HEARTBEAT_STALE_SECONDS` 180→90 (l'agent batte ogni 15s → 6 beat = sicuro e più veloce).
+- `routes/devices.py`: override liveness spostato sui DICT PRIMA di costruire DeviceResponse
+  (single source of truth), esteso a status `online/pending/unknown`, con eccezione Datto RMM
+  (device confermato online dall'agent sul device stesso resta online). `except` ora logga.
+- `models.py`: aggiunto `status_reason` a DeviceResponse (`site_blackout`|`agent_offline`).
+- `routes/external_monitor.py`: probe WAN 60→30s + trigger EVENT-DRIVEN: alla transizione
+  di un target → offline chiama subito `alert_engine.run_site_blackout_watchdog` (rilevazione
+  quasi-live ~30s invece di attendere il tick da 60s dell'Alert Engine).
+**Testing**: 29/29 pytest verdi (`tests/test_blackout_wan_freshness_iter119.py`,
+`test_blackout_agent_offline_iter117.py`, `test_blackout_devices_consistency_iter120.py`) +
+verifica live: `/api/devices`=offline/site_blackout e `/api/overview/clients` offline=1
+concordano; i conteggi flat di `/api/devices` = somma bucket overview `devices`+`endpoints`.
+Report: iteration_119.json (RCA), iteration_120.json (conferma, 0 critical).
+⚠️ **PROD**: effettivo su `argus.86bit.it` SOLO dopo Save to GitHub + redeploy backend.
+Backlog (radice strutturale, non-bloccante): far usare a `get_devices` direttamente
+`compute_status`+`build_evidence_maps` (oggi duplica ~800 righe di logica status); gate liveness
+anche su `GET /api/devices/{device_id}` (legacy `db.devices`, oggi non usato dalle schede UI).
+
+
+
+## 2026-06 ☁️ Integrazione Zyxel Nebula (NCC OpenAPI) — monitoraggio cloud
+**Richiesta**: monitorare via cloud i dispositivi Zyxel (firewall USG FLEX serie H, switch, AP)
+di tutti i clienti tramite Nebula Control Center, senza SNMP locale. Scelte utente: import
+completo org→siti→device + metriche live (CPU/mem/sessioni/traffico) + mapping ai clienti
+Argus; Nebula come FONTE UNICA per i device Zyxel. Requisito: Nebula Professional Pack.
+**Implementazione (backend + frontend)**:
+- `routes/zyxel_nebula.py`: client HTTP async (header `X-ZyxelNebula-API-Key`, retry/backoff
+  su 429/5xx, cattura `X-ZyxelNebula-API-RequestId`). Chiave API cifrata AES in `zyxel_settings`.
+  Endpoint: config CRUD (`/api/admin/zyxel/config`), test (`/admin/zyxel/test`), browse
+  (`/zyxel/organizations`, `.../sites`, `.../devices`), mapping cliente→org
+  (`/clients/{id}/zyxel/link` GET/PUT/DELETE), flotta (`/zyxel/links`, `/zyxel/devices`,
+  `/clients/{id}/zyxel/devices`), `/zyxel/sync-now`. Endpoint globali/admin/browse gate
+  `require_admin`; endpoint client-scoped `get_current_user`.
+  `sync_client_devices()`: online-status per sito, firmware-status per org, gw system-status
+  (CPU/mem/sessioni) + traffic-usage (gestito il refuso API `uplinkRxUage`) per firewall/switch.
+  Metriche in `zyxel_metrics` con TTL 30gg (campo `ts`).
+- `server.py`: router + scheduler APScheduler `nebula_sync_tick` ogni 5min.
+- `backend/.env`: `ZYXEL_BASE_URL=https://api.nebula.zyxel.com/v1/nebula`.
+- Frontend `pages/ZyxelNebulaSettingsPage.js` (+ rotta `/settings/zyxel` + voce in SettingsPage):
+  config chiave, test connessione, mapping clienti↔org (dropdown), flotta Zyxel con
+  stato/CPU/mem/sessioni/firmware, "Sincronizza ora".
+**Testing (iteration_118.json)**: backend 15/15, frontend 9/9 GREEN contro il cloud reale.
+Verificato: 41 org (33 PRO), FLEX 700H ONLINE CPU~4% mem 38% ~1400 sessioni fw 1.39(ABZI.0).
+Suite regressione: `backend/tests/test_zyxel_nebula_iter118.py` (crea/elimina client temporaneo).
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy. Chiave OpenAPI reale già salvata cifrata in DB.
+Backlog non-bloccante: tenant-scoping fine sugli endpoint client-scoped; sync-now in background
+(202) quando i clienti mappati crescono; grafici storici da `zyxel_metrics`; alerting proattivo
+sulle soglie Nebula.
+
+
+
+## 2026-06 🔥 Profilo SNMP Zyxel USG FLEX serie H (uOS) — 100H/200H/...
+**Richiesta**: collegare i firewall Zyxel USG FLEX serie H (uOS, es. FLEX 100H v1.39)
+ad Argus con metriche CPU/mem/sessioni corrette. Il profilo esistente `zyxel_usg` e'
+tarato sullo ZLD e gli OID uOS DIFFERISCONO.
+**Implementazione (solo backend, nessun rebuild agent Go)**:
+- `device_profiles/__init__.py`: nuovo profilo `zyxel_usg_flex_h` DEFINITO PRIMA di
+  `zyxel_usg` (a parita' di score fingerprint vince il primo in lista → un modello "H"
+  sceglie questo, mentre uno ZLD ricade su zyxel_usg che matcha anche 'zld'/'usg N').
+  OID uOS: CPU `1.3.6.1.4.1.890.1.15.3.2.21` (nome `cpuUtil` → letto da card + hardware_alerts),
+  sessioni `...890.1.15.3.1.19.0` (`zyFlexHSessions`), mem diretta `...890.1.15.3.2.5.0`
+  (`memUtil`, puo' essere vuota su v1.39p0) + calcolo UCD-SNMP (memTotalReal/AvailReal/
+  Buffer/Cached su 1.3.6.1.4.1.2021.4.*). SEED_VERSION 4→5.
+- `routes/device_info_card.py`: helper `_scalar_num` + `_ucd_mem_pct`; `_extract_switch_metrics`
+  ora fa fallback memoria via UCD quando `memUtil` e' vuota; `firewall_sessions` legge
+  `zyFlexHSessions`/`zyActiveSessions` dal vendor_metrics se manca poll.firewall.active_sessions.
+**Testing**: fingerprint 100H→zyxel_usg_flex_h (API autenticata 200, confidence high),
+ZLD 200→zyxel_usg (nessuna regressione), estrazione metriche (cpu 37%, mem UCD 40%,
+sessioni 12450) OK. NESSUN dato reale in preview → validazione live in PROD contro il 100H.
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy backend. Lato firewall: abilitare SNMP
+(disabilitato di default; da v1.37p1 servono Community 1 E 2), consentire UDP 161 verso l'agent.
+Se in prod CPU/sessioni risultano vuote, tarare gli OID sulla versione uOS esatta.
+
+
+
+## 2026-08-18 🔄 "Re-poll SNMP" istantaneo COMPLETO (CPU/mem/temp on-demand)
+**Problema**: il bottone "Re-poll SNMP" (endpoint `POST /api/admin/snmp-poll-now/{client_id}/{device_ip}`)
+inviava `force_snmp_poll {ip,community}` → agent `PollOne` → legge SOLO i 4 OID base
+(sysDescr/ObjectID/UpTime/Name), **mai** gli OID estesi del profilo (CPU/mem/temp/ventole).
+Le metriche vendor si aggiornavano solo col ciclo automatico 60s → utente vedeva "nulla" dopo il re-poll.
+**Fix (solo backend + minor frontend, compatibile agent v4.30.2 esistente)**:
+- `routes/snmp_diagnostics.py` `snmp_poll_now`: dopo il poll singolo (identità immediata) lancia in
+  BACKGROUND (`asyncio.create_task`) un `force_snmp_poll` SENZA ip → agent `PollAll` → polla tutti i
+  target del client CON i loro `extra_oids` → ripubblica i `vendor_metrics` (CPU/mem/temp). Ritorna
+  subito con `metrics_refresh_triggered:true`.
+- `components/DeviceInfoCard.js`: `forceSnmpPoll` ora ricarica la scheda a 1.5s/4s/8s per intercettare
+  i vendor_metrics appena ingeriti; toast aggiornato ("Metriche in aggiornamento…").
+**Verifica**: sintassi OK, backend sano, frontend compilato, path auth/lookup OK (403/404 attesi in preview).
+⚠️ E2E completo (agent→switch) testabile SOLO in produzione con agent live. Attivo solo dopo Save to GitHub + redeploy.
+
+## 2026-08-18 🩺 SNMP switch HPE Comware — root cause metriche vuote = VIEW community
+Caso Carrozzeria Pulcini (HPE 5130 JG934A): identità OK ma CPU/mem/temp vuoti. Confermato via web-search
+HPE + confronto con cliente Arma Creativo (stesso switch, funziona): l'app/profilo/OID `hpe_comware`
+(`h3cEntityExtCpuUsage` 25506.2.6.1.1.1.1.6 ecc.) sono CORRETTI. Causa = **la community SNMP sullo switch
+era legata a `ViewDefault` che NON espone il ramo privato H3C `25506`**. Fix lato SWITCH: view che include
+`1.3.6.1` (o `iso`) + bind community → poi ciclo auto 60s popola le metriche. (L'agent walka già le tabelle.)
+
+
 0. **RELEASE AGENT SU GITHUB** → seguire SEMPRE `/app/memory/github_release_workflow.md`
    (procedura permanente richiesta esplicitamente dall'utente il 2026-08-11: bump
    `noc-agent/VERSION` → Save to GitHub → dispatch `release-agent.yml` via API →
@@ -7329,14 +7468,14 @@ CHANGELOG.md per dettagli. 14/14 backend + 3/3 frontend test PASS.
 **Test**: lint Python OK (i 4 warning pre-esistenti sono di altre sezioni). Test end-to-end richiede device target reale con HTTP.sys server (non riproducibile nel preview container).
 
 ### 2026-02-10 (sera tardi): Custom Tarball URL field nel dialog Self-Update
-**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-monitor-4.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
+**Razionale**: lo script di self-update scarica il tarball backend da `https://<center-host>/downloads/argus-backend-latest.tar.gz`, ma se quella build frontend non e` aggiornata (chicken-and-egg) il file e` vecchio o 404. Aggiunto un input opzionale "URL pacchetto custom" nel dialog per puntare a una build remota raggiungibile (es. `https://noc-alert-hub-2.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz` quando si vuole bypassare la build locale).
 
 **File toccati**:
 - `/app/frontend/src/pages/WireGuardPage.js` `triggerUpdate(enableWireguard, customUrl)` ora accetta secondo arg opzionale → invia `package_url` al POST `/api/admin/system/self-update`. Dialog ha sezione `<details>` "Opzioni avanzate" con input mono-spaced + hint che mostra il default URL.
 - Backend `system_admin.py` gia` gestiva `package_url` opzionale (nessuna modifica necessaria).
 
 **Note operative**: per il PRIMO update post-fix l'utente puo` o:
-1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-monitor-4.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
+1. SSH al prod, `curl -o /home/arslan/86NOCConnectorCenter/frontend/build/downloads/argus-backend-latest.tar.gz https://noc-alert-hub-2.preview.emergentagent.com/downloads/argus-backend-latest.tar.gz`, poi click "Riprova" sull'UI.
 2. Aspettare che la nuova frontend sia deployata, poi usare il campo "URL pacchetto custom" direttamente.
 
 ### 2026-02-10 (notte): Per-device alert silencing + auto-classifier stampanti

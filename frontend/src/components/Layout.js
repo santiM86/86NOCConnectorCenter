@@ -4,6 +4,7 @@ import { useAuth, API } from "@/App";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import AgentUpgradeBanner from "@/components/AgentUpgradeBanner";
+import SiteDownBanner from "@/components/SiteDownBanner";
 import {
   ShieldWarning,
   ChartLineUp,
@@ -387,6 +388,7 @@ export default function Layout() {
 
       {/* ==================== MAIN CONTENT ==================== */}
       <main className="main-content">
+        <SiteDownBanner />
         <AgentUpgradeBanner />
         <header className="md:hidden sticky top-0 z-30 bg-[var(--bg-app)]/95 backdrop-blur-md border-b border-[var(--bg-border)] p-3 flex items-center justify-between">
           <Button

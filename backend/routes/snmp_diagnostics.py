@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 import asyncio
 import ipaddress
+import logging
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -284,12 +287,29 @@ async def snmp_poll_now(client_id: str, device_ip: str,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore invio comando: {e!r}")
 
+    # v2026-08 "Re-poll istantaneo COMPLETO": il poll su singolo IP qui sopra
+    # legge SOLO i 4 OID base (identità/uptime) — NON gli OID estesi del profilo
+    # (CPU/mem/temperatura/ventole). Quelli li raccoglie solo il ciclo che polla i
+    # target CON i loro extra_oids. force_snmp_poll SENZA "ip" => PollAll sull'agent:
+    # rilegge tutti i target del client con gli extra_oids e ripubblica i
+    # vendor_metrics. Lo lanciamo in BACKGROUND per non bloccare la risposta HTTP;
+    # i vendor_metrics vengono ingeriti entro pochi secondi e il frontend ricarica
+    # la scheda subito dopo.
+    async def _full_cycle_poll():
+        try:
+            await chosen.send_command("force_snmp_poll", {}, timeout=60.0)
+        except Exception as _e:  # noqa: BLE001 — best-effort, non deve rompere il re-poll
+            logger.info("snmp-poll-now full-cycle PollAll ended client=%s: %r", client_id, _e)
+
+    asyncio.create_task(_full_cycle_poll())
+
     return {
         "ok": True,
         "device_ip": device_ip,
         "client_id": client_id,
         "executed_by_agent": chosen.agent_id,
         "reply": reply,
+        "metrics_refresh_triggered": True,
     }
 
 

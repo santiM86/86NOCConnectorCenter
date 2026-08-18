@@ -75,6 +75,7 @@ class DeviceResponse(BaseModel):
     hostname: str
     location: str
     status: str = "active"
+    status_reason: Optional[str] = None  # site_blackout | agent_offline | None (motivo dell'override liveness)
     redfish_enabled: bool = False
     has_credentials: bool = False
     last_poll: Optional[str] = None

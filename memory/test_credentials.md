@@ -38,5 +38,5 @@ Per riportare l'admin allo stato pulito "enroll richiesto": unset `totp_secret`
 - Lista connectors: `GET /api/connector/list`
 
 ## URL di riferimento
-- Preview env: `https://noc-monitor-4.preview.emergentagent.com`
+- Preview env: `https://noc-alert-hub-2.preview.emergentagent.com`
 - Produzione cliente: `https://argus.86bit.it`

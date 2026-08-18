@@ -71,6 +71,37 @@ def _max_valid_number(d):
     return None
 
 
+def _scalar_num(d):
+    """Estrae un valore scalare numerico da uno scalare o da un dict {idx: val},
+    SENZA il clamp <1000 di _max_valid_number (per contatori/KB grandi: sessioni, memoria)."""
+    if isinstance(d, dict):
+        for v in d.values():
+            if isinstance(v, (int, float)):
+                return float(v)
+        return None
+    if isinstance(d, (int, float)):
+        return float(d)
+    return None
+
+
+def _ucd_mem_pct(vm: dict):
+    """Memoria% da UCD-SNMP-MIB (Zyxel uOS FLEX H):
+    (memTotalReal - memAvailReal - memBuffer - memCached) / memTotalReal * 100."""
+    total = _scalar_num(vm.get("memTotalReal"))
+    avail = _scalar_num(vm.get("memAvailReal"))
+    if not total or total <= 0 or avail is None:
+        return None
+    buff = _scalar_num(vm.get("memBuffer")) or 0.0
+    cach = _scalar_num(vm.get("memCached")) or 0.0
+    used = total - avail - buff - cach
+    if used < 0:
+        used = total - avail
+    pct = (used / total) * 100.0
+    if pct < 0 or pct > 100:
+        return None
+    return pct
+
+
 def _filter_states(d, max_idx=12):
     """Filtra un dict {idx: state} a soli indici plausibili (1..max_idx) e valori interi.
     Risolve il bug di walk OID che includeva indici parassiti (es. PSU 84-96).
@@ -100,6 +131,9 @@ def _extract_switch_metrics(vm: dict) -> dict:
         return {}
     cpu = _max_valid_number(vm.get("h3cEntityExtCpuUsage") or vm.get("cpuUtil") or vm.get("zyxelCpuCurrent"))
     mem = _max_valid_number(vm.get("h3cEntityExtMemUsage") or vm.get("memUtil"))
+    if mem is None:
+        # Zyxel USG FLEX H (uOS): la mem% diretta puo' essere vuota → calcolo UCD-SNMP.
+        mem = _ucd_mem_pct(vm)
     temp = _sanitize_temp(_max_valid_number(vm.get("h3cEntityExtTemperature") or vm.get("entTemperature")))
     psu = _filter_states(vm.get("h3cPowerState") or vm.get("psuStatus"))
     fan = _filter_states(vm.get("h3cFanState") or vm.get("fanStatus"))
@@ -763,7 +797,9 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
             "storage_drive_count": sum(len((c or {}).get("drives", [])) for c in (ilo.get("storage_controllers") or [])) or None,
             "memory_dimm_count": len(ilo.get("memory_modules") or []) or None,
             "nic_count": len(ilo.get("network_interfaces") or []) or None,
-            "firewall_sessions": fw_data.get("active_sessions"),
+            "firewall_sessions": fw_data.get("active_sessions") if fw_data.get("active_sessions") is not None else (
+                int(_ss) if (_ss := _scalar_num(vm.get("zyFlexHSessions") or vm.get("zyActiveSessions"))) is not None else None
+            ),
             "firewall_flash_usage_pct": fw_data.get("flash_usage"),
             # Switch-specific structured states (sanitizzato vs vendor_metrics raw)
             "psu_states": sw_metrics.get("psu_states"),

@@ -29,28 +29,14 @@ from typing import Any, Mapping, Optional
 DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
 DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
 EVIDENCE_WINDOW_MINUTES = 15   # quanto considerare "recente" un discovered_endpoint
-AGENT_HEARTBEAT_STALE_SECONDS = 180  # 3 min, allineato a agent_ws.py
-SNMP_FRESHNESS_SECONDS = 600   # SNMP poll < 10 min = device raggiungibile via SNMP
-
-
-def _snmp_fresh(pd: Optional[Mapping[str, Any]]) -> bool:
-    """True se il device ha risposto a SNMP di recente (< SNMP_FRESHNESS_SECONDS).
-
-    Pattern Zabbix "SNMP availability": uno switch HP / server Windows che
-    blocca ICMP ma risponde a SNMP E' raggiungibile, indipendentemente dal
-    ping. Il campo `snmp_reachable` + `snmp_last_check_at` sono scritti dal
-    bridge SNMP (agent_ws._bridge_snmp_poll) su device_poll_status.
-    """
-    if not pd or not pd.get("snmp_reachable"):
-        return False
-    snmp_at = pd.get("snmp_last_check_at") or pd.get("last_poll_at")
-    if not snmp_at:
-        return False
-    try:
-        snmp_dt = datetime.fromisoformat(str(snmp_at).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - snmp_dt).total_seconds() < SNMP_FRESHNESS_SECONDS
-    except Exception:
-        return False
+# v2026-06 SPEED: l'agent invia heartbeat ogni 15s. 180s (12 beat persi) era
+# troppo lento per rilevare un blackout "quasi live". 90s = 6 beat persi:
+# resta robusto ai jitter ma dimezza il tempo di rilevazione offline/blackout.
+AGENT_HEARTBEAT_STALE_SECONDS = 90
+# Finestra di freschezza per i risultati della sonda WAN esterna. Solo i
+# risultati piu' recenti di questo valore contano per decidere "WAN giu'"
+# (evita che vecchi doc "online" blocchino per sempre il blackout).
+WAN_PROBE_FRESHNESS_SECONDS = 180
 
 
 async def build_clients_without_online_agent(db) -> set:
@@ -103,11 +89,27 @@ async def build_wan_down_clients(db) -> set:
     Questa e' l'UNICA sorgente di liveness INDIPENDENTE dall'agent on-site:
     gira dal Center, quindi resta valida anche durante un blackout totale del
     sito (quando l'agent muore). Serve a confermare un vero outage.
+
+    v2026-06 FIX (RCA blackout Gualdi):
+      - BUG#1 FRESCHEZZA: prima leggeva TUTTI i doc di wan_probe_results senza
+        filtro temporale → un vecchio risultato "online" (target rimosso/rinominato
+        o probe ferma) impediva per sempre la classificazione "WAN giu'". Ora
+        consideriamo SOLO i risultati piu' freschi di WAN_PROBE_FRESHNESS_SECONDS.
+      - BUG#2 LOGICA OR: prima `cur or reachable` → bastava UN solo target ancora
+        raggiungibile (anche stantio) per tenere il cliente "su". Ora "WAN giu'"
+        richiede che il cliente abbia almeno un risultato FRESCO e che NESSUN
+        target sia raggiungibile (AND su tutti i target).
     """
-    per_client: dict = {}  # cid -> True se ALMENO un target raggiungibile
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=WAN_PROBE_FRESHNESS_SECONDS)
+    ).isoformat()
+    # cid -> lista di bool "raggiungibile?" per ogni target FRESCO del cliente
+    per_client: dict = {}
     try:
         async for r in db.wan_probe_results.find(
-            {}, {"_id": 0, "client_id": 1, "status": 1, "ping": 1, "ports": 1},
+            {"checked_at": {"$gte": cutoff}},
+            {"_id": 0, "client_id": 1, "status": 1, "ping": 1, "ports": 1, "checked_at": 1},
         ):
             cid = r.get("client_id")
             if not cid:
@@ -117,12 +119,11 @@ async def build_wan_down_clients(db) -> set:
                 or r.get("status") in ("online", "filtered", "degraded")
                 or any(p.get("open") for p in (r.get("ports") or []))
             )
-            cur = per_client.get(cid)
-            per_client[cid] = bool(reachable) if cur is None else (cur or bool(reachable))
+            per_client.setdefault(cid, []).append(bool(reachable))
     except Exception:
         return set()
-    # WAN giu' = il cliente HA risultati sonda ma nessuno raggiungibile
-    return {cid for cid, up in per_client.items() if up is False}
+    # WAN giu' = il cliente HA risultati sonda FRESCHI e NESSUNO e' raggiungibile
+    return {cid for cid, states in per_client.items() if states and not any(states)}
 
 
 async def build_blackout_clients(db, offline_clients: Optional[set] = None) -> set:

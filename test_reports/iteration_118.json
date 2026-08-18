@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 118 — Full test of the new Zyxel Nebula (NCC OpenAPI) integration. Backend: 15/15 pytest tests passed against the real Nebula cloud with the already-stored encrypted key (config masked preview, /admin/zyxel/test ok=true org_count=41 pro=33, organizations cached + refresh, org sites/devices, links with device_count, fleet devices with live metrics, sync-now, PUT/GET/DELETE client link with immediate sync, 404/422 negative cases, unauthenticated 401). Frontend: /settings/zyxel loads, CONFIGURATA badge + masked key (AUND****0AST), mapping card with 41-option org dropdown pre-selected to '86 Bit · PRO' (1 device), Flotta card shows USG FLEX 700H ONLINE CPU 4-5% / MEM 38% / sessions 1472-1504 / firmware 1.39(ABZI.0). 'Sincronizza ora' -> loading toast then success toast '1 device sincronizzati su 1 clienti' (~10s). 'Test connessione' -> toast 'Connessione OK · 41 organizzazioni (33 PRO)' (~3s). 'Aggiorna org (41)' -> '41 organizzazioni aggiornate'. All zyxel API calls returned 200, no console errors. Existing config and 86BIT_Office mapping left untouched; temp test client+link created and removed (verified).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "/settings/zyxel",
+        "issues": [
+          "Cosmetic: with a single client/device the page ends around 470px leaving a large empty area below; consider a compact layout or an empty-state hint for unmapped clients.",
+          "Cosmetic: the masked preview 'AUND****0AST' exposes the first 4 and last 4 chars of the OpenAPI key in a public badge; consider showing only the last 4."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_zyxel_nebula_iter118.py",
+    "/app/test_reports/pytest/iter118_zyxel_nebula.xml"
+  ],
+  "action_items": [
+    "No blocking fixes required for this feature.",
+    "Consider (non-blocking): multi-tenant scoping on GET /api/zyxel/devices and GET /api/clients/{id}/zyxel/devices — currently any authenticated user (any role) can read the whole Zyxel fleet of every tenant; only mutating endpoints call require_admin.",
+    "Consider (non-blocking): POST /api/zyxel/sync-now syncs all mapped clients serially inside the HTTP request (many Nebula calls per device). With more mapped clients this can exceed the request/ingress timeout — move to a background task returning 202 or paginate.",
+    "Consider (non-blocking): db.zyxel_metrics receives an insert per firewall every 5 minutes with no TTL index — add a TTL/retention index."
+  ],
+  "critical_code_review_comments": [
+    "zyxel_nebula.py read endpoints (/zyxel/devices, /zyxel/links, /zyxel/organizations, /clients/{id}/zyxel/devices) use get_current_user without tenant/role filtering — cross-tenant read exposure if non-admin roles exist.",
+    "sync_client_devices() performs N+ sequential cloud calls (online-status, system-status, traffic-usage per device) with 40s timeouts and 5-retry backoff; a single slow site can block sync-now for minutes.",
+    "GET /admin/zyxel/config is readable by any authenticated user (only PUT/DELETE are admin-gated); base_url + last_error are exposed.",
+    "Positive: API key is AES-encrypted, never logged or returned in clear; _id excluded from all responses; retry/backoff on 429/5xx implemented correctly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_zyxel_nebula_iter118.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15)",
+    "frontend": "100% (all 9 checked behaviours passed)"
+  },
+  "seed_data_creation": "Temporary client 'TEST_zyxel_iter118' + zyxel link created to exercise PUT link/sync, then link and client deleted. Verified afterwards: only 86BIT_Office remains, its mapping to org '86 Bit' (5dda8d07efde081268bfa277) intact with device_count=1.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked, 2FA verify OK)",
+  "context_for_next_testing_agent": "Zyxel Nebula integration is fully green (backend + frontend). Regression suite: /app/backend/tests/test_zyxel_nebula_iter118.py (run with `cd /app/backend && python -m pytest tests/test_zyxel_nebula_iter118.py -p no:randomly`); it self-creates/deletes a temp client so it never touches the 86BIT_Office mapping or the stored API key. Only 1 client exists in DB (86BIT_Office, id da3d6e40-b3e5-4d46-9787-dde328a3aa36) and 1 Zyxel device (USG FLEX 700H, ONLINE). Nebula cloud reachable from the pod; org_count=41, PRO=33. Frontend toasts are sonner ([data-sonner-toast]); sync-now toast appears after ~10s so poll instead of a fixed wait.",
+  "rca_of_the_issue": "N/A — no defects reproduced. Initial run appeared to miss the sync success toast only because a fixed 9s wait raced the ~10s cloud sync; re-run with toast polling confirmed both success toasts render correctly."
+}

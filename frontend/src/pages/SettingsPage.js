@@ -219,6 +219,20 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
               <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Zyxel Nebula (NCC OpenAPI)</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Monitoraggio cloud dei firewall USG FLEX serie H, switch e AP Zyxel: stato, firmware e metriche live (CPU/memoria/sessioni) via Nebula Control Center.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/zyxel")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-zyxel-btn">
+                Gestisci
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
                 <p className="text-[var(--text-primary)] text-xs font-medium">Fingerbank Device Identification</p>
                 <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
                   API key Fingerbank.org per identificare modelli precisi (HP LaserJet M404, Polycom VVX 411…) dei device sconosciuti via DHCP fingerprint. Cifrata AES-256-GCM. Free tier 250 query/giorno.

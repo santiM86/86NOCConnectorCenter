@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 4  # v2026-06: aggiunti 2 profili Access Point wireless (TP-Link Omada/EAP + Aruba Instant On)
+SEED_VERSION = 5  # v2026-06: aggiunto profilo Zyxel USG FLEX H (uOS) con OID sessioni/CPU/mem specifici
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -566,6 +566,52 @@ PROFILES: list[dict[str, Any]] = [
         },
         "polling_interval_seconds": 90,
         "capabilities": ["snmp_basic", "client_count", "interface_traffic", "cloud_managed"],
+    },
+
+    # ---------------- Zyxel USG FLEX H (uOS) — serie "H" ----------------
+    # IMPORTANTE: definito PRIMA di zyxel_usg (ZLD). A parita' di punteggio
+    # fingerprint vince il PRIMO in lista: cosi' un FLEX 100H/200H/... (uOS)
+    # sceglie questo profilo, mentre un vecchio USG/ATP/Flex ZLD ricade su
+    # zyxel_usg (che matcha anche i pattern 'zld'/'usg N' → punteggio piu' alto).
+    {
+        "key": "zyxel_usg_flex_h",
+        "vendor": "Zyxel",
+        "family": "firewall",
+        "label": "Zyxel USG FLEX H (uOS)",
+        "description": "Firewall Zyxel USG FLEX serie H (uOS: 50H/100H/200H/500H/700H). Gli OID uOS DIFFERISCONO dallo ZLD: sessioni attive sul ramo .1.19, CPU su .2.21, memoria calcolata via UCD-SNMP-MIB (.1.3.6.1.4.1.2021.4.*). NB: SNMP disabilitato di default sul firewall; da firmware v1.37p1 richiede SIA Community 1 SIA Community 2; su v1.39p0 alcuni OID Zyxel (mem .2.5.0) potevano essere vuoti → usare il calcolo UCD.",
+        "fingerprint": {
+            # Condivide il ramo enterprise Zyxel (890.) con lo ZLD → il
+            # discriminante e' il sysDescr con la 'H' finale del modello o 'uOS'.
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.890.1.15.1.", "1.3.6.1.4.1.890."],
+            "sysdescr_patterns": [r"flex\s*\d+\s*hp?\b", r"usg\s*flex\s*\d+\s*h", r"\buos\b"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "alt_ports": [8443], "notes": "uOS Web GUI HTTPS 443. Se la GUI ha bug SNMP, usare la CLI via SSH o l'icona 'Web Console' in alto a destra."},
+        "oids": {
+            **COMMON_OIDS,
+            # CPU % (uOS: media core). Nome 'cpuUtil' cosi' viene letto SIA dalla
+            # card device_info_card SIA dagli hardware_alerts (classify cpu+util).
+            "cpuUtil":          "1.3.6.1.4.1.890.1.15.3.2.21",
+            # Memoria % diretta Zyxel (funziona su firmware patchati; su v1.39p0
+            # puo' essere vuota → fallback calcolato via UCD-SNMP qui sotto).
+            "memUtil":          "1.3.6.1.4.1.890.1.15.3.2.5.0",
+            # UCD-SNMP-MIB per il calcolo memoria affidabile su uOS:
+            # mem% = (memTotalReal - memAvailReal - memBuffer - memCached) / memTotalReal * 100
+            "memTotalReal":     "1.3.6.1.4.1.2021.4.5.0",
+            "memAvailReal":     "1.3.6.1.4.1.2021.4.6.0",
+            "memBuffer":        "1.3.6.1.4.1.2021.4.14.0",
+            "memCached":        "1.3.6.1.4.1.2021.4.15.0",
+            # Sessioni attive (uOS: "Forward Active Session").
+            "zyFlexHSessions":  "1.3.6.1.4.1.890.1.15.3.1.19.0",
+            "ifSpeed":          "1.3.6.1.2.1.2.2.1.5",
+        },
+        "thresholds": {
+            "cpu_warn_pct": 70, "cpu_crit_pct": 90,
+            "mem_warn_pct": 80, "mem_crit_pct": 95,
+            "sessions_warn": 50000, "sessions_crit": 100000,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "interface_traffic", "session_count", "cpu_memory", "uos"],
     },
 
     # ---------------- Zyxel (USG / ATP / Nebula) ----------------
