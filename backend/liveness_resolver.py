@@ -161,6 +161,10 @@ def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
         return False
     if pd.get("reachable"):
         return True
+    # v2026-06-23 SNMP-only liveness centralizzato: se ICMP fallisce ma SNMP
+    # e' fresco, il device E' raggiungibile (switch HP, server Windows, ecc.).
+    if _snmp_fresh(pd):
+        return True
     # reachable=False: debounce
     try:
         consec = int(pd.get("consecutive_failures") or 0)
@@ -244,6 +248,20 @@ async def build_evidence_maps(
     except Exception:
         pass
     return ip_evidence, mac_evidence
+
+
+def _poll_fresh(pd: Optional[Mapping[str, Any]], minutes: int = 15) -> bool:
+    """True se l'ultimo poll attivo (ICMP/SNMP) e' recente (< minutes)."""
+    if not pd:
+        return False
+    at = pd.get("last_poll_at") or pd.get("last_poll") or pd.get("last_ping_at")
+    if not at:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds() < minutes * 60
+    except Exception:
+        return False
 
 
 def compute_status(

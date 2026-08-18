@@ -18,11 +18,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 import re
+import logging
+
+logger = logging.getLogger("device_info_card")
 
 from database import db
 from deps import get_current_user, audit_logger
 from audit import AuditAction
 from display_name import best_display_name
+from liveness_resolver import (
+    build_evidence_maps, compute_status, build_clients_without_online_agent,
+    _snmp_fresh,
+)
 
 router = APIRouter(prefix="/api", tags=["device-info-card"])
 
@@ -621,6 +628,104 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
         except Exception:
             pass
 
+    # v2026-06-23 LIVENESS UNIFICATO + TRASPARENZA:
+    # la Scheda Dispositivo prima mostrava poll.reachable GREZZO (solo ICMP)
+    # → uno switch HP che blocca ICMP ma risponde a SNMP appariva OFFLINE
+    # qui mentre la lista Dispositivi lo dava ONLINE. Ora usiamo lo stesso
+    # liveness_resolver di lista+panoramica e mostriamo SEPARATAMENTE la
+    # verita' ICMP e quella SNMP + il motivo, cosi' l'admin sa esattamente
+    # PERCHE' un device e' considerato online/offline.
+    icmp_reachable = poll.get("reachable")
+    snmp_reachable = poll.get("snmp_reachable")
+    snmp_is_fresh = _snmp_fresh(poll) if poll else False
+    effective_status = "pending"
+    live_reason = None
+    try:
+        ip_ev, mac_ev = await build_evidence_maps(db, client_id=client_id) if client_id else ({}, {})
+        offline_clients = await build_clients_without_online_agent(db)
+        effective_status, live_reason = compute_status(
+            poll, managed, ip_ev, mac_ev, offline_clients,
+        )
+    except Exception:
+        # Fallback prudente: ICMP OR SNMP fresco. Logghiamo per non mascherare
+        # regressioni silenziose su build_evidence_maps / offline_clients.
+        logger.exception("compute_status fallito per %s, uso fallback ICMP/SNMP", device_ip)
+        if icmp_reachable or snmp_is_fresh:
+            effective_status = "online"
+            live_reason = "snmp" if (not icmp_reachable and snmp_is_fresh) else "ping"
+        elif poll:
+            effective_status = "offline"
+
+    # Etichette human-readable italiane per il motivo dello stato
+    _reason_labels = {
+        "mac_table_switch": "Visto nella MAC table dello switch (SNMP/FDB)",
+        "agent_v4_arp": "Visto nella tabella ARP dell'agent",
+        "scanner_lan": "Visto dallo Scanner LAN (ARP/mDNS)",
+        "snmp": "Risponde a SNMP (ICMP bloccato dal firewall)",
+        "ping": "Risponde al ping ICMP",
+        "icmp_native": "Risponde al ping ICMP (nativo)",
+        "agent_offline": "Connector offline — stato incerto",
+    }
+    live_reason_label = _reason_labels.get(
+        live_reason,
+        (live_reason or "").replace("_", " ").strip() or None,
+    )
+    # Backward-compat: il frontend legacy usa status.reachable per il badge.
+    # Lo mappiamo allo stato EFFETTIVO (non piu' il solo ICMP grezzo).
+    effective_reachable_bool = (
+        True if effective_status == "online"
+        else (False if effective_status == "offline" else None)
+    )
+
+    # v2026-06-23: stato manutenzione (scheduled downtime) per badge UI
+    in_maintenance = False
+    maintenance_window = None
+    try:
+        if client_id:
+            from alert_filter import get_active_maintenance_windows
+            for w in await get_active_maintenance_windows(db, client_id):
+                ips = w.get("device_ips") or []
+                if not ips or device_ip in ips:
+                    in_maintenance = True
+                    maintenance_window = {
+                        "title": w.get("title"),
+                        "end_time": w.get("end_time"),
+                        "scope": "client" if not ips else "device",
+                    }
+                    break
+    except Exception:
+        pass
+
+    # v2026-06-23 SOFT/HARD STATE: espone lo stato di conferma per la UI.
+    # state_type: hard=confermato (online stabile o offline confermato),
+    # soft=in verifica (degrading, sotto soglia, nessun alert).
+    state_type = managed.get("state_type")
+    degraded = bool(managed.get("degraded", False))
+    failed_attempts = int(managed.get("consecutive_ping_failures") or 0)
+    try:
+        if managed.get("max_check_attempts"):
+            max_check_attempts = int(managed.get("max_check_attempts"))
+        else:
+            _mca = await db.settings.find_one({"key": "max_check_attempts"}, {"_id": 0, "value": 1})
+            max_check_attempts = int(_mca.get("value")) if _mca and _mca.get("value") else 5
+    except Exception:
+        max_check_attempts = 5
+
+    # v2026-06-23 PARENT DEPENDENCY: se il device e' offline ma il suo padre
+    # e' offline, e' IRRAGGIUNGIBILE (non down per colpa sua).
+    parent_ip = managed.get("parent_ip") or None
+    parent_name = None
+    parent_status = None
+    unreachable_dependency = False
+    try:
+        from alert_filter import get_dependency_state
+        p_ip, p_name, p_status = await get_dependency_state(db, client_id, device_ip)
+        parent_ip, parent_name, parent_status = p_ip, p_name, p_status
+        if p_status == "offline" and effective_status != "online":
+            unreachable_dependency = True
+    except Exception:
+        pass
+
     return {
         "device_ip": device_ip,
         "physical_links": physical_links,
@@ -656,9 +761,26 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
             } if fw_compliance else None,
         },
         "status": {
-            "reachable": poll.get("reachable"),
+            "reachable": effective_reachable_bool,
+            "icmp_reachable": icmp_reachable,
+            "snmp_reachable": snmp_reachable,
+            "snmp_fresh": snmp_is_fresh,
+            "snmp_last_check_at": _safe_iso(poll.get("snmp_last_check_at")),
+            "effective_status": effective_status,
+            "live_reason": live_reason,
+            "live_reason_label": live_reason_label,
+            "in_maintenance": in_maintenance,
+            "maintenance_window": maintenance_window,
+            "state_type": state_type,
+            "degraded": degraded,
+            "failed_attempts": failed_attempts,
+            "max_check_attempts": max_check_attempts,
+            "parent_ip": parent_ip,
+            "parent_name": parent_name,
+            "parent_status": parent_status,
+            "unreachable_dependency": unreachable_dependency,
             "monitor_type": poll.get("monitor_type"),
-            "last_poll": _safe_iso(poll.get("last_poll") or poll.get("updated_at")),
+            "last_poll": _safe_iso(poll.get("last_poll") or poll.get("updated_at") or poll.get("last_poll_at")),
             "last_update": _safe_iso(poll.get("updated_at") or poll.get("last_update")),
             "uptime_days": uptime_days,
             "unreachable_since": _safe_iso(poll.get("unreachable_since")),
