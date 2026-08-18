@@ -142,8 +142,13 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
       );
       const reply = r.data?.reply || {};
       const sysName = reply?.sys_name || reply?.sysName || "—";
-      toast.success(`✅ Poll SNMP eseguito da ${r.data.executed_by_agent}. sysName=${sysName}`, { duration: 8000 });
+      toast.success(`✅ Poll SNMP avviato da ${r.data.executed_by_agent}. sysName=${sysName}. Metriche (CPU/mem/temp) in aggiornamento…`, { duration: 8000 });
+      // Il ciclo completo (con OID estesi CPU/mem/temp) gira in background lato
+      // agent: ricarichiamo la scheda piu' volte per intercettare i vendor_metrics
+      // appena ingeriti (di solito entro 2-6s).
       setTimeout(fetchCard, 1500);
+      setTimeout(fetchCard, 4000);
+      setTimeout(fetchCard, 8000);
     } catch (e) {
       // Se il poll fallisce, esegui automaticamente la diagnosi
       const reason = e.response?.data?.detail || e.message;

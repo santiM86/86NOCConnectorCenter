@@ -1,6 +1,29 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-08-18 🔄 "Re-poll SNMP" istantaneo COMPLETO (CPU/mem/temp on-demand)
+**Problema**: il bottone "Re-poll SNMP" (endpoint `POST /api/admin/snmp-poll-now/{client_id}/{device_ip}`)
+inviava `force_snmp_poll {ip,community}` → agent `PollOne` → legge SOLO i 4 OID base
+(sysDescr/ObjectID/UpTime/Name), **mai** gli OID estesi del profilo (CPU/mem/temp/ventole).
+Le metriche vendor si aggiornavano solo col ciclo automatico 60s → utente vedeva "nulla" dopo il re-poll.
+**Fix (solo backend + minor frontend, compatibile agent v4.30.2 esistente)**:
+- `routes/snmp_diagnostics.py` `snmp_poll_now`: dopo il poll singolo (identità immediata) lancia in
+  BACKGROUND (`asyncio.create_task`) un `force_snmp_poll` SENZA ip → agent `PollAll` → polla tutti i
+  target del client CON i loro `extra_oids` → ripubblica i `vendor_metrics` (CPU/mem/temp). Ritorna
+  subito con `metrics_refresh_triggered:true`.
+- `components/DeviceInfoCard.js`: `forceSnmpPoll` ora ricarica la scheda a 1.5s/4s/8s per intercettare
+  i vendor_metrics appena ingeriti; toast aggiornato ("Metriche in aggiornamento…").
+**Verifica**: sintassi OK, backend sano, frontend compilato, path auth/lookup OK (403/404 attesi in preview).
+⚠️ E2E completo (agent→switch) testabile SOLO in produzione con agent live. Attivo solo dopo Save to GitHub + redeploy.
+
+## 2026-08-18 🩺 SNMP switch HPE Comware — root cause metriche vuote = VIEW community
+Caso Carrozzeria Pulcini (HPE 5130 JG934A): identità OK ma CPU/mem/temp vuoti. Confermato via web-search
+HPE + confronto con cliente Arma Creativo (stesso switch, funziona): l'app/profilo/OID `hpe_comware`
+(`h3cEntityExtCpuUsage` 25506.2.6.1.1.1.1.6 ecc.) sono CORRETTI. Causa = **la community SNMP sullo switch
+era legata a `ViewDefault` che NON espone il ramo privato H3C `25506`**. Fix lato SWITCH: view che include
+`1.3.6.1` (o `iso`) + bind community → poi ciclo auto 60s popola le metriche. (L'agent walka già le tabelle.)
+
+
 0. **RELEASE AGENT SU GITHUB** → seguire SEMPRE `/app/memory/github_release_workflow.md`
    (procedura permanente richiesta esplicitamente dall'utente il 2026-08-11: bump
    `noc-agent/VERSION` → Save to GitHub → dispatch `release-agent.yml` via API →
