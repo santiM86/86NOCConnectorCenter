@@ -5103,3 +5103,13 @@ enrichment IP negli alert esistenti con badge reputazione.
 - alert_engine.py: _ups_power_loss(db,client_id) rileva UPS "su batteria" da metric_history (ups_charge_pct<95 o runtime<=30min in finestra 20min). Integrato in: (1) verdetto anchor site_power_down -> se UPS conferma diventa "MANCANZA CORRENTE CONFERMATA" conf 99 + flag power_confirmed; altrimenti generico "corrente o WAN" conf 96. (2) run_site_blackout_watchdog: titolo/msg alert promossi a "SITO GIU - MANCANZA CORRENTE CONFERMATA" con dettaglio UPS.
 - Distinzione chiave blackout: site_power_down = agent on-site giu + sonda WAN esterna giu (viste indipendenti concordi); site_isolated = agent ancora vivo ma device giu (guasto rete, NON corrente). Dedup: 1 solo alert aggregato, figli soppressi.
 - Self-test OK: _ups_power_loss caso batteria->True(70%,18min), rete->False, no-data->False; catalogo espone site_power_confirmed(99)/site_power_down(96)/site_isolated(97).
+
+## 2026-06 — Avviso anticipato UPS su batteria (early warning blackout)
+- predictive.py _eval_ups riscritto a TIER su un unico dedup key predictive_ups (una sola notifica che ESCALA):
+  - Appena su batteria (carica <99% e trend NON in salita; senza storia richiede <96%) -> severity HIGH, titolo "UPS SU BATTERIA — possibile mancanza corrente" con autonomia stimata ("il sito potrebbe spegnersi tra ~N min"). Avviso PRIMA che il sito cada.
+  - Escala a CRITICAL (autonomia <=5min o carica <=20%) -> "UPS in esaurimento, spegnimento imminente".
+  - Auto-resolve quando la carica torna ~100% (rete ripristinata).
+- Notifica via _dispatch_notification (Telegram/WebPush) automatica.
+- FIX: rimosso uso di upsEstimatedMinutesRemaining come indicatore di "su batteria" (e autonomia batteria, presente anche su rete -> falsi positivi). Indicatore certo = carica che cala.
+- Catalogo aggiornato: predictive_ups = "UPS su batteria -> esaurimento" (early high -> critical).
+- Self-test OK: rete 99%/40min->nessun alert; discesa 100->98 slope neg->HIGH early; 15%/4min->CRITICAL; 100%->resolve.

@@ -100,9 +100,9 @@ DOMAINS = [
             _s("predictive_temp", "Surriscaldamento imminente", 90,
                "Trend temperatura in salita → ETA proiettata alla soglia critica (≤1h critico, ≤6h alto)", "critical",
                "Verifica ventole/condizionamento e filtri prima del blocco termico."),
-            _s("predictive_ups", "UPS in esaurimento", 95,
-               "Autonomia ≤5 min o carica ≤20% (critico); carica in calo/su batteria (alto)", "critical",
-               "Verifica alimentazione di rete e batteria; pianifica spegnimento controllato."),
+            _s("predictive_ups", "UPS su batteria → esaurimento", 95,
+               "UPS su batteria = AVVISO ANTICIPATO (high) appena manca corrente; escala a critico con autonomia ≤5 min o carica ≤20%", "high",
+               "Avviso appena l'UPS va su batteria: verifica l'alimentazione PRIMA che il sito cada; poi pianifica shutdown controllato."),
         ],
     },
     {

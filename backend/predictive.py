@@ -279,37 +279,58 @@ async def _eval_ups(base, vendor_metrics: dict) -> None:
     runtime = _first("upsEstimatedMinutesRemaining")
     load = _first("upsOutputPercentLoad")
     if charge is None and runtime is None:
-        # nessuna metrica UPS presente -> risolvi eventuale alert e esci
         await _resolve(db, cfg, dk, f"Nessuna anomalia UPS su {base['device_name']}.")
         return
 
-    severity = None
-    parts: List[str] = []
-    if runtime is not None and runtime <= 5:
-        severity = "critical"; parts.append(f"autonomia residua ~{runtime:.0f} min")
-    if charge is not None and charge <= 20:
-        severity = "critical"; parts.append(f"carica batteria {charge:.0f}%")
-    if severity is None:
-        # trend carica in discesa (su batteria / batteria che degrada)
-        pts = await _series(db, base["client_id"], base["device_ip"], "ups_charge_pct")
-        slope = _slope_per_hour(pts) if len(pts) >= MIN_POINTS else None
-        if charge is not None and charge <= 60 and slope is not None and slope < -1:
-            severity = "high"
-            parts.append(f"carica {charge:.0f}% in calo ({slope:.0f}%/h)")
-        elif charge is not None and charge < 100 and runtime is not None and runtime <= 15:
-            severity = "high"
-            parts.append(f"su batteria (carica {charge:.0f}%, autonomia ~{runtime:.0f} min)")
+    # Rileva se l'UPS sta EROGANDO DA BATTERIA (= mancanza corrente in corso).
+    # Su rete elettrica la carica resta ~100%. Se scende sotto 100% e NON sta
+    # ricaricando (slope non in salita) → e' su batteria. Con poca storia,
+    # richiedi carica < 96% per prudenza (evita falsi positivi da ricarica).
+    pts = await _series(db, base["client_id"], base["device_ip"], "ups_charge_pct")
+    slope = _slope_per_hour(pts) if len(pts) >= 2 else None
+    on_battery = False
+    if charge is not None and charge < 99:
+        if slope is not None:
+            on_battery = slope < 0.2   # piatto o in discesa = su batteria
+        else:
+            on_battery = charge < 96   # senza storia, prudenza contro la ricarica
+
+    # Tiering: critico se batteria quasi esaurita, altrimenti AVVISO ANTICIPATO
+    # "su batteria" (una sola notifica che ESCALA sullo stesso dedup key).
+    severity, tier, parts = None, None, []
+    if (runtime is not None and runtime <= 5) or (charge is not None and charge <= 20):
+        severity, tier = "critical", "esaurimento"
+        if charge is not None:
+            parts.append(f"carica batteria {charge:.0f}%")
+        if runtime is not None:
+            parts.append(f"autonomia residua ~{runtime:.0f} min")
+    elif on_battery:
+        severity, tier = "high", "onbattery"
+        if charge is not None:
+            parts.append(f"carica {charge:.0f}%")
+        if runtime is not None:
+            parts.append(f"autonomia stimata ~{runtime:.0f} min")
 
     if severity:
         if load is not None:
             parts.append(f"carico {load:.0f}%")
+        detail = ", ".join(parts)
+        if tier == "esaurimento":
+            title = f"GUASTO IMMINENTE: UPS in esaurimento su {base['device_name']}"
+            message = (f"UPS di {base['device_name']} ({base['device_ip']}): {detail}. "
+                       f"Spegnimento del sito IMMINENTE: intervieni subito o pianifica "
+                       f"lo shutdown controllato.")
+        else:
+            eta = f" — il sito potrebbe spegnersi tra ~{runtime:.0f} min se non torna la corrente" if runtime else ""
+            title = f"UPS SU BATTERIA — possibile mancanza corrente su {base['device_name']}"
+            message = (f"L'UPS di {base['device_name']} ({base['device_ip']}) sta erogando da "
+                       f"BATTERIA ({detail}): probabile MANCANZA DI CORRENTE in corso{eta}. "
+                       f"Avviso anticipato: verifica l'alimentazione di rete PRIMA che il sito cada.")
         await _emit(**base, source_type="predictive_ups", dedup_key=dk, severity=severity,
-                    title=f"GUASTO IMMINENTE: UPS in esaurimento su {base['device_name']}",
-                    message=(f"UPS di {base['device_name']} ({base['device_ip']}): "
-                             f"{', '.join(parts)}. Rischio spegnimento non pianificato: "
-                             f"verifica alimentazione di rete e stato batteria."))
+                    title=title, message=message)
     else:
-        await _resolve(db, cfg, dk, f"UPS stabile su {base['device_name']}.")
+        await _resolve(db, cfg, dk,
+                       f"UPS di {base['device_name']} tornato su rete elettrica (carica ripristinata).")
 
 
 def _fmt_eta(hours: float) -> str:
