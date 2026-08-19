@@ -40,37 +40,33 @@ JWT_ALGORITHM = "HS256"
 
 def _load_or_create_persistent_jwt_secret() -> str:
     """Legge/crea un JWT secret persistente su MongoDB (sincrono, all'import).
-    Usa pymongo con MONGO_URL/DB_NAME. Race-safe via upsert $setOnInsert.
-    Con retry + fail-fast: NON usiamo mai una chiave effimera (era proprio la
-    causa del P0 'errore di autenticazione dopo redeploy')."""
-    import time as _time
+    Race-safe via upsert $setOnInsert. NON blocca MAI l'avvio del backend: se
+    MongoDB non è raggiungibile in avvio, logga CRITICAL e usa una chiave
+    effimera (il backend DEVE partire comunque — un 502 è peggio). Per evitare
+    del tutto questo caso, imposta JWT_SECRET nel .env di produzione."""
     from pymongo import MongoClient
-    mongo_url = os.environ['MONGO_URL']
-    db_name = os.environ['DB_NAME']
-    last_err = None
-    for attempt in range(5):
-        try:
-            client = MongoClient(mongo_url, serverSelectionTimeoutMS=5000)
-            coll = client[db_name].system_config
-            new_secret = secrets.token_hex(32)
-            coll.update_one(
-                {"_id": "jwt_secret"},
-                {"$setOnInsert": {"value": new_secret, "created_at": datetime.now(timezone.utc).isoformat()}},
-                upsert=True,
-            )
-            doc = coll.find_one({"_id": "jwt_secret"})
-            client.close()
-            if doc and doc.get("value"):
-                return doc["value"]
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            logger.error("JWT secret persistente: tentativo %d/5 fallito: %s", attempt + 1, e)
-            _time.sleep(2)
-    # Fail-fast: senza secret stabile l'auth sarebbe rotta ad ogni riavvio.
-    raise RuntimeError(
-        f"Impossibile ottenere un JWT secret persistente da MongoDB dopo 5 tentativi: {last_err}. "
-        "Imposta un JWT_SECRET forte nel .env oppure verifica la connessione a MongoDB."
-    )
+    try:
+        mongo_url = os.environ['MONGO_URL']
+        db_name = os.environ['DB_NAME']
+        client = MongoClient(mongo_url, serverSelectionTimeoutMS=3000)
+        coll = client[db_name].system_config
+        new_secret = secrets.token_hex(32)
+        coll.update_one(
+            {"_id": "jwt_secret"},
+            {"$setOnInsert": {"value": new_secret, "created_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        doc = coll.find_one({"_id": "jwt_secret"})
+        client.close()
+        if doc and doc.get("value"):
+            return doc["value"]
+    except Exception as e:  # noqa: BLE001
+        logger.critical(
+            "JWT secret persistente non ottenibile da MongoDB (%s). Uso chiave effimera "
+            "SOLO per questo processo: i token non sopravviveranno al riavvio. "
+            "Imposta un JWT_SECRET forte nel .env di produzione!", e,
+        )
+    return secrets.token_hex(32)
 
 
 _env_secret = os.environ.get('JWT_SECRET') or ''

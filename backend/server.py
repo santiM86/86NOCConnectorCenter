@@ -745,12 +745,16 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Seed users warning (non-fatal): {e}")
 
-    # === UNBAN whitelisted IPs (legacy cleanup) ===
+    # === Legacy IP-ban cleanup (NON distruttivo) ===
+    # NB: in passato qui si faceva `.drop()` delle collezioni ad ogni avvio:
+    # operazione DISTRUTTIVA (bloccata in deploy) che oltretutto azzerava i ban
+    # attivi usati da deps.py (auto-ban). Ora rimuoviamo SOLO i ban scaduti e
+    # non permanenti, con filtro mirato: nessuna collezione viene cancellata.
     try:
-        await db.banned_ips.drop()
-        await db.honeypot_bans.drop()
-        await db.blocked_ips.drop()
-        logger.info("IP ban collections removed (feature disabled)")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        expired_filter = {"permanent": {"$ne": True}, "expires_at": {"$lt": now_iso}}
+        res = await db.blocked_ips.delete_many(expired_filter)
+        logger.info(f"Legacy IP-ban cleanup: {res.deleted_count} ban scaduti rimossi")
     except Exception:
         pass
 

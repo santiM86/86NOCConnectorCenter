@@ -5074,3 +5074,9 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Dialog mostra token + WS URL (AGENT_PUBLIC_WS_URL) copiabili + istruzioni: usare installer standard install-noc-agent.ps1 con token+URL; Linux richiede mtr/traceroute; serve build agent con comando net_trace.
 - Testid: probe-enroll-card, probe-client-select, probe-label-input, probe-create-token-btn, probe-token-dialog, probe-token-value, probe-backend-url.
 - Testato: register 200 (token 43 char per 86BIT_Office) + UI dialog verificato via screenshot.
+
+## 2026-06 — Fix P0 deployment blocker (startup DB)
+- server.py startup_event(): rimosso il blocco distruttivo `.drop()` su banned_ips/honeypot_bans/blocked_ips (girava ad OGNI avvio, azzerava i ban IP attivi usati da deps.py). Sostituito con delete_many mirato solo sui ban SCADUTI e non permanenti di blocked_ips (non distruttivo).
+- .gitignore: ricostruito da 2890 righe corrotte (blocco .env ripetuto ~300 volte) a 83 righe pulite. I file .env NON sono più ignorati (richiesto dal deploy Emergent).
+- deployment_agent: ora status=PASS, destructive_db_startup_confirmed=false, gitignore_blocks_required_files=false, findings=[].
+- Verificato end-to-end: login info@86bit.it -> requires_2fa -> verify-2fa -> token pieno + refresh_token (JWT persistente stabile).
