@@ -16,6 +16,7 @@ Comportamento scelto: ENRICHMENT + ALERT automatici (nessun blocco automatico).
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -38,6 +39,59 @@ async def osint_feeds_tick() -> None:
             logger.info(f"[osint-feeds] refreshed: {changed}")
     except Exception as e:
         logger.exception(f"[osint-feeds] tick failed: {e}")
+
+
+async def kev_asset_alert_tick() -> dict:
+    """Genera alert per-cliente quando un asset combacia con una CVE del catalogo
+    CISA KEV (attivamente sfruttata). Severity high (critical se ransomware).
+    Dedup stabile per (cliente, dispositivo) via device_id."""
+    try:
+        from routes.osint import _compute_kev_asset_exposure
+        data = await _compute_kev_asset_exposure()
+    except Exception as e:
+        logger.exception(f"[kev-alert] compute failed: {e}")
+        return {"emitted": 0}
+    emitted = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for a in data.get("items", []):
+        cid = a.get("client_id")
+        cves = a.get("matches") or []
+        if not cid or not cves:
+            continue
+        ransom = any(str(m.get("ransomware")).lower() == "known" for m in cves)
+        due_dates = sorted([m.get("due_date") for m in cves if m.get("due_date")])
+        earliest = due_dates[0] if due_dates else None
+        cve_ids = [m.get("cve_id") for m in cves]
+        dev_key = re.sub(r"[^a-z0-9]+", "-", str(a.get("name") or a.get("model") or "asset").lower())
+        alert_doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": cid,
+            "device_id": f"kev:{cid}:{dev_key}",
+            "device_name": a.get("name") or a.get("model"),
+            "severity": "critical" if ransom else "high",
+            "source_type": "kev_exposure",
+            "title": f"Esposizione KEV: {a.get('model') or a.get('name')} — {len(cve_ids)} CVE attivamente sfruttate",
+            "message": (
+                f"L'asset {a.get('name') or ''} ({a.get('vendor')} {a.get('model')}) del cliente "
+                f"{a.get('client_name')} risulta colpito da {len(cve_ids)} vulnerabilità nel catalogo CISA KEV "
+                f"(sfruttamento attivo confermato): {', '.join(cve_ids[:8])}"
+                + (f" +{len(cve_ids) - 8}" if len(cve_ids) > 8 else "") + "."
+                + (f" Scadenza remediation più vicina: {earliest}." if earliest else "")
+                + (" ⚠️ Usata in campagne RANSOMWARE." if ransom else "")
+            ),
+            "status": "active",
+            "created_at": now_iso,
+            "raw_data": ",".join(cve_ids[:20]),
+        }
+        try:
+            await insert_alert_if_emit(db, alert_doc)
+            emitted += 1
+        except Exception as e:
+            logger.debug(f"[kev-alert] emit failed {cid}: {e}")
+    if emitted:
+        logger.info(f"[kev-alert] emitted/updated {emitted} KEV exposure alerts")
+    return {"emitted": emitted, "assets": data.get("total", 0)}
+
 
 
 def _needs_scan(doc: dict | None, now: datetime) -> bool:
@@ -170,6 +224,58 @@ C2_LOOKBACK_MIN = 15        # finestra alla prima esecuzione / fallback
 C2_MAX_EVENTS = 5000        # cap eventi per tick
 
 
+async def _scan_nebula_firewalls(agg: dict, now: datetime) -> int:
+    """Estrae gli IP (src/dst) dagli event-log dei firewall Zyxel Nebula online
+    e li confronta con gli IOC, aggiungendo i match all'aggregato C2 condiviso.
+    Fonte 'live' che non richiede syslog configurato lato cliente."""
+    try:
+        from routes.zyxel_nebula import _nebula_request
+    except Exception:
+        return 0
+    end_ms = int(now.timestamp() * 1000)
+    start_ms = end_ms - 3 * 60 * 1000  # ultimi 3 min (tick ogni 2 min)
+    fws = await db.zyxel_devices.find(
+        {"device_type": "firewall", "online_status": "ONLINE"},
+        {"_id": 0, "dev_id": 1, "site_id": 1, "client_id": 1, "name": 1, "model": 1, "public_ip": 1},
+    ).to_list(300)
+    scanned = 0
+    for fw in fws:
+        if not fw.get("site_id") or not fw.get("dev_id"):
+            continue
+        try:
+            logs = await _nebula_request(
+                "POST", f"/{fw['site_id']}/gw/{fw['dev_id']}/event-logs",
+                json={"startTimestamp": start_ms, "endTimestamp": end_ms},
+            )
+        except Exception as e:
+            logger.debug(f"[osint-c2] nebula event-logs dev={fw.get('dev_id')}: {e}")
+            continue
+        if not isinstance(logs, list) or not logs:
+            continue
+        logs = logs[:8000]  # cap per firewall/tick
+        scanned += len(logs)
+        ips = set()
+        for x in logs:
+            for k in ("srcIpv4", "dstIpv4"):
+                v = x.get(k)
+                if v:
+                    ips.add(v)
+        if not ips:
+            continue
+        mm = await osint.match_ips_against_iocs(list(ips))
+        if not mm:
+            continue
+        cid = fw.get("client_id")
+        for bad_ip, hits in mm.items():
+            entry = agg.setdefault((cid, bad_ip), {
+                "client_id": cid, "bad_ip": bad_ip, "hits": hits,
+                "firewalls": set(), "sample": f"Nebula event-log {fw.get('model') or ''}".strip(),
+                "host": fw.get("name"),
+            })
+            entry["firewalls"].add(fw.get("public_ip") or fw.get("name") or fw["dev_id"])
+    return scanned
+
+
 async def osint_c2_tick() -> dict:
     """Scansiona i syslog_events recenti, estrae gli IP dai messaggi firewall e
     li confronta con gli IOC. Se un dispositivo cliente ha comunicato con un IP
@@ -227,6 +333,10 @@ async def osint_c2_tick() -> dict:
                 })
                 entry["firewalls"].add(fw_ip)
 
+        # Fonte aggiuntiva LIVE: event-log dei firewall Zyxel Nebula
+        nebula_scanned = await _scan_nebula_firewalls(agg, now)
+        scanned += nebula_scanned
+
         for (cid, bad_ip), entry in agg.items():
             if not cid:
                 continue
@@ -270,7 +380,7 @@ async def _emit_c2_alert(entry: dict) -> bool:
     now_iso = datetime.now(timezone.utc).isoformat()
     msg = (f"Un dispositivo del cliente ha comunicato con l'IP {bad_ip}, presente in "
            f"blocklist/IOC ({src_repr}){threat_repr}. Rilevato su firewall/host: {fw_repr}. "
-           f"Verificare immediatamente il dispositivo interessato. Fonte: correlazione OSINT su syslog.")
+           f"Verificare immediatamente il dispositivo interessato. Fonte: correlazione OSINT su syslog/event-log firewall.")
 
     existing = await db.alerts.find_one(
         {"client_id": cid, "source_type": "osint_c2", "raw_data": bad_ip, "status": "active"},

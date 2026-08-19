@@ -1,3 +1,113 @@
+# 2026-08-19 — TV Wallboard redesign + Auto-alert KEV↔Asset
+
+## Task 1 — TV Dashboard riprogettata (per TV 40", colpo d'occhio)
+- Riscritti `frontend/src/pages/TvDashboardPage.js` + `TvDashboard.css`.
+- Layout wallboard moderno, alto contrasto, font grandi leggibili da lontano. Ogni cliente = tile con: bordo/colore stato (verde/ambra/rosso), anello salute %, HEADLINE grande del problema dominante ("WAN DOWN" / "N OFFLINE" / "N CRITICI" / "OPERATIVO"), contatori ON/OFF/ALERT, riga WAN (stato+IP+latenza, mostra la linea peggiore), 1 riga top-alert. Niente più liste IP/toner illeggibili.
+- Tile ordinate per gravità (peggiori prima), grid auto-fit responsive, flash rosso sui critici. Mantenuti allarme audio + ticker.
+
+## Task 2 — Auto-alert KEV↔Asset
+- Refactor `routes/osint.py`: estratto `_compute_kev_asset_exposure()` (riusato dalla route).
+- Nuovo `kev_asset_alert_tick()` in `services/osint_poller.py`: genera alert per-cliente per asset esposti a KEV. Severity high, **critical se ransomware**; include lista CVE, scadenza più vicina, flag ransomware. Dedup stabile via device_id `kev:{cid}:{slug}`.
+- Schedulato in `server.py` ogni 6h (kev_asset_alert_tick).
+
+## Verifica
+- TV: screenshot wallboard OK (tile 86BIT_Office, headline WAN DOWN, ring 100%, top-alert KEV, ticker).
+- KEV alert: tick → 1 alert CRITICO "Esposizione KEV: USG FLEX 700H — 5 CVE" per 86BIT_Office con scadenza 2022-06-06 + flag Ransomware. Finisce in dashboard Alert (e su Telegram una volta collegato).
+
+---
+
+
+# 2026-08-19 — KEV ↔ Asset: esposizione clienti a CVE attivamente sfruttate
+
+## Richiesta utente
+Rendere il catalogo KEV "azionabile": incrociare i CVE con vendor/modelli degli asset nel CMDB per vedere quali clienti sono esposti a una KEV attivamente sfruttata.
+
+## Backend (routes/osint.py)
+- Nuovo endpoint `GET /api/osint/kev/asset-exposure`: incrocia `cisa_kev` con gli asset a modello reale (`zyxel_devices` firewall + `managed_devices`). Match conservativo: vendor (token) + prodotto. Aggiunto match "vendor+categoria" per prodotti KEV generici (es. "Multiple Firewalls" → qualsiasi firewall del vendor). Ritorna per-asset i CVE, prodotto, scadenza, flag ransomware, match_type (specific/vendor_category). Isolamento per cliente via param client_id.
+
+## Frontend (OsintPage.js)
+- Nuovo pannello "I miei asset esposti a KEV": tabella Cliente / Dispositivo / Vendor·Modello / CVE KEV (badge conteggio + ransomware + chip CVE con tooltip descrizione) / Prima scadenza (rossa se superata).
+
+## Verifica (API + screenshot, dati reali)
+2 asset con modello analizzati → 1 esposto: Zyxel USG FLEX 700H (86BIT_Office) su 5 CVE KEV Zyxel firewall (CVE-2022-30525, 2023-28771, 2023-33009, 2023-33010, +1), flag Ransomware, scadenza 2022-06-06 evidenziata. HPE ProLiant iLO correttamente nessun match (KEV non ha ProLiant/iLO).
+
+---
+
+
+# 2026-08-19 — CISA KEV: arricchimento campi (Azione richiesta, Scadenza, Descrizione)
+
+## Richiesta utente
+Incorporare la struttura completa del catalogo CISA KEV: CVE ID, Vendor & Product, Short Description, Required Action & Due Date, Ransomware Flag.
+
+## Implementazione
+- Backend `services/osint_service.py` (refresh_cisa_kev): aggiunti `short_description` (shortDescription), `required_action` (requiredAction), `cwes` all'ingestione del feed ufficiale CISA. `due_date`/`ransomware` già presenti.
+- Backend `routes/osint.py` (list_kev): ricerca estesa anche a `short_description`.
+- Frontend `OsintPage.js`: tabella KEV con nuove colonne "Azione richiesta" e "Scadenza" (due_date in ROSSO se remediation scaduta), descrizione breve/azione in tooltip.
+
+## Verifica
+Refresh forzato: 1670 CVE, tutte con required_action + short_description. Screenshot: colonne visibili, date scadute evidenziate in rosso (es. CVE-2026-20349 Cisco ASA due 2026-08-14). Feed KEV OK.
+
+---
+
+
+# 2026-08-19 — C2 Correlation: IP dei firewall Nebula vs IOC (ogni 2 min)
+
+## Richiesta utente
+Confrontare gli IP nei log firewall/syslog dei clienti con gli IOC (Feodo, Spamhaus, FireHOL, ThreatFox). Se un dispositivo comunica con un IP malevolo noto → alert critico per quel cliente. Scansione automatica ogni 2 min. Usare i dati che ora arrivano dai firewall Nebula.
+
+## Implementazione (services/osint_poller.py)
+- Nuovo `_scan_nebula_firewalls(agg, now)`: per ogni firewall Zyxel Nebula ONLINE scarica gli event-log (finestra 3 min, cap 8000/fw), estrae src/dst IPv4 e li confronta con gli IOC (`match_ips_against_iocs`, che filtra già gli IP pubblici). I match confluiscono nell'aggregato C2 condiviso.
+- Integrato in `osint_c2_tick` (già schedulato ogni 2 min): oltre a `syslog_events` ora scansiona anche i firewall Nebula → nessun syslog richiesto lato cliente. Alert critico per-tenant via `_emit_c2_alert` (con dedup). Messaggio fonte aggiornato a "syslog/event-log firewall".
+- Protetto da try/except per-firewall: un 404/errore Nebula salta quel firewall senza bloccare il tick.
+
+## Verifica (pipeline end-to-end, mock event-log + IOC Feodo)
+osint_c2_tick → IP 45.155.205.233 (dst nei log firewall) correlato con IOC Feodo/Dridex_C2 → ALERT CRITICO per cliente da3d6e40 (firewall 192.168.45.2). 8.8.8.8 benigno nessun falso positivo. IOC in DB: 6395. Backend 200.
+
+## Nota
+- Endpoint Nebula event-logs a volte risponde 404 intermittente (glitch lato Zyxel): gestito con skip best-effort; il tick riprova al ciclo successivo.
+
+---
+
+
+# 2026-08-19 — Sonda globale + Alert cambio IP pubblico reale
+
+## Richieste utente
+1) Poter creare UNA sonda unica (globale) per tracciare tutti i clienti.
+2) Confrontare l'IP pubblico reale rilevato con quello atteso e generare alert al cambio (IP dinamici / failover).
+
+## Feature A — Sonda globale (NetworkPathDiagnosisPage.js)
+- Aggiunta opzione "🌐 Sonda globale (tutti i clienti)" nel dropdown sede/cliente (valore sentinella client_id="__global__"), impostata come default. Testo aggiornato: una sola sonda nel NOC traccia verso tutti i clienti. Il dropdown agent-sonda mostra "🌐 Sonda globale". Register token con __global__ verificato (200). Il traceroute parte già verso qualsiasi IP destinazione.
+
+## Feature B — Alert cambio IP pubblico reale (external_monitor.py)
+- Nuovo `_detect_wan_ip_change(client_id, expected_ips)`: risolve l'IP egress reale del cliente (managed_agents.public_ip via _resolve_detected_public_ip), lo confronta con l'ultimo noto e con gli IP attesi dei target WAN. Storico in `wan_public_ip_changes` (target_id=`detected:{client_id}`), alert `wan_public_ip_change` severity high al cambio (no alert al primo record), con nota se non combacia con l'atteso. Chiamato in run_probe_cycle per ogni cliente.
+- NB: il precedente `_detect_public_ip_change` seguiva solo l'IP CONFIGURATO (cambiava solo su edit admin); ora c'è il confronto sull'IP REALE.
+
+## Verifica
+Feature A: screenshot opzione globale + register 200. Feature B: test funzionale — init nessun alert, al cambio 11.11.11.11→22.22.22.22 alert generato con nota mismatch, 2 record storico. Compila pulito.
+
+---
+
+
+# 2026-08-19 — WAN + Zyxel: unificazione firewall (dedup) + arricchimento Nebula
+
+## Richiesta utente
+Riprogettare la pagina WAN esterna, importare i dati Nebula per i firewall Zyxel (coerenza), mostrare sempre ISP + IP pubblico in Zyxel, eliminare i doppioni in "Infrastruttura di Rete". Collegamento manuale via dropdown.
+
+## Backend (external_monitor.py)
+- WanTarget/WanTargetUpdate: nuovi campi `linked_nebula_dev_id`, `linked_nebula_site_id` (collegamento manuale; "" = scollega).
+- Helper `_attach_nebula`: arricchisce i target collegati con dati zyxel_devices (model, sn, mac, online_status, cpu/mem/sessioni, mgmt_ip, firmware, ports_up/total). Applicato a GET /targets e /status.
+
+## Frontend
+- ExternalMonitorPage (Monitor WAN): dropdown "Collega a firewall Zyxel Nebula" nel dialog edit (carica firewall del cliente); DeviceCard arricchita con nome prodotto (model), badge NEBULA·ON/OFF, S/N, porte up/total.
+- NebulaFirewalls.jsx: prop `wanTargets`; riga mostra IP pubblico REALE (dal target collegato) + latenza + ISP OK/DOWN; dialog: sezione "Connettività WAN · ISP" (IP pubblico, stato, latenza, packet loss, gateway, ISP/ASN/località via geo-ip).
+- ClientOverviewPage: passa wanTargets a NebulaFirewalls; "Connettività WAN" ESCLUDE i target collegati → niente doppioni.
+
+## Verifica (screenshot + API, cliente da3d6e40)
+Dedup OK (il firewall collegato sparisce da Connettività WAN, resta solo il router). Monitor WAN: riga con NEBULA·ON, S/N, porte 4/14. Dialog: ISP "Google LLC" AS15169, IP pubblico 8.8.8.8. PUT link/unlink 200 e arricchimento coerente.
+
+---
+
+
 # 2026-08-19 — CMDB: fusione client firewall Nebula in Entity Resolution
 
 ## Richiesta utente

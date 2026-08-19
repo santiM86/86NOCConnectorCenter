@@ -1,177 +1,156 @@
-/* ==========================================================
-   TV DASHBOARD v4 - Client-Centric Command Center
-   Ogni cliente = un TILE che mostra TUTTO
-   Un solo sguardo per avere il controllo totale
-   ========================================================== */
-
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800;900&display=swap');
-
-/* === RESET & ROOT === */
-.tv { position:fixed;inset:0;background:#080808;color:#fff;display:flex;flex-direction:column;font-family:'JetBrains Mono',monospace;overflow:hidden;-webkit-font-smoothing:antialiased; }
-
-/* === TOP BAR (compact) === */
-.tv-top { height:48px;display:flex;align-items:center;padding:0 20px;border-bottom:1px solid #1a1a1a;flex-shrink:0;gap:12px;background:#0a0a0a; }
-.tv-top-l { display:flex;align-items:center;gap:10px;flex-shrink:0; }
-.tv-brand { width:32px;height:32px;background:#007AFF;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff; }
-.tv-brand-name { font-size:14px;font-weight:900;letter-spacing:-0.5px; }
-.tv-top-c { display:flex;gap:2px;flex:1;justify-content:center; }
-.tv-top-r { display:flex;align-items:center;gap:14px;flex-shrink:0; }
-
-/* Pills */
-.tv-pill { display:flex;flex-direction:column;align-items:center;padding:2px 14px;background:#111;border-radius:0; }
-.tv-pill-v { font-size:18px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1.1; }
-.tv-pill-l { font-size:7px;color:#555;text-transform:uppercase;letter-spacing:1.5px; }
-.tv-pill-pulse .tv-pill-v { animation:numPulse 1.5s ease-in-out infinite; }
-@keyframes numPulse { 0%,100%{opacity:1}50%{opacity:.5;transform:scale(1.08)} }
-
-/* Status */
-.tv-status { display:flex;align-items:center;gap:8px;padding:6px 16px;font-size:11px;font-weight:800;letter-spacing:1.5px; }
-.tv-status-ok { color:#34C759;background:rgba(52,199,89,.08);border:1px solid rgba(52,199,89,.25); }
-.tv-status-warn { color:#FFCC00;background:rgba(255,204,0,.08);border:1px solid rgba(255,204,0,.25); }
-.tv-status-crit { color:#FF3B30;background:rgba(255,59,48,.12);border:1px solid #FF3B30;animation:critPulse 2s ease-in-out infinite;box-shadow:0 0 20px rgba(255,59,48,.25); }
-@keyframes critPulse { 0%,100%{opacity:1}50%{opacity:.7} }
-.tv-status-dot { width:8px;height:8px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite; }
-@keyframes blink { 0%,100%{opacity:1}50%{opacity:.2} }
-
-/* Sound */
-.tv-snd { padding:4px 10px;font-family:inherit;font-size:8px;font-weight:800;letter-spacing:1.5px;background:transparent;border:1px solid #222;color:#555;cursor:pointer; }
-.tv-snd-on { color:#34C759;border-color:rgba(52,199,89,.3); }
-
-/* Clock */
-.tv-time { text-align:right;line-height:1; }
-.tv-time-h { display:block;font-size:22px;font-weight:900;font-variant-numeric:tabular-nums;letter-spacing:-1px; }
-.tv-time-d { display:block;font-size:8px;color:#555;text-transform:uppercase;letter-spacing:1px; }
-
-/* === CLIENT TILES GRID - fills entire screen === */
-.tv-grid { flex:1;min-height:0;display:grid;gap:8px;padding:8px;overflow:hidden; }
-/* Adaptive: 1 client = full screen, 2 = side by side, etc */
-.tv-grid-0 { grid-template-columns:1fr; }
-.tv-grid-1 { grid-template-columns:1fr; }
-.tv-grid-2 { grid-template-columns:1fr 1fr; }
-.tv-grid-3 { grid-template-columns:1fr 1fr 1fr; }
-.tv-grid-4 { grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr; }
-.tv-grid-5, .tv-grid-6 { grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr; }
-.tv-empty { display:flex;align-items:center;justify-content:center;font-size:18px;color:#333;letter-spacing:2px; }
-
-/* === CLIENT TILE === */
-.tv-tile { background:#0e0e0e;border:1px solid #1a1a1a;display:flex;flex-direction:column;overflow:hidden;position:relative; }
-.tv-tile-bad { border-color:rgba(255,59,48,.35);box-shadow:inset 0 0 40px rgba(255,59,48,.04); }
-
-/* Tile Header */
-.tv-tile-head { display:flex;justify-content:space-between;align-items:flex-start;padding:16px 20px 12px;border-bottom:1px solid #1a1a1a; }
-.tv-tile-name-row { display:flex;flex-direction:column;gap:4px; }
-.tv-tile-name { font-size:18px;font-weight:900;color:#fff;margin:0;text-transform:uppercase;letter-spacing:1px;line-height:1; }
-.tv-tile-conn { font-size:8px;font-weight:800;letter-spacing:1.5px;display:flex;align-items:center;gap:5px; }
-.tv-tile-conn-on { color:#34C759; }
-.tv-tile-conn-off { color:#FF3B30; }
-.tv-tile-conn-dot { width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite; }
-
-/* Health ring */
-.tv-tile-health { position:relative;width:64px;height:64px;flex-shrink:0; }
-.tv-tile-ring { width:100%;height:100%; }
-.tv-tile-hp { position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900; }
-.tv-tile-hp small { font-size:10px;opacity:.5; }
-
-/* Stats row */
-.tv-tile-stats { display:flex;gap:0;border-bottom:1px solid #1a1a1a; }
-.tv-tile-stat { flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 0;border-right:1px solid #1a1a1a; }
-.tv-tile-health-matrix { display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:8px 10px;border-bottom:1px solid #1a1a1a;background:linear-gradient(90deg,rgba(16,185,129,0.03),transparent); }
-.tv-tile-hw-health-label { font-size:8px !important;color:#555 !important;letter-spacing:2px !important;padding:0 !important; }
-.tv-tile-stat:last-child { border-right:none; }
-.tv-tile-stat-v { font-size:28px;font-weight:900;font-variant-numeric:tabular-nums;line-height:1; }
-.tv-tile-stat-l { font-size:8px;color:#555;text-transform:uppercase;letter-spacing:1.5px;margin-top:2px; }
-
-/* Offline devices inside tile */
-.tv-tile-off { padding:6px 12px;background:rgba(255,59,48,.04);border-bottom:1px solid rgba(255,59,48,.15); }
-.tv-tile-off-row { display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px; }
-.tv-tile-off-dot { width:8px;height:8px;border-radius:50%;background:#FF3B30;flex-shrink:0;animation:blink 1s ease-in-out infinite;box-shadow:0 0 6px rgba(255,59,48,.5); }
-.tv-tile-off-name { font-weight:700;color:#fff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.tv-tile-off-ip { font-size:10px;color:#555;font-variant-numeric:tabular-nums; }
-.tv-tile-off-since { font-size:9px;color:#FF3B30;font-weight:700; }
-
-/* Alerts inside tile */
-.tv-tile-alerts { padding:6px 12px;border-bottom:1px solid #1a1a1a; }
-.tv-tile-alert-row { display:flex;align-items:baseline;gap:8px;padding:3px 0;border-left:3px solid;padding-left:8px;margin:2px 0; }
-.tv-tile-alert-sev { font-size:8px;font-weight:900;letter-spacing:.5px;flex-shrink:0;min-width:32px; }
-.tv-tile-alert-msg { font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.tv-tile-alert-more { font-size:9px;color:#555;padding:2px 0;text-align:center; }
-
-/* Toner inside tile */
-.tv-tile-toner { padding:6px 12px;background:rgba(255,204,0,.02); }
-
-/* Section labels */
-.tv-tile-sec-label { font-size:9px;font-weight:800;color:#444;text-transform:uppercase;letter-spacing:2px;padding:6px 0 4px;display:flex;align-items:center;gap:8px; }
-
-/* WAN status inside tile */
-.tv-tile-wan { padding:6px 12px;border-bottom:1px solid #1a1a1a;background:rgba(0,122,255,.02); }
-.tv-tile-wan-diag { font-size:9px;font-weight:800;padding:1px 6px; }
-.tv-tile-wan-ok .tv-tile-wan-diag, .tv-tile-wan-diag.tv-tile-wan-ok { color:#34C759;background:rgba(52,199,89,.1); }
-.tv-tile-wan-isp_down .tv-tile-wan-diag, .tv-tile-wan-diag.tv-tile-wan-isp_down { color:#FF3B30;background:rgba(255,59,48,.15);animation:blink 1s ease-in-out infinite; }
-.tv-tile-wan-firewall_down .tv-tile-wan-diag { color:#FF3B30;background:rgba(255,59,48,.1); }
-.tv-tile-wan-router_down .tv-tile-wan-diag { color:#FF3B30;background:rgba(255,59,48,.1); }
-.tv-tile-wan-list { display:flex;flex-direction:column;gap:2px; }
-.tv-tile-wan-row { display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px; }
-.tv-tile-wan-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0; }
-.tv-tile-wan-dot-online { background:#34C759; }
-.tv-tile-wan-dot-degraded { background:#FFCC00;animation:blink 1.5s ease-in-out infinite; }
-.tv-tile-wan-dot-offline { background:#FF3B30;animation:blink 1s ease-in-out infinite;box-shadow:0 0 6px rgba(255,59,48,.5); }
-.tv-tile-wan-label { font-weight:700;color:#ddd;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.tv-tile-wan-type { font-size:9px;color:#555;font-weight:800;letter-spacing:1px; }
-.tv-tile-wan-ip { font-size:10px;color:#555;font-variant-numeric:tabular-nums; }
-.tv-tile-wan-lat { font-size:11px;font-weight:800;font-variant-numeric:tabular-nums; }
-.tv-tile-wan-down { font-size:9px;font-weight:900;color:#FF3B30;letter-spacing:1px;animation:blink 1s ease-in-out infinite; }
-
-/* Device map inside tile */
-.tv-tile-devices { padding:4px 12px;flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#222 transparent;border-bottom:1px solid #1a1a1a; }
-.tv-tile-devices::-webkit-scrollbar { width:3px; }
-.tv-tile-devices::-webkit-scrollbar-thumb { background:#222; }
-.tv-tile-dev-list { display:flex;flex-direction:column;gap:1px; }
-.tv-tile-dev { display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px; }
-.tv-tile-dev-off { background:rgba(255,59,48,.04); padding:4px 6px;margin:0 -6px; }
-.tv-tile-dev-dot-on { width:8px;height:8px;border-radius:50%;background:#34C759;flex-shrink:0; }
-.tv-tile-dev-dot-off { width:8px;height:8px;border-radius:50%;background:#FF3B30;flex-shrink:0;animation:blink 1s ease-in-out infinite;box-shadow:0 0 6px rgba(255,59,48,.5); }
-.tv-tile-dev-name { font-weight:600;color:#ddd;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.tv-tile-dev-ip { font-size:10px;color:#555;font-variant-numeric:tabular-nums; }
-.tv-tile-dev-since { font-size:9px;color:#FF3B30;font-weight:700; }
-.tv-tile-toner-row { display:grid;grid-template-columns:50px 32px 1fr auto;gap:6px;align-items:center;padding:2px 0;font-size:10px; }
-.tv-tile-toner-bar-bg { height:5px;background:#1a1a1a;overflow:hidden; }
-.tv-tile-toner-bar { height:100%;transition:width 1s ease; }
-.tv-tile-toner-pct { font-weight:900;font-variant-numeric:tabular-nums; }
-.tv-tile-toner-name { color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.tv-tile-toner-printer { color:#555;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right; }
-
-/* === FOOTER === */
-.tv-foot { height:28px;display:flex;align-items:center;gap:14px;padding:0 20px;border-top:1px solid #1a1a1a;background:#0a0a0a;flex-shrink:0;overflow:hidden;font-size:10px; }
-.tv-live { font-size:8px;font-weight:900;letter-spacing:2px;background:#FF3B30;color:#fff;padding:1px 8px;animation:blink 1.5s ease-in-out infinite; }
-.tv-foot-info { color:#444;white-space:nowrap; }
-.tv-marquee { flex:1;overflow:hidden;mask-image:linear-gradient(90deg,transparent,#000 30px,#000 calc(100% - 30px),transparent); }
-.tv-marquee-track { display:flex;gap:40px;white-space:nowrap;will-change:transform; }
-.tv-marquee-item { display:inline-flex;align-items:center;gap:6px;color:#555; }
-.tv-dot { width:6px;height:6px;border-radius:50%;flex-shrink:0; }
-.tv-dot-critical { background:#FF3B30; }
-.tv-dot-high { background:#FF9500; }
-.tv-dot-medium { background:#FFCC00; }
-.tv-dot-low { background:#007AFF; }
-.tv-marquee-time { color:#333;font-size:9px; }
-
-/* === ALARM BANNER === */
-.tv-alarm { padding:8px 20px;font-size:13px;font-weight:800;letter-spacing:.5px;flex-shrink:0;animation:alarmSlide .3s ease-out; }
-.tv-alarm-red { background:rgba(255,59,48,.12);color:#FF3B30;border-bottom:2px solid #FF3B30; }
-.tv-alarm-orange { background:rgba(255,149,0,.1);color:#FF9500;border-bottom:2px solid #FF9500; }
-@keyframes alarmSlide { from{transform:translateY(-100%)}to{transform:translateY(0)} }
-
-/* === BOOT === */
-.tv-boot { position:fixed;inset:0;background:#080808;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#333;font-size:14px;font-family:'JetBrains Mono',monospace;cursor:pointer; }
-.tv-boot-spin { width:32px;height:32px;border:2px solid #007AFF;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite; }
-@keyframes spin { to{transform:rotate(360deg)} }
-
-/* === RESPONSIVE === */
-@media (max-width:1200px) {
-  .tv-grid-3 { grid-template-columns:1fr 1fr; }
-  .tv-grid-5,.tv-grid-6 { grid-template-columns:1fr 1fr; }
+/* ===== ARGUS NOC TV Wallboard — ottimizzato per TV 40" a distanza ===== */
+:root {
+  --tvbg: #05060a;
+  --tvcard: #0d1017;
+  --tvborder: #1c2130;
+  --tvtext: #eef2f8;
+  --tvmute: #7c8698;
+  --green: #2fd85f;
+  --amber: #ffbf00;
+  --red: #ff4136;
+  --orange: #ff9500;
 }
-@media (max-width:800px) {
-  .tv-grid-2,.tv-grid-3,.tv-grid-4,.tv-grid-5,.tv-grid-6 { grid-template-columns:1fr; }
-  .tv-tile-stat-v { font-size:20px; }
-  .tv-top-c { display:none; }
+
+* { box-sizing: border-box; }
+
+.tv {
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, #0f1524 0%, transparent 60%),
+    var(--tvbg);
+  color: var(--tvtext);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  padding: 14px 16px 0;
+  gap: 12px;
 }
+.tv-crit { animation: tvBgCrit 3s ease-in-out infinite; }
+@keyframes tvBgCrit { 0%,100% { box-shadow: inset 0 0 0 0 rgba(255,65,54,0); } 50% { box-shadow: inset 0 0 160px 0 rgba(255,65,54,0.10); } }
+
+/* ---------- Boot ---------- */
+.tv-boot { position: fixed; inset: 0; background: var(--tvbg); color: var(--tvmute);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+  font-family: "Inter", sans-serif; letter-spacing: 3px; cursor: pointer; }
+.tv-boot-spin { width: 56px; height: 56px; border: 4px solid #1c2130; border-top-color: #2fd85f; border-radius: 50%; animation: tvSpin .8s linear infinite; }
+@keyframes tvSpin { to { transform: rotate(360deg); } }
+
+/* ---------- Alarm banner ---------- */
+.tv-alarm { position: fixed; top: 0; left: 0; right: 0; z-index: 100; text-align: center;
+  font-size: 26px; font-weight: 800; letter-spacing: 2px; padding: 14px; color: #fff;
+  animation: tvAlarmFlash .7s ease-in-out infinite; }
+.tv-alarm-red { background: var(--red); }
+.tv-alarm-orange { background: var(--orange); color: #1a1a1a; }
+@keyframes tvAlarmFlash { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* ---------- Top bar ---------- */
+.tv-top { display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  background: linear-gradient(180deg, #0e1420, #0a0d14);
+  border: 1px solid var(--tvborder); border-radius: 16px; padding: 10px 18px; flex: 0 0 auto; }
+.tv-top-l { display: flex; align-items: center; gap: 12px; min-width: 190px; }
+.tv-brand { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #2fd85f, #0aa5ff);
+  color: #04121f; font-weight: 900; font-size: 26px; display: grid; place-items: center; }
+.tv-brand-txt { display: flex; flex-direction: column; line-height: 1.05; }
+.tv-brand-name { font-size: 24px; font-weight: 800; letter-spacing: 1px; }
+.tv-brand-sub { font-size: 11px; color: var(--tvmute); letter-spacing: 2px; text-transform: uppercase; }
+
+.tv-kpis { display: flex; gap: 26px; align-items: center; }
+.tv-kpi { display: flex; flex-direction: column; align-items: center; min-width: 74px; }
+.tv-kpi-v { font-size: 40px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.tv-kpi-l { font-size: 11px; color: var(--tvmute); letter-spacing: 1.5px; margin-top: 4px; }
+.tv-kpi-pulse .tv-kpi-v { animation: tvPulse 1.1s ease-in-out infinite; }
+@keyframes tvPulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+.tv-top-r { display: flex; align-items: center; gap: 14px; min-width: 190px; justify-content: flex-end; }
+.tv-status { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800;
+  letter-spacing: 1px; padding: 8px 16px; border-radius: 999px; }
+.tv-status-dot { width: 12px; height: 12px; border-radius: 50%; animation: tvPulse 1.4s infinite; }
+.tv-status-ok { color: var(--green); background: rgba(47,216,95,.12); }
+.tv-status-ok .tv-status-dot { background: var(--green); }
+.tv-status-warn { color: var(--amber); background: rgba(255,191,0,.12); }
+.tv-status-warn .tv-status-dot { background: var(--amber); }
+.tv-status-crit { color: var(--red); background: rgba(255,65,54,.15); }
+.tv-status-crit .tv-status-dot { background: var(--red); }
+.tv-snd { background: #141a26; border: 1px solid var(--tvborder); color: var(--tvmute);
+  border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; letter-spacing: 1px; }
+.tv-snd-on { color: var(--green); border-color: rgba(47,216,95,.4); }
+.tv-time { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.05; }
+.tv-time-h { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tv-time-d { font-size: 11px; color: var(--tvmute); text-transform: uppercase; letter-spacing: 1.5px; }
+
+/* ---------- Client grid ---------- */
+.tv-grid { flex: 1 1 auto; display: grid; gap: 12px; overflow: hidden; align-content: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.tv-empty { grid-column: 1/-1; display: grid; place-items: center; color: var(--tvmute); font-size: 22px; letter-spacing: 3px; }
+
+/* ---------- Client tile ---------- */
+.tv-tile { background: var(--tvcard); border: 1px solid var(--tvborder); border-left-width: 8px;
+  border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+  overflow: hidden; min-height: 0; transition: border-color .3s, background .3s; }
+.tv-tile-ok { border-left-color: var(--green); }
+.tv-tile-warn { border-left-color: var(--amber); background: linear-gradient(180deg, rgba(255,191,0,.05), var(--tvcard)); }
+.tv-tile-crit { border-left-color: var(--red); background: linear-gradient(180deg, rgba(255,65,54,.09), var(--tvcard)); }
+.tv-tile-flash { animation: tvTileFlash 2.2s ease-in-out infinite; }
+@keyframes tvTileFlash { 0%,100% { box-shadow: 0 0 0 0 rgba(255,65,54,0); } 50% { box-shadow: 0 0 26px 0 rgba(255,65,54,.28); } }
+
+.tv-tile-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tv-tile-name { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: .5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tv-tile-badges { display: flex; gap: 6px; flex-shrink: 0; }
+.tv-b { font-size: 10px; font-weight: 800; letter-spacing: 1px; padding: 4px 8px; border-radius: 6px; }
+.tv-b-on { color: var(--green); background: rgba(47,216,95,.12); }
+.tv-b-off { color: var(--tvmute); background: #141a26; }
+.tv-b-mute { color: var(--tvmute); background: #141a26; }
+
+.tv-tile-body { display: flex; align-items: center; gap: 16px; }
+.tv-ring { --pct: 0; --rc: #2fd85f; width: 92px; height: 92px; border-radius: 50%; flex-shrink: 0;
+  display: grid; place-items: center; position: relative;
+  background: radial-gradient(closest-side, var(--tvcard) 74%, transparent 75%),
+    conic-gradient(var(--rc) calc(var(--pct) * 1%), #1c2130 0); }
+.tv-ring-v { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tv-ring-v small { font-size: 14px; opacity: .7; }
+.tv-tile-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.tv-headline { font-size: 30px; font-weight: 900; letter-spacing: 1px; line-height: 1; }
+.tv-headline-ok { color: var(--green); }
+.tv-headline-warn { color: var(--amber); }
+.tv-headline-crit { color: var(--red); }
+.tv-counts { display: flex; gap: 16px; }
+.tv-count { font-size: 14px; color: var(--tvmute); letter-spacing: 1px; }
+.tv-count b { font-size: 22px; font-weight: 800; margin-right: 4px; font-variant-numeric: tabular-nums; }
+
+/* WAN line */
+.tv-wan { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px;
+  background: #10151f; font-size: 14px; font-weight: 700; }
+.tv-wan-offline { background: rgba(255,65,54,.14); }
+.tv-wan-dot { width: 11px; height: 11px; border-radius: 50%; }
+.tv-wan-dot-online { background: var(--green); }
+.tv-wan-dot-offline { background: var(--red); animation: tvPulse 1s infinite; }
+.tv-wan-dot-degraded, .tv-wan-dot-unknown { background: var(--amber); }
+.tv-wan-txt { letter-spacing: 1px; }
+.tv-wan-ip { color: var(--tvmute); font-family: ui-monospace, monospace; font-weight: 600; margin-left: auto; }
+.tv-wan-lat { font-family: ui-monospace, monospace; font-weight: 800; }
+
+/* top problem line */
+.tv-toppb { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--tvmute);
+  border-top: 1px solid var(--tvborder); padding-top: 8px; margin-top: auto; }
+.tv-toppb-sev { font-weight: 900; font-size: 10px; padding: 3px 6px; border-radius: 5px; flex-shrink: 0; }
+.tv-toppb-critical { color: #fff; background: var(--red); }
+.tv-toppb-high { color: #1a1a1a; background: var(--orange); }
+.tv-toppb-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Ticker ---------- */
+.tv-foot { flex: 0 0 auto; display: flex; align-items: center; gap: 16px; height: 44px; margin: 0 -16px;
+  padding: 0 16px; background: #080a10; border-top: 1px solid var(--tvborder); overflow: hidden; }
+.tv-live { display: flex; align-items: center; gap: 7px; color: var(--red); font-weight: 900; font-size: 13px; letter-spacing: 2px; flex-shrink: 0; }
+.tv-live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); animation: tvPulse 1s infinite; }
+.tv-foot-info { color: var(--tvmute); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+.tv-marquee { flex: 1; overflow: hidden; }
+.tv-marquee-track { display: inline-flex; gap: 40px; white-space: nowrap; will-change: transform; }
+.tv-marquee-item { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: #c8cfdb; }
+.tv-marquee-item b { color: #fff; }
+.tv-marquee-time { color: var(--tvmute); font-size: 11px; }
+.tv-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.tv-dot-critical { background: var(--red); }
+.tv-dot-high { background: var(--orange); }
+.tv-dot-medium { background: var(--amber); }
+.tv-dot-low, .tv-dot-info { background: #0aa5ff; }

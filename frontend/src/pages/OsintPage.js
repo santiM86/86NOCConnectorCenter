@@ -50,6 +50,7 @@ export default function OsintPage() {
   const [scanningC2, setScanningC2] = useState(false);
   const [kev, setKev] = useState([]);
   const [kevQuery, setKevQuery] = useState("");
+  const [kevAssets, setKevAssets] = useState(null);
 
   const reloadStatus = useCallback(async () => {
     try {
@@ -87,8 +88,16 @@ export default function OsintPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { reloadStatus(); reloadExposure(); reloadKev(); reloadC2(); },
-    [reloadStatus, reloadExposure, reloadKev, reloadC2]);
+  const reloadKevAssets = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/api/osint/kev/asset-exposure`, { headers });
+      setKevAssets(r.data);
+    } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { reloadStatus(); reloadExposure(); reloadKev(); reloadC2(); reloadKevAssets(); },
+    [reloadStatus, reloadExposure, reloadKev, reloadC2, reloadKevAssets]);
 
   const refreshFeeds = async () => {
     setRefreshing(true);
@@ -373,6 +382,63 @@ export default function OsintPage() {
         )}
       </Section>
 
+      {/* Asset esposti a KEV: incrocio catalogo KEV ↔ vendor/modelli CMDB */}
+      {kevAssets && kevAssets.total > 0 && (
+        <Section title={`I miei asset esposti a KEV — ${kevAssets.total} dispositivi`} icon={Virus}>
+          <p className="text-[11px] text-[var(--text-muted)] mb-3">
+            Incrocio automatico tra il catalogo CISA KEV (CVE attivamente sfruttate) e i vendor/modelli
+            reali dei tuoi asset (firewall Zyxel Nebula + dispositivi gestiti). {kevAssets.assets_scanned} asset con modello analizzati.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-red-500/25">
+            <table className="w-full text-xs" data-testid="osint-kev-assets-table">
+              <thead className="bg-[var(--bg-card)] text-[var(--text-muted)]">
+                <tr>
+                  <th className="text-left px-3 py-2">Cliente</th>
+                  <th className="text-left px-3 py-2">Dispositivo</th>
+                  <th className="text-left px-3 py-2">Vendor / Modello</th>
+                  <th className="text-left px-3 py-2">CVE KEV</th>
+                  <th className="text-left px-3 py-2">Prima scadenza</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kevAssets.items.map((a) => {
+                  const first = a.matches[0];
+                  const overdue = first?.due_date && new Date(first.due_date) < new Date();
+                  const ransom = a.matches.some((m) => String(m.ransomware).toLowerCase() === "known");
+                  return (
+                    <tr key={`${a.client_id}-${a.name}`} className="border-t border-[var(--bg-border)] align-top"
+                        data-testid={`osint-kev-asset-${a.client_id}`}>
+                      <td className="px-3 py-2 whitespace-nowrap">{a.client_name}</td>
+                      <td className="px-3 py-2">
+                        {a.name}
+                        <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-[var(--bg-card)] text-[var(--text-muted)] uppercase">{a.device_type || a.source}</span>
+                      </td>
+                      <td className="px-3 py-2 text-[10px]">{a.vendor} / {a.model}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-300 font-bold">{a.match_count} CVE</span>
+                          {ransom && <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-600/25 text-red-200 font-bold uppercase">Ransomware</span>}
+                          {a.matches.slice(0, 4).map((m) => (
+                            <span key={m.cve_id} className="text-[9px] font-mono text-cyan-300/90 border border-cyan-500/25 rounded px-1"
+                                  title={`${m.product} — ${m.short_description || ""}${m.match_type === "vendor_category" ? " (match per categoria vendor)" : ""}`}>
+                              {m.cve_id}
+                            </span>
+                          ))}
+                          {a.match_count > 4 && <span className="text-[9px] text-[var(--text-muted)]">+{a.match_count - 4}</span>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-[10px] whitespace-nowrap">
+                        <span className={overdue ? "text-red-400 font-bold" : "text-[var(--text-muted)]"}>{first?.due_date || "—"}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
+
       {/* KEV browser */}
       <Section title="Catalogo CISA KEV (CVE attivamente sfruttate)" icon={Virus}>
         <div className="flex gap-2 mb-3">
@@ -391,24 +457,33 @@ export default function OsintPage() {
                 <th className="text-left px-3 py-2">CVE</th>
                 <th className="text-left px-3 py-2">Vendor / Prodotto</th>
                 <th className="text-left px-3 py-2">Vulnerabilità</th>
+                <th className="text-left px-3 py-2">Azione richiesta</th>
                 <th className="text-left px-3 py-2">Aggiunta</th>
+                <th className="text-left px-3 py-2">Scadenza</th>
                 <th className="text-left px-3 py-2">Ransomware</th>
               </tr>
             </thead>
             <tbody>
-              {kev.map((k) => (
-                <tr key={k.cve_id} className="border-t border-[var(--bg-border)]">
-                  <td className="px-3 py-2 font-mono text-cyan-300">{k.cve_id}</td>
+              {kev.map((k) => {
+                const overdue = k.due_date && new Date(k.due_date) < new Date();
+                return (
+                <tr key={k.cve_id} className="border-t border-[var(--bg-border)] align-top" data-testid={`osint-kev-row-${k.cve_id}`}>
+                  <td className="px-3 py-2 font-mono text-cyan-300 whitespace-nowrap">{k.cve_id}</td>
                   <td className="px-3 py-2">{k.vendor} / {k.product}</td>
-                  <td className="px-3 py-2 text-[10px] max-w-[280px] truncate">{k.name}</td>
-                  <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{k.date_added}</td>
+                  <td className="px-3 py-2 text-[10px] max-w-[240px] truncate" title={k.short_description || k.name}>{k.name}</td>
+                  <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[220px] truncate" title={k.required_action || ""}>{k.required_action || "—"}</td>
+                  <td className="px-3 py-2 text-[10px] text-[var(--text-muted)] whitespace-nowrap">{k.date_added}</td>
+                  <td className="px-3 py-2 text-[10px] whitespace-nowrap" title={overdue ? "Scadenza remediation superata" : ""}>
+                    <span className={overdue ? "text-red-400 font-bold" : "text-[var(--text-muted)]"}>{k.due_date || "—"}</span>
+                  </td>
                   <td className="px-3 py-2">
                     {String(k.ransomware).toLowerCase() === "known"
                       ? <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-300">SÌ</span>
                       : <span className="text-[10px] text-[var(--text-muted)]">—</span>}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -66,7 +66,55 @@ function Section({ title, count, children }) {
   );
 }
 
-function FirewallDetail({ fw }) {
+function WanConnectivity({ wt }) {
+  const [geo, setGeo] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (!wt?.public_ip) return;
+    axios.get(`${API}/api/external-monitor/geo-ip/${encodeURIComponent(wt.public_ip)}`)
+      .then((r) => alive && setGeo(r.data && !r.data.error ? r.data : null))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [wt?.public_ip]);
+
+  const r = wt.result || {};
+  const st = r.status;
+  const sc = st === "online" ? C.online : st === "offline" ? C.offline : st ? C.warn : C.muted;
+  const gwOk = r.gateway_ping?.reachable;
+
+  return (
+    <Section title="Connettività WAN · ISP">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2" data-testid="nebula-fw-wan-conn">
+        <div className="rounded border border-[var(--bg-border)] p-2">
+          <p className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">IP pubblico</p>
+          <p className="text-[12px] font-mono font-bold" style={{ color: sc }}>{wt.public_ip}</p>
+        </div>
+        <div className="rounded border border-[var(--bg-border)] p-2">
+          <p className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">Stato</p>
+          <p className="text-[12px] font-bold uppercase" style={{ color: sc }}>{st || "…"}</p>
+        </div>
+        <div className="rounded border border-[var(--bg-border)] p-2">
+          <p className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">Latenza</p>
+          <p className="text-[12px] font-mono font-bold text-[var(--text-primary)]">{r.ping?.latency_ms != null ? `${r.ping.latency_ms}ms` : "—"}</p>
+        </div>
+        <div className="rounded border border-[var(--bg-border)] p-2">
+          <p className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">Packet loss</p>
+          <p className="text-[12px] font-mono font-bold" style={{ color: (r.ping?.packet_loss_pct || 0) > 0 ? C.warn : C.online }}>
+            {r.ping?.packet_loss_pct != null ? `${r.ping.packet_loss_pct}%` : "—"}
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+        {r.gateway_ip && <KV k="Gateway ISP" v={`${r.gateway_ip}${r.gateway_ping?.latency_ms != null ? ` · ${r.gateway_ping.latency_ms}ms` : ""}`} color={gwOk ? C.online : C.offline} />}
+        {geo && <KV k="ISP" v={geo.isp} mono={false} color={C.online} />}
+        {geo && <KV k="ASN" v={geo.asn_name ? `${geo.asn} (${geo.asn_name})` : geo.asn} />}
+        {geo && <KV k="Località" v={[geo.city, geo.region, geo.country_code].filter(Boolean).join(", ")} mono={false} />}
+      </div>
+    </Section>
+  );
+}
+
+function FirewallDetail({ fw, wt }) {
   const online = fw.online_status === "ONLINE";
   const stColor = online ? C.online : C.offline;
   const ports = Array.isArray(fw.ports) ? fw.ports : [];
@@ -109,12 +157,15 @@ function FirewallDetail({ fw }) {
               style={{ borderColor: lineUp ? `${C.online}40` : `${C.warn}40`, background: lineUp ? `${C.online}0F` : `${C.warn}0F` }}
               data-testid="nebula-fw-public-ip">
           <Globe size={12} weight="bold" style={{ color: lineUp ? C.online : C.warn }} />
-          IP pubblico: <span className="font-mono font-bold">{fw.public_ip || "—"}</span>
+          IP pubblico: <span className="font-mono font-bold">{wt?.public_ip || fw.public_ip || "—"}</span>
         </span>
         <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
           Linea WAN: <span className="font-bold uppercase" style={{ color: lineUp ? C.online : C.muted }}>{fw.line_state || "n/d"}</span>
         </span>
       </div>
+
+      {/* Connettività WAN reale (da target Monitor WAN collegato) */}
+      {wt && <WanConnectivity wt={wt} />}
 
       {/* Metriche live */}
       {online && (
@@ -371,7 +422,7 @@ function FirewallDetail({ fw }) {
   );
 }
 
-export default function NebulaFirewalls({ clientId }) {
+export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
   const [firewalls, setFirewalls] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -422,6 +473,10 @@ export default function NebulaFirewalls({ clientId }) {
         {firewalls.map((fw) => {
           const online = fw.online_status === "ONLINE";
           const sc = online ? C.online : C.offline;
+          const wt = wanTargets.find((t) => t.linked_nebula_dev_id && t.linked_nebula_dev_id === fw.dev_id);
+          const pubIp = wt?.public_ip || fw.public_ip;
+          const wr = wt?.result;
+          const ispOk = wr?.gateway_ping?.reachable;
           return (
             <div
               key={fw.dev_id}
@@ -433,8 +488,14 @@ export default function NebulaFirewalls({ clientId }) {
             >
               <ShieldCheck size={14} weight="bold" style={{ color: sc }} />
               <span className="font-bold text-[var(--text-primary)]" data-testid="nebula-fw-name">{productName(fw)}</span>
-              {fw.public_ip && <span className="font-mono text-[var(--text-muted)] text-[10px]">{fw.public_ip}</span>}
+              {pubIp && <span className="font-mono text-[var(--text-muted)] text-[10px]">{pubIp}</span>}
               <span className="text-[8px] px-1 rounded bg-cyan-500/10 text-cyan-400">NEBULA</span>
+              {wr?.ping?.latency_ms != null && <span className="font-mono text-[var(--text-muted)] text-[10px]">{wr.ping.latency_ms}ms</span>}
+              {wr?.gateway_ping && (
+                <span className="text-[8px] px-1.5 py-0.5 rounded font-bold" style={{ color: ispOk ? C.online : C.offline, background: ispOk ? `${C.online}12` : `${C.offline}12` }}>
+                  ISP {ispOk ? "OK" : "DOWN"}
+                </span>
+              )}
               <span className="ml-auto font-mono font-bold uppercase" style={{ color: sc }}>{online ? "online" : (fw.online_status || "offline")}</span>
               <CaretRight size={12} weight="bold" className="text-[var(--text-muted)]" />
             </div>
@@ -454,7 +515,7 @@ export default function NebulaFirewalls({ clientId }) {
                   <span className="text-[10px] font-normal text-[var(--text-muted)]">· {active.site_name || active.site_id}</span>
                 </DialogTitle>
               </DialogHeader>
-              <FirewallDetail fw={active} />
+              <FirewallDetail fw={active} wt={wanTargets.find((t) => t.linked_nebula_dev_id && t.linked_nebula_dev_id === active.dev_id)} />
             </>
           )}
         </DialogContent>
