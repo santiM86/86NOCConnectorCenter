@@ -329,10 +329,18 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         if anchor is None:
             continue
         if kind == "site_power_down":
-            anchor[3] = ce._V(False, True, "critical", 96, "site_power_down",
-                "Firewall/gateway, connettore on-site e la quasi totalita' dei device "
-                "irraggiungibili contemporaneamente → SITO TOTALMENTE GIU' "
-                "(possibile MANCANZA DI CORRENTE o guasto WAN a monte).")
+            confirmed, ups_detail = await _ups_power_loss(db, cid)
+            if confirmed:
+                anchor[3] = ce._V(False, True, "critical", 99, "site_power_down",
+                    "SITO TOTALMENTE GIU' con MANCANZA DI CORRENTE CONFERMATA "
+                    f"({ups_detail} poco prima del blackout). Firewall/gateway, connettore "
+                    "on-site e la quasi totalita' dei device irraggiungibili.")
+                anchor[3]["power_confirmed"] = True
+            else:
+                anchor[3] = ce._V(False, True, "critical", 96, "site_power_down",
+                    "Firewall/gateway, connettore on-site e la quasi totalita' dei device "
+                    "irraggiungibili contemporaneamente → SITO TOTALMENTE GIU' "
+                    "(possibile MANCANZA DI CORRENTE o guasto WAN a monte).")
         else:
             anchor[3] = ce._V(False, True, "critical", 95, "site_isolated",
                 "La quasi totalita' dei device del sito e' irraggiungibile → SITO ISOLATO "
@@ -753,6 +761,47 @@ async def run_new_device_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 # Watchdog 4 — SITO GIU' / blackout (agent offline + WAN offline)
 # ---------------------------------------------------------------------------
 
+async def _ups_power_loss(db, client_id: str, minutes: int = 20):
+    """Ritorna (confirmed: bool, detail: str): True se un UPS del cliente
+    risulta 'su batteria' (rete elettrica assente) in una finestra recente.
+    Serve a PROMUOVERE un blackout a "MANCANZA CORRENTE CONFERMATA".
+
+    Proxy sui dati raccolti (metric_history: ups_charge_pct/ups_runtime_min):
+    su rete utility la carica resta ~100%; se scende sotto ~95% (o l'autonomia
+    e' finita/bassa) l'UPS sta erogando da batteria = corrente assente.
+    Gated dietro un blackout gia' confermato (agent+WAN giu'), quindi robusto.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    q = {"client_id": client_id,
+         "metric": {"$in": ["ups_charge_pct", "ups_runtime_min"]},
+         "ts": {"$gte": cutoff}}
+    latest_charge: Dict[str, float] = {}
+    latest_runtime: Dict[str, float] = {}
+    try:
+        async for d in db.metric_history.find(
+            q, {"_id": 0, "device_ip": 1, "metric": 1, "value": 1, "ts": 1}
+        ).sort("ts", 1):
+            ip = d.get("device_ip"); v = d.get("value")
+            if not ip or not isinstance(v, (int, float)):
+                continue
+            if d.get("metric") == "ups_charge_pct":
+                latest_charge[ip] = float(v)
+            else:
+                latest_runtime[ip] = float(v)
+    except Exception:  # noqa: BLE001
+        return False, ""
+    for ip, charge in latest_charge.items():
+        if charge < 95:
+            det = f"UPS {ip} su batteria (carica {charge:.0f}%"
+            rt = latest_runtime.get(ip)
+            det += f", autonomia ~{rt:.0f} min)" if rt is not None else ")"
+            return True, det
+    for ip, rt in latest_runtime.items():
+        if rt <= 30:
+            return True, f"UPS {ip} su batteria (autonomia residua ~{rt:.0f} min)"
+    return False, ""
+
+
 async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     """Emette UN alert critico per cliente quando l'agent on-site e' offline E
     la sonda WAN esterna del Center vede l'internet GIU' (blackout confermato da
@@ -792,15 +841,25 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             await db.site_blackout_state.update_one({"client_id": cid},
                 {"$set": {"last_seen_at": now.isoformat()}})
             continue
+        confirmed, ups_detail = await _ups_power_loss(db, cid)
+        if confirmed:
+            title = f"SITO GIU' — MANCANZA CORRENTE CONFERMATA: {cname}"
+            body = (f"Il sito del cliente {cname} risulta TOTALMENTE GIU' e la mancanza di "
+                    f"CORRENTE e' CONFERMATA: {ups_detail} rilevato poco prima del blackout. "
+                    f"L'agent on-site non risponde e la sonda WAN esterna vede l'internet "
+                    f"irraggiungibile. Tutti i dispositivi del sito sono offline.")
+        else:
+            title = f"SITO GIU' / possibile BLACKOUT: {cname}"
+            body = (f"Il sito del cliente {cname} risulta TOTALMENTE GIU': l'agent on-site "
+                    f"non risponde piu' (nessun heartbeat) E la sonda WAN esterna del Center "
+                    f"vede l'internet del cliente irraggiungibile. Due sorgenti indipendenti "
+                    f"concordi -> probabile MANCANZA DI CORRENTE o guasto WAN a monte. "
+                    f"Tutti i dispositivi del sito sono da considerarsi offline.")
         alert = _mk_alert(
-            cid, cname, "Sito", "", "site", "critical", "site_blackout",
-            f"SITO GIU' / possibile BLACKOUT: {cname}",
-            (f"Il sito del cliente {cname} risulta TOTALMENTE GIU': l'agent on-site "
-             f"non risponde piu' (nessun heartbeat) E la sonda WAN esterna del Center "
-             f"vede l'internet del cliente irraggiungibile. Due sorgenti indipendenti "
-             f"concordi -> probabile MANCANZA DI CORRENTE o guasto WAN a monte. "
-             f"Tutti i dispositivi del sito sono da considerarsi offline."),
+            cid, cname, "Sito", "", "site", "critical", "site_blackout", title, body,
         )
+        if confirmed:
+            alert["power_confirmed"] = True
         await insert_alert_if_emit(db, alert)
         await _dispatch_notification(db, cfg, alert)
         await db.site_blackout_state.update_one(

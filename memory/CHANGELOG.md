@@ -5097,3 +5097,9 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Frontend DeviceDetailPanel: DOMAIN_META.predictive = {label:"Guasto imminente", Icon:ChartLineUp} -> compare tra le prove correlate.
 - Self-test OK: RAID degradato->critical; temp 60->74C in 90min -> "soglia critica tra ~25 min" critical; UPS 15%/4min -> critical; recovery -> auto-resolve 0 attivi; diagnose_device: overall CRITICAL, primary=predictive.
 - NOTA: SMART attributi grezzi (settori riallocati/wear) NON sono raccolti (nessun OID nei device_profiles) -> predittivita disco basata su temperatura disco. Estensione SMART = futura (richiede OID agent/profilo).
+
+## 2026-06 — Catalogo Diagnosi + Conferma MANCANZA CORRENTE via UPS
+- routes/diagnosis_catalog.py: GET /api/diagnosis/catalog (fonte di verita): 37 situazioni su 7 domini, 7 certe 100%, tempi di rilevamento reali (liveness/hw ~60s, C2 2min, rogue 3min, traffic/CVE 5min, Datto 6h), 5 combinazioni trasversali. Pagina frontend DiagnosisCatalogPage.js + rotta /diagnosis-catalog + voce menu Operazioni.
+- alert_engine.py: _ups_power_loss(db,client_id) rileva UPS "su batteria" da metric_history (ups_charge_pct<95 o runtime<=30min in finestra 20min). Integrato in: (1) verdetto anchor site_power_down -> se UPS conferma diventa "MANCANZA CORRENTE CONFERMATA" conf 99 + flag power_confirmed; altrimenti generico "corrente o WAN" conf 96. (2) run_site_blackout_watchdog: titolo/msg alert promossi a "SITO GIU - MANCANZA CORRENTE CONFERMATA" con dettaglio UPS.
+- Distinzione chiave blackout: site_power_down = agent on-site giu + sonda WAN esterna giu (viste indipendenti concordi); site_isolated = agent ancora vivo ma device giu (guasto rete, NON corrente). Dedup: 1 solo alert aggregato, figli soppressi.
+- Self-test OK: _ups_power_loss caso batteria->True(70%,18min), rete->False, no-data->False; catalogo espone site_power_confirmed(99)/site_power_down(96)/site_isolated(97).
