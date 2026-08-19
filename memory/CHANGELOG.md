@@ -1,3 +1,20 @@
+# 2026-08-19 — KEV ↔ Asset: esposizione clienti a CVE attivamente sfruttate
+
+## Richiesta utente
+Rendere il catalogo KEV "azionabile": incrociare i CVE con vendor/modelli degli asset nel CMDB per vedere quali clienti sono esposti a una KEV attivamente sfruttata.
+
+## Backend (routes/osint.py)
+- Nuovo endpoint `GET /api/osint/kev/asset-exposure`: incrocia `cisa_kev` con gli asset a modello reale (`zyxel_devices` firewall + `managed_devices`). Match conservativo: vendor (token) + prodotto. Aggiunto match "vendor+categoria" per prodotti KEV generici (es. "Multiple Firewalls" → qualsiasi firewall del vendor). Ritorna per-asset i CVE, prodotto, scadenza, flag ransomware, match_type (specific/vendor_category). Isolamento per cliente via param client_id.
+
+## Frontend (OsintPage.js)
+- Nuovo pannello "I miei asset esposti a KEV": tabella Cliente / Dispositivo / Vendor·Modello / CVE KEV (badge conteggio + ransomware + chip CVE con tooltip descrizione) / Prima scadenza (rossa se superata).
+
+## Verifica (API + screenshot, dati reali)
+2 asset con modello analizzati → 1 esposto: Zyxel USG FLEX 700H (86BIT_Office) su 5 CVE KEV Zyxel firewall (CVE-2022-30525, 2023-28771, 2023-33009, 2023-33010, +1), flag Ransomware, scadenza 2022-06-06 evidenziata. HPE ProLiant iLO correttamente nessun match (KEV non ha ProLiant/iLO).
+
+---
+
+
 # 2026-08-19 — CISA KEV: arricchimento campi (Azione richiesta, Scadenza, Descrizione)
 
 ## Richiesta utente
