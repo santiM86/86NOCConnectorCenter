@@ -5137,3 +5137,12 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Fix post-review: (1) asset manuali ORFANI (IP non monitorato ma client_id match) ora creano entita; (2) PRUNING entita stale (device eliminati) a fine reconcile; (3) preserva anagrafica manuale (migrazione dati).
 - Test iter124: backend 10/10 PASS, frontend 100%. Self-test post-fix: rebuild idempotente 36 unita->35 entita stabili (merge su datto_uid), pruning ok.
 - BACKLOG: Fase 2 = grafo dipendenze (cmdb_relationships da LLDP/MAC/HyperV) + impact analysis; Fase 3 = aggancio Situation Engine (verdetto+impatto per entita) + report SLA/uptime.
+
+## 2026-06 — Grafo dipendenze + Impact Analysis (Fase 2 CMDB)
+- graph_builder.py: build_relationships(client) costruisce cmdb_relationships (src a monte -> dst a valle) da mac_connections (device->switch), lldp_neighbors (remote->local), Hyper-V (host->VM). Sostituzione atomica per cliente. build_all + indici.
+- compute_impact(entity_id): BFS sui figli (entita a valle) -> impacted_count, impacted_vital, lista con depth+rel_type. "Se cade X, cosa resta impattato".
+- Endpoint: POST /api/cmdb/entities/rebuild ora ricostruisce ANCHE il grafo; GET /api/cmdb/entities/{id}/impact; GET /api/cmdb/graph?client_id= (nodi+archi). Scheduler 5min esegue reconcile+build_all.
+- Frontend EntityInventoryPage: sezione "Impatto se cade" nel pannello dettaglio (conteggio a valle + vitali + lista con freccia depth e rel_type).
+- Self-test OK: rebuild -> 2 relazioni (lldp), impact CHASW-A -> FORTIGATE-FW depth1; foglia -> 0. Frontend compila.
+- NOTA: topologia preview sparsa (mac_connections=2, lldp=8); in produzione con LLDP/MAC completi le catene di impatto saranno ricche. Direzione LLDP e euristica (remote=monte); mac_connections e piu affidabile.
+- BACKLOG: Fase 2b mappa grafica interattiva; migliorare inferenza direzione LLDP (chi e switch/firewall); Fase 3 aggancio Situation Engine (verdetto+impatto).

@@ -1095,6 +1095,8 @@ async def startup_event():
         async def _cmdb_reconcile_tick():
             try:
                 await _er.reconcile_all(db)
+                import graph_builder as _gb
+                await _gb.build_all(db)
             except Exception as _e:  # noqa: BLE001
                 logger.warning(f"cmdb reconcile tick failed: {_e}")
 

@@ -22,8 +22,10 @@ function SourceBadge({ s }) {
 
 function EntityDetail({ id, onClose }) {
   const [ent, setEnt] = useState(null);
+  const [impact, setImpact] = useState(null);
   useEffect(() => {
     axios.get(`${API}/cmdb/entities/${id}`).then(r => setEnt(r.data)).catch(() => setEnt(null));
+    axios.get(`${API}/cmdb/entities/${id}/impact`).then(r => setImpact(r.data)).catch(() => setImpact(null));
   }, [id]);
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -74,6 +76,32 @@ function EntityDetail({ id, onClose }) {
             </div>
           )}
           <div className="text-[10px] text-[var(--text-muted)] font-mono">entity_id: {ent.entity_id}</div>
+
+          {impact && impact.impacted_count > 0 && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3" data-testid="entity-impact">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-red-400">⚠ Impatto se cade</span>
+                <span className="text-[10px] font-mono bg-[var(--bg-deep)] px-1.5 py-0.5 rounded text-red-300" data-testid="entity-impact-count">
+                  {impact.impacted_count} a valle{impact.impacted_vital ? ` · ${impact.impacted_vital} vitali` : ""}
+                </span>
+              </div>
+              <div className="space-y-1 max-h-52 overflow-y-auto">
+                {impact.impacted.map(d => (
+                  <div key={d.entity_id} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-4 text-[var(--text-muted)] font-mono">{"›".repeat(Math.min(d.depth, 3))}</span>
+                    <span className="text-[var(--text-primary)] flex-1 truncate">{d.name}{d.is_vital && <span className="text-amber-400 ml-1">★</span>}</span>
+                    <span className="font-mono text-[var(--text-muted)]">{d.primary_ip}</span>
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-deep)] text-[var(--text-muted)]">{d.rel_type}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {impact && impact.impacted_count === 0 && (
+            <div className="text-[11px] text-[var(--text-muted)]" data-testid="entity-impact-none">
+              Nessuna entità nota a valle (foglia della topologia o topologia non ancora mappata).
+            </div>
+          )}
         </div>
       )}
       </div>
