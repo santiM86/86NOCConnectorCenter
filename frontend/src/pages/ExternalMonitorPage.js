@@ -60,6 +60,7 @@ export default function ExternalMonitorPage() {
   const [editTarget, setEditTarget] = useState(null);  // null oppure target da modificare
   const [editForm, setEditForm] = useState({ client_id: "", label: "", device_type: "firewall", public_ip: "", gateway_ip: "", check_ports: "443", check_ping: false, backup_enabled: false, backup_label: "", backup_public_ip: "", backup_gateway_ip: "" });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [nebulaFws, setNebulaFws] = useState([]);  // firewall Nebula del cliente del target in edit
   // Auto-target: IP pubblico WAN auto-rilevato dagli agent del cliente selezionato.
   const [detectedIp, setDetectedIp] = useState(null); // {public_ip, seen_at, hostname} | null
 
@@ -128,7 +129,15 @@ export default function ExternalMonitorPage() {
       backup_label: t.backup_label || "",
       backup_public_ip: t.backup_public_ip || "",
       backup_gateway_ip: t.backup_gateway_ip || "",
+      linked_nebula_dev_id: t.linked_nebula_dev_id || "",
+      linked_nebula_site_id: t.linked_nebula_site_id || "",
     });
+    setNebulaFws([]);
+    if (t.client_id) {
+      axios.get(`${API}/clients/${encodeURIComponent(t.client_id)}/zyxel/devices`)
+        .then(r => setNebulaFws((r.data?.devices || []).filter(d => d.device_type === "firewall")))
+        .catch(() => setNebulaFws([]));
+    }
   };
 
   const saveEdit = async () => {
@@ -151,6 +160,8 @@ export default function ExternalMonitorPage() {
         backup_gateway_ip: editForm.backup_gateway_ip || null,
         backup_label: editForm.backup_label || null,
         backup_enabled: !!(editForm.backup_public_ip && editForm.backup_enabled),
+        linked_nebula_dev_id: editForm.linked_nebula_dev_id || "",
+        linked_nebula_site_id: editForm.linked_nebula_site_id || "",
       };
       await axios.put(`${API}/external-monitor/targets/${editTarget.id}`, payload);
       toast.success("Target aggiornato");
@@ -606,6 +617,37 @@ export default function ExternalMonitorPage() {
                 <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">Abilita Ping ICMP</span>
               </label>
             </div>
+            {/* Collegamento firewall Nebula (dedup + arricchimento) */}
+            {editForm.device_type === "firewall" && (
+              <div className="col-span-2 rounded-md border border-cyan-500/25 bg-cyan-500/[0.04] p-3 space-y-1">
+                <Label className="text-[9px] uppercase tracking-widest text-cyan-300 flex items-center gap-1">
+                  <LinkIcon size={10} weight="bold" /> Collega a firewall Zyxel Nebula
+                </Label>
+                <p className="text-[9px] text-[var(--text-muted)] mb-1">
+                  Unifica questo target con il firewall Nebula del cliente: niente doppioni, dati dispositivo + connettività in un'unica scheda.
+                </p>
+                <Select
+                  value={editForm.linked_nebula_dev_id || "__none__"}
+                  onValueChange={(v) => {
+                    if (v === "__none__") { setEditForm(p => ({ ...p, linked_nebula_dev_id: "", linked_nebula_site_id: "" })); return; }
+                    const fw = nebulaFws.find(d => d.dev_id === v);
+                    setEditForm(p => ({ ...p, linked_nebula_dev_id: v, linked_nebula_site_id: fw?.site_id || "" }));
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]" data-testid="edit-target-nebula-select">
+                    <SelectValue placeholder={nebulaFws.length ? "Seleziona firewall Nebula..." : "Nessun firewall Nebula per questo cliente"} />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[var(--bg-panel)] border-[var(--bg-border)]">
+                    <SelectItem value="__none__" className="text-xs">— Nessun collegamento —</SelectItem>
+                    {nebulaFws.map(d => (
+                      <SelectItem key={d.dev_id} value={d.dev_id} className="text-xs">
+                        {d.model || d.name} · {d.site_name || d.site_id} {d.sn ? `· ${d.sn}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {/* ===== Linea di backup ===== */}
             <div className="col-span-2 rounded-md border border-amber-500/25 bg-amber-500/[0.04] p-3 space-y-2">
               <label className="flex items-center gap-2 cursor-pointer select-none" data-testid="edit-backup-enabled-toggle"
@@ -677,9 +719,14 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-[var(--text-primary)] truncate">{t.label}</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-[var(--text-primary)] truncate">{t.nebula?.model || t.label}</span>
             <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase" style={{ color: st.color, background: `${st.color}15` }}>{st.label}</span>
+            {t.nebula && (
+              <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-500/12 text-cyan-400 flex items-center gap-1" data-testid={`nebula-chip-${t.id}`}>
+                NEBULA {t.nebula.online_status === "ONLINE" ? "· ON" : "· OFF"}
+              </span>
+            )}
             {r?.line_state === "failover" && (
               <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase bg-amber-500/15 text-amber-400" data-testid={`line-failover-${t.id}`}>FAILOVER</span>
             )}
@@ -687,8 +734,12 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
               <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase bg-red-500/15 text-red-400" data-testid={`line-isolated-${t.id}`}>ISOLATO</span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+            {t.nebula?.sn && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N {t.nebula.sn}</span>}
+            {t.nebula?.ports_total > 0 && (
+              <span className="text-[9px] font-mono text-emerald-400/80">porte {t.nebula.ports_up}/{t.nebula.ports_total}</span>
+            )}
             {r?.backup && (
               <span className="text-[9px] font-mono flex items-center gap-1" title="Linea di backup" data-testid={`backup-badge-${t.id}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${r.backup.status === "online" ? "bg-emerald-400" : "bg-red-400"}`}></span>

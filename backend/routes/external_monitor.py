@@ -38,6 +38,9 @@ class WanTarget(BaseModel):
     backup_public_ip: Optional[str] = None
     backup_gateway_ip: Optional[str] = None
     backup_enabled: bool = False
+    # Collegamento manuale a un firewall Zyxel Nebula (dedup + arricchimento).
+    linked_nebula_dev_id: Optional[str] = None
+    linked_nebula_site_id: Optional[str] = None
 
 
 class WanTargetUpdate(BaseModel):
@@ -55,6 +58,9 @@ class WanTargetUpdate(BaseModel):
     backup_public_ip: Optional[str] = None
     backup_gateway_ip: Optional[str] = None
     backup_enabled: Optional[bool] = None
+    # "" o dev_id: collega/scollega manualmente un firewall Nebula
+    linked_nebula_dev_id: Optional[str] = None
+    linked_nebula_site_id: Optional[str] = None
 
 
 class TestConnectionRequest(BaseModel):
@@ -651,12 +657,45 @@ async def startup():
     await start_probe_scheduler()
 
 
+async def _attach_nebula(targets: list) -> list:
+    """Arricchisce i target WAN collegati manualmente a un firewall Zyxel Nebula
+    con i dati del dispositivo (modello, S/N, stato online, porte, metriche)."""
+    dev_ids = [t.get("linked_nebula_dev_id") for t in targets if t.get("linked_nebula_dev_id")]
+    if not dev_ids:
+        return targets
+    docs = await db.zyxel_devices.find(
+        {"dev_id": {"$in": dev_ids}, "device_type": "firewall"},
+        {"_id": 0, "dev_id": 1, "name": 1, "model": 1, "sn": 1, "mac": 1,
+         "site_name": 1, "site_id": 1, "online_status": 1, "cpu_usage": 1,
+         "mem_usage": 1, "sessions": 1, "ports": 1, "public_ip": 1, "firmware": 1},
+    ).to_list(200)
+    by_id = {d["dev_id"]: d for d in docs}
+    for t in targets:
+        d = by_id.get(t.get("linked_nebula_dev_id"))
+        if not d:
+            continue
+        ports = d.get("ports") or []
+        t["nebula"] = {
+            "dev_id": d["dev_id"], "name": d.get("name"), "model": d.get("model"),
+            "sn": d.get("sn"), "mac": d.get("mac"),
+            "site_name": d.get("site_name") or d.get("site_id"),
+            "online_status": d.get("online_status"),
+            "cpu_usage": d.get("cpu_usage"), "mem_usage": d.get("mem_usage"),
+            "sessions": d.get("sessions"), "mgmt_ip": d.get("public_ip"),
+            "firmware": d.get("firmware"),
+            "ports_total": len(ports),
+            "ports_up": sum(1 for p in ports if p.get("status") == "up"),
+        }
+    return targets
+
+
 @router.get("/targets")
 async def list_targets(client_id: str = None, current_user: dict = Depends(get_current_user)):
     query = {}
     if client_id:
         query["client_id"] = client_id
     targets = await db.wan_targets.find(query, {"_id": 0}).to_list(500)
+    targets = await _attach_nebula(targets)
     return {"targets": targets}
 
 
@@ -728,6 +767,7 @@ async def get_all_status(current_user: dict = Depends(get_current_user)):
         r["client_name"] = cmap.get(r["client_id"], r["client_id"])
     for t in targets:
         t["client_name"] = cmap.get(t.get("client_id"), t.get("client_id"))
+    targets = await _attach_nebula(targets)
 
     # v2026-02-14: include `targets` cosi' la WanTab di ClientOverviewPage
     # puo' filtrare per client_id (prima ricavava la lista solo da `results`

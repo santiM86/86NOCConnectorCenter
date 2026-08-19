@@ -708,13 +708,13 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
         <div className="space-y-2">
           {/* Firewall Nebula fissato in cima alla WAN */}
           <SafeBoundary label="Firewall Nebula">
-            <NebulaFirewalls clientId={clientId} />
+            <NebulaFirewalls clientId={clientId} wanTargets={wanTargets} />
           </SafeBoundary>
-          {/* WAN */}
-          {wanTargets.length > 0 && (
+          {/* WAN — esclude i target collegati a un firewall Nebula (mostrati sopra, no doppioni) */}
+          {wanTargets.filter(t => !t.linked_nebula_dev_id).length > 0 && (
             <div className="space-y-1.5">
               <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)]">Connettivita' WAN</p>
-              {wanTargets.map(t => {
+              {wanTargets.filter(t => !t.linked_nebula_dev_id).map(t => {
                 const r = t.result;
                 const sc = getStatusColor(r?.status);
                 return (

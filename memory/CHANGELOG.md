@@ -1,3 +1,23 @@
+# 2026-08-19 — WAN + Zyxel: unificazione firewall (dedup) + arricchimento Nebula
+
+## Richiesta utente
+Riprogettare la pagina WAN esterna, importare i dati Nebula per i firewall Zyxel (coerenza), mostrare sempre ISP + IP pubblico in Zyxel, eliminare i doppioni in "Infrastruttura di Rete". Collegamento manuale via dropdown.
+
+## Backend (external_monitor.py)
+- WanTarget/WanTargetUpdate: nuovi campi `linked_nebula_dev_id`, `linked_nebula_site_id` (collegamento manuale; "" = scollega).
+- Helper `_attach_nebula`: arricchisce i target collegati con dati zyxel_devices (model, sn, mac, online_status, cpu/mem/sessioni, mgmt_ip, firmware, ports_up/total). Applicato a GET /targets e /status.
+
+## Frontend
+- ExternalMonitorPage (Monitor WAN): dropdown "Collega a firewall Zyxel Nebula" nel dialog edit (carica firewall del cliente); DeviceCard arricchita con nome prodotto (model), badge NEBULA·ON/OFF, S/N, porte up/total.
+- NebulaFirewalls.jsx: prop `wanTargets`; riga mostra IP pubblico REALE (dal target collegato) + latenza + ISP OK/DOWN; dialog: sezione "Connettività WAN · ISP" (IP pubblico, stato, latenza, packet loss, gateway, ISP/ASN/località via geo-ip).
+- ClientOverviewPage: passa wanTargets a NebulaFirewalls; "Connettività WAN" ESCLUDE i target collegati → niente doppioni.
+
+## Verifica (screenshot + API, cliente da3d6e40)
+Dedup OK (il firewall collegato sparisce da Connettività WAN, resta solo il router). Monitor WAN: riga con NEBULA·ON, S/N, porte 4/14. Dialog: ISP "Google LLC" AS15169, IP pubblico 8.8.8.8. PUT link/unlink 200 e arricchimento coerente.
+
+---
+
+
 # 2026-08-19 — CMDB: fusione client firewall Nebula in Entity Resolution
 
 ## Richiesta utente
