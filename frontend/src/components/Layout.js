@@ -49,6 +49,7 @@ import {
   Heartbeat,
   Cpu,
   Desktop,
+  Cube,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,6 +95,8 @@ const navConfig = [
       { path: "/snmp-traps", icon: Pulse, label: "SNMP Traps", roles: ["admin", "operator"] },
       { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
       { path: "/intelligence", icon: Brain, label: "NOC Intelligence", roles: ["admin", "operator"] },
+      { path: "/diagnosis-catalog", icon: ListChecks, label: "Catalogo Diagnosi", roles: ["admin", "operator", "viewer"] },
+      { path: "/cmdb-entities", icon: Cube, label: "Inventario Unificato", roles: ["admin", "operator", "viewer"] },
       { path: "/channel-health", icon: Heartbeat, label: "Channel Health iLO", roles: ["admin", "operator"] },
       { path: "/maintenance", icon: CalendarBlank, label: "Manutenzione", roles: ["admin", "operator"] },
       { path: "/reports", icon: FileText, label: "Report PDF", roles: ["admin", "operator"] },

@@ -1,0 +1,34 @@
+{
+  "summary": "Tested new CMDB Unified Inventory / Entity Resolution feature end-to-end. Backend: 10/10 pytest cases pass (auth 403 without JWT, rebuild all + per-client, list schema, 86bitserver merge datto+monitoring with datto_uid, source filter, detail 200 + 404, idempotency across 2 extra rebuilds with stable entity_ids). Verified in Mongo: cmdb_entities=35, cmdb_identity_keys=97 with unique index (client_id,key_type,key_value). Frontend: login+2FA TOTP, sidebar 'Inventario Unificato' navigates to /cmdb-entities, table renders 35 rows, row 10.30.0.201 (86bitserver) opens detail panel showing badges 'Datto RMM'+'Monitoraggio', identity keys (Hostname/Datto UID/IP, client_id prefix stripped correctly), close works, 'Ricostruisci' rebuilds and reloads list (35 -> 35, no duplication). No console/API errors on the page.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/cmdb-entities", "issues": [
+        "Detail slide-over panel has no backdrop/overlay and no click-outside or ESC close (only X button); it covers the 'Fonti fuse' column and the 'Ricostruisci' button while open.",
+        "Page has no client selector nor a 'Cliente' column: GET /api/cmdb/entities is called without client_id so in a multi-tenant install all clients' assets are mixed in one flat list with no way to tell them apart or filter (backend already supports client_id/source query params).",
+        "No toast/feedback after 'Ricostruisci' completes (only the spinner on the button); with 35 unchanged rows the user gets no confirmation."
+      ]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_cmdb_entities_iter124.py", "/app/test_reports/pytest/iter124_cmdb.xml"],
+  "action_items": [
+    "Optional UX: add client filter / Cliente column on EntityInventoryPage (backend params already exist).",
+    "Optional UX: add backdrop + ESC/click-outside close for entity-detail-panel and success toast after rebuild."
+  ],
+  "critical_code_review_comments": [
+    "reconcile_client() does 1 find_one + N upserts per unit sequentially (~4 round-trips per asset); at thousands of assets per client the 5-min scheduler tick may overlap itself. Consider bulk_write and/or a run lock.",
+    "_collect_units keys units by IP only: ilo_telemetry and cmdb_assets are merged only if the IP already exists in units (`ip not in units`), so a manual CMDB asset whose IP is not monitored is silently dropped from the unified inventory.",
+    "cmdb_entities are never pruned: if a device is deleted from managed_devices the entity remains forever (no stale/last_seen flag or deletion), so the inventory can drift upward over time.",
+    "GET /api/cmdb/entities has no tenant scoping on current_user — any authenticated viewer can list every client's assets by omitting client_id (other routes in this app enforce client scoping); verify this matches intended RBAC."
+  ],
+  "updated_files": ["/app/backend/tests/test_cmdb_entities_iter124.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None — used existing data for client da3d6e40-b3e5-4d46-9787-dde328a3aa36.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works, /api/auth/login -> /api/auth/verify-2fa)",
+  "context_for_next_testing_agent": "Regression file /app/backend/tests/test_cmdb_entities_iter124.py covers all 3 CMDB entity endpoints incl. idempotency; it computes TOTP with pyotp. Frontend flow: login -> 2fa-code-input -> nav-item-cmdb-entities -> entity-row-<ip> -> entity-detail-panel. Note total cmdb_entities in DB = 35 (all belong to the sample client), while the dev note mentioned 36 — no duplicate/extra entity observed after 3 rebuilds.",
+  "rca_of_the_issue": "N/A — no functional defects found; only UX/robustness observations listed above."
+}

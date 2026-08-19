@@ -282,6 +282,9 @@ from routes.auth import router as auth_router
 from routes.admin import router as admin_router
 from routes.clients import router as clients_router
 from routes.devices import router as devices_router
+from routes.situation import router as situation_router
+from routes.diagnosis_catalog import router as diagnosis_catalog_router
+from routes.cmdb_entities import router as cmdb_entities_router
 from routes.alerts import router as alerts_router
 from routes.audit_routes import router as audit_router
 from routes.vault import router as vault_router
@@ -350,6 +353,9 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(clients_router)
 app.include_router(devices_router)
+app.include_router(situation_router)
+app.include_router(diagnosis_catalog_router)
+app.include_router(cmdb_entities_router)
 app.include_router(alerts_router)
 app.include_router(audit_router)
 app.include_router(vault_router)
@@ -1157,6 +1163,31 @@ async def startup_event():
         logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
+
+    # CMDB Entity Resolution — reconcile periodico (5 min) + primo run a +60s
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _CmdbSched
+        from apscheduler.triggers.interval import IntervalTrigger as _CmdbTrig
+        import entity_resolver as _er
+        cmdb_scheduler = _CmdbSched()
+
+        async def _cmdb_reconcile_tick():
+            try:
+                await _er.reconcile_all(db)
+                import graph_builder as _gb
+                await _gb.build_all(db)
+            except Exception as _e:  # noqa: BLE001
+                logger.warning(f"cmdb reconcile tick failed: {_e}")
+
+        cmdb_scheduler.add_job(
+            _cmdb_reconcile_tick, trigger=_CmdbTrig(minutes=5), id="cmdb_reconcile_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+            max_instances=1, coalesce=True,
+        )
+        cmdb_scheduler.start()
+        logger.info("CMDB entity-resolution scheduler started (interval: 5m)")
+    except Exception as e:
+        logger.error(f"Failed to start CMDB scheduler: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

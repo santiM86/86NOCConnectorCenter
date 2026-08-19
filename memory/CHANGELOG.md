@@ -1,3 +1,24 @@
+# 2026-08-19 — NEBULA: Scheda Firewall in cima alla WAN + fix endpoint porte (VALIDATO PROD)
+
+## Richiesta utente
+Mostrare i firewall Zyxel Nebula fissati in cima alla sezione WAN dell'overview cliente con scheda dettagliata (IP pubblico, stato linea, S/N, porte, traffico, NAT). "Valida Porte in Produzione".
+
+## Fix critico backend (routes/zyxel_nebula.py)
+- Endpoint porte ERRATO (`port-status`/`ports`) → corretto in `ports-status` (endpoint reale Nebula), campi reali `portNumber`/`portGroup`/`linkSpeed`. Status link derivato da `linkSpeed` via nuovo helper `_port_link_status`.
+- Aggiunto fetch `interface-settings` → `wan_interfaces`, `public_ip`, `line_state`.
+- Aggiunto fetch `nat-settings` → `nat_rules` (virtualServer + oneToOne).
+
+## Frontend
+- Nuovo componente `/app/frontend/src/components/NebulaFirewalls.jsx` (GET /api/clients/{id}/zyxel/devices, filtra firewall, auto-hide se assenti, refresh 30s). Titolo usa `model` se `name`==MAC.
+- Montato in `ClientOverviewPage.js` dentro `SafeBoundary`, in cima alla WAN (pannello Infrastruttura di Rete).
+
+## Validazione (iteration_125.json)
+- Backend 8/8 pytest OK, frontend 100%. Firewall reale cliente da3d6e40: 14 porte reali (up/down coerenti con linkSpeed), public_ip 192.168.45.2, line_state up, CPU 5%/Mem 39%/Sess 1156. Nessun crash/blank.
+- Note: `portGroup` assente nella risposta del USG FLEX 700H (group=null); `nat_rules` vuoto sul FW reale (rendering NAT non testabile live).
+
+---
+
+
 # 2026-07-29 — DEVOPS: Auto-set "latest override" sul Center a fine release
 
 ## Richiesta utente
@@ -5080,3 +5101,89 @@ enrichment IP negli alert esistenti con badge reputazione.
 - .gitignore: ricostruito da 2890 righe corrotte (blocco .env ripetuto ~300 volte) a 83 righe pulite. I file .env NON sono più ignorati (richiesto dal deploy Emergent).
 - deployment_agent: ora status=PASS, destructive_db_startup_confirmed=false, gitignore_blocks_required_files=false, findings=[].
 - Verificato end-to-end: login info@86bit.it -> requires_2fa -> verify-2fa -> token pieno + refresh_token (JWT persistente stabile).
+
+## 2026-06 — Situation Engine (verdetto unico per dispositivo) — Fase 1+2
+- backend/situation_engine.py: diagnose_device() fonde raggiungibilita (correlation_engine, evidence fusion) + rollup alert attivi per dominio (hardware/backup/security/performance/rete) agganciati per device_ip O device_name -> UN verdetto {overall_state, primary{situation IT, root_cause, confidence}, recommended_action, evidence[], evidence_by_domain}. Primario = liveness se DOWN, altrimenti dominio piu grave (peso security>reachability>hardware>backup>performance>rete).
+- diagnose_client(): counts device + client_situations[] che AGGREGA gli alert client-level per source_type (es. backup x50 in 1 voce) con runbook e client_situation_counts. Classificazione dominio con longest-prefix match.
+- routes/situation.py: GET /api/devices/by-ip/{ip}/diagnosis?client_id=  e  GET /api/clients/{id}/diagnosis (auth JWT). Registrati in server.py.
+- Frontend DeviceDetailPanel.js: card "Diagnosi" (DiagnosisSection) come PRIMO elemento del pannello (indipendente da /network/device-detail), con stato colorato, certezza %, azione consigliata, prove correlate per dominio, pallini segnali (PING/L2/Datto/WAN). AbortController + placeholder errore.
+- Fix pre-esistente: rimosso blocco SNMP in EndpointInfo che usava detail/clientId fuori scope (ReferenceError/crash su Discovery).
+- Test: iter122 backend 15/15 PASS (fusione trasversale validata con alert temporanei), iter123 frontend 100% sui 3 scenari P0 (card presente anche su device-detail 404, in cima).
+- BACKLOG aperto: (P1) colonna STATO DevicesPage contraddice il verdetto Situation Engine -> aggancia /api/devices a compute_status (refactor liveness gia in roadmap). (P2) scrollIntoView del pannello per righe in fondo alla lista. (P3) Fase 3 predittivita (trend temp/SMART/UPS/RAID -> guasto imminente).
+
+## 2026-06 — Diagnosi Predittiva (Fase 3): situazioni "GUASTO IMMINENTE"
+- backend/predictive.py: evaluate_predictive_alerts() rileva PRIMA del down: (1) RAID degradato/crashed via vendor_metrics raidStatus(11/12)/systemStatus(2) -> critical; (2) trend TEMPERATURA e temperatura DISCHI (regressione lineare su metric_history, proietta ETA alla soglia critica: <=1h critical, <=6h high; fallback vicinanza-soglia); (3) batteria UPS (autonomia<=5min o carica<=20% critical; carica<=60% in calo o su-batteria high). Alert source_type predictive_* deduplicati e AUTO-RISOLTI al ripristino.
+- Aggancio in routes/agent_ws.py (bridge SNMP): dopo evaluate_hardware_alerts -> record_metrics (storicizza temp/disk/ups) + evaluate_predictive_alerts. Best-effort try/except.
+- situation_engine.py: nuovo dominio "predictive" (peso 6, sotto security 7, sopra reachability 5), runbook per predictive_raid/temp/ups. Il verdetto unico rende primaria la situazione predittiva quando il device e UP.
+- Frontend DeviceDetailPanel: DOMAIN_META.predictive = {label:"Guasto imminente", Icon:ChartLineUp} -> compare tra le prove correlate.
+- Self-test OK: RAID degradato->critical; temp 60->74C in 90min -> "soglia critica tra ~25 min" critical; UPS 15%/4min -> critical; recovery -> auto-resolve 0 attivi; diagnose_device: overall CRITICAL, primary=predictive.
+- NOTA: SMART attributi grezzi (settori riallocati/wear) NON sono raccolti (nessun OID nei device_profiles) -> predittivita disco basata su temperatura disco. Estensione SMART = futura (richiede OID agent/profilo).
+
+## 2026-06 — Catalogo Diagnosi + Conferma MANCANZA CORRENTE via UPS
+- routes/diagnosis_catalog.py: GET /api/diagnosis/catalog (fonte di verita): 37 situazioni su 7 domini, 7 certe 100%, tempi di rilevamento reali (liveness/hw ~60s, C2 2min, rogue 3min, traffic/CVE 5min, Datto 6h), 5 combinazioni trasversali. Pagina frontend DiagnosisCatalogPage.js + rotta /diagnosis-catalog + voce menu Operazioni.
+- alert_engine.py: _ups_power_loss(db,client_id) rileva UPS "su batteria" da metric_history (ups_charge_pct<95 o runtime<=30min in finestra 20min). Integrato in: (1) verdetto anchor site_power_down -> se UPS conferma diventa "MANCANZA CORRENTE CONFERMATA" conf 99 + flag power_confirmed; altrimenti generico "corrente o WAN" conf 96. (2) run_site_blackout_watchdog: titolo/msg alert promossi a "SITO GIU - MANCANZA CORRENTE CONFERMATA" con dettaglio UPS.
+- Distinzione chiave blackout: site_power_down = agent on-site giu + sonda WAN esterna giu (viste indipendenti concordi); site_isolated = agent ancora vivo ma device giu (guasto rete, NON corrente). Dedup: 1 solo alert aggregato, figli soppressi.
+- Self-test OK: _ups_power_loss caso batteria->True(70%,18min), rete->False, no-data->False; catalogo espone site_power_confirmed(99)/site_power_down(96)/site_isolated(97).
+
+## 2026-06 — Avviso anticipato UPS su batteria (early warning blackout)
+- predictive.py _eval_ups riscritto a TIER su un unico dedup key predictive_ups (una sola notifica che ESCALA):
+  - Appena su batteria (carica <99% e trend NON in salita; senza storia richiede <96%) -> severity HIGH, titolo "UPS SU BATTERIA — possibile mancanza corrente" con autonomia stimata ("il sito potrebbe spegnersi tra ~N min"). Avviso PRIMA che il sito cada.
+  - Escala a CRITICAL (autonomia <=5min o carica <=20%) -> "UPS in esaurimento, spegnimento imminente".
+  - Auto-resolve quando la carica torna ~100% (rete ripristinata).
+- Notifica via _dispatch_notification (Telegram/WebPush) automatica.
+- FIX: rimosso uso di upsEstimatedMinutesRemaining come indicatore di "su batteria" (e autonomia batteria, presente anche su rete -> falsi positivi). Indicatore certo = carica che cala.
+- Catalogo aggiornato: predictive_ups = "UPS su batteria -> esaurimento" (early high -> critical).
+- Self-test OK: rete 99%/40min->nessun alert; discesa 100->98 slope neg->HIGH early; 15%/4min->CRITICAL; 100%->resolve.
+
+## 2026-06 — Evento PRE-BLACKOUT (conferma corrente in tempo reale)
+- predictive.py: quando lUPS va su batteria (_eval_ups on_battery), registra/aggiorna un marker persistente in collection pre_blackout_events {client_id, device_ip, on_battery_since, last_seen_at, charge, runtime, detail}. Cancellato al ritorno su rete (_clear_pre_blackout). Indice TTL 2h (auto-pulizia eventi non recuperati) + unique (client_id,device_ip), creati best-effort al primo uso.
+- alert_engine._ups_power_loss: consulta PRIMA pre_blackout_events (last_seen entro 20min) poi fallback a metric_history. Cosi il blackout (site_power_down anchor + watchdog) viene etichettato "MANCANZA CORRENTE CONFERMATA" in TEMPO REALE gia dal primo secondo del down, ANCHE se lUPS si e spento e non riporta piu (levento persiste lultimo stato noto).
+- Self-test OK: baseline->no; UPS su batteria->evento registrato; UPS spento (nessuna metric fresca)->blackout CONFERMATO via evento; recovery->evento cancellato + non confermato.
+
+## 2026-06 — Cronologia evento nel messaggio blackout (Telegram)
+- alert_engine._blackout_timeline(db,client_id,down_at): legge pre_blackout_events e costruisce la timeline "HH:MM UPS su batteria -> HH:MM SITO GIU: MANCANZA CORRENTE CONFERMATA" in ora locale IT (Europe/Rome via zoneinfo, fallback UTC). Helper _fmt_local.
+- Integrata (append al messaggio) in ENTRAMBI i punti che dichiarano il blackout confermato: verdetto corr_site_power_down (run_vital_watchdog) e alert del run_site_blackout_watchdog. Il messaggio Telegram/WebPush ora include la cronologia completa in un unico avviso.
+- Self-test OK: evento pre-blackout (batteria da 5min) -> genera "14:16 UPS su batteria (carica 82%, autonomia ~22min) -> 14:21 SITO GIU: MANCANZA CORRENTE CONFERMATA".
+
+## 2026-06 — Messaggio di chiusura blackout con durata disservizio (SLA)
+- alert_engine.run_site_blackout_watchdog: ridisegnato il lifecycle. In sezione 1 registro started_at DUREVOLE (setOnInsert) per OGNI cliente in blackout, sopravvive anche al path corr (lo state NON viene piu cancellato quando subentra corr, solo unset alert_id). Salvo power_confirmed nello state.
+- Sezione 2 (recovery): calcola durata totale = now - started_at, risolve alert watchdog + corr_site_power_down/isolated, e invia UN messaggio di chiusura: se power_confirmed "Corrente RIPRISTINATA: ... Corrente assente per 1h 47m", altrimenti "Sito RIPRISTINATO: ... Disservizio durato Xh Ym". Campo outage_duration salvato sullalert (per report SLA). Poi cancella lo state.
+- Helper: _fmt_duration (1h 47m / 12m / 1g 2h), _parse_iso, _fmt_local. Retrocompat con vecchio campo first_at.
+- Self-test OK: _fmt_duration(6420)->1h 47m; lifecycle recovery con started 1h47m fa + power_confirmed -> alert "Corrente RIPRISTINATA ... assente per 1h 47m", outage_duration=1h 47m, state cancellato.
+
+## 2026-06 — CMDB Entity Resolution / Inventario Unificato (Fase 1 enterprise)
+- entity_resolver.py: fonde managed_devices + device_poll_status + managed_agents + iLO + cmdb_assets in cmdb_entities con identita stabile. Chiavi (priorita): serial->mac->datto_uid->agent_id->hostname(client)->ip(client), mappate in cmdb_identity_keys (unique). _resolve_entity_id fa merge su chiave forte (sopravvive entita piu vecchia). Reconcile: periodico 5min (scheduler server.py) + on-demand.
+- routes/cmdb_entities.py: GET /api/cmdb/entities (?client_id,?source), GET /api/cmdb/entities/{id}, POST /api/cmdb/entities/rebuild.
+- Frontend EntityInventoryPage.js (menu Inventario Unificato, /cmdb-entities): tabella entita + colonna Cliente + filtro cliente, pannello dettaglio (fonti fuse, chiavi identita, anagrafica manuale) con backdrop+ESC, bottone Ricostruisci con toast.
+- Fix post-review: (1) asset manuali ORFANI (IP non monitorato ma client_id match) ora creano entita; (2) PRUNING entita stale (device eliminati) a fine reconcile; (3) preserva anagrafica manuale (migrazione dati).
+- Test iter124: backend 10/10 PASS, frontend 100%. Self-test post-fix: rebuild idempotente 36 unita->35 entita stabili (merge su datto_uid), pruning ok.
+- BACKLOG: Fase 2 = grafo dipendenze (cmdb_relationships da LLDP/MAC/HyperV) + impact analysis; Fase 3 = aggancio Situation Engine (verdetto+impatto per entita) + report SLA/uptime.
+
+## 2026-06 — Grafo dipendenze + Impact Analysis (Fase 2 CMDB)
+- graph_builder.py: build_relationships(client) costruisce cmdb_relationships (src a monte -> dst a valle) da mac_connections (device->switch), lldp_neighbors (remote->local), Hyper-V (host->VM). Sostituzione atomica per cliente. build_all + indici.
+- compute_impact(entity_id): BFS sui figli (entita a valle) -> impacted_count, impacted_vital, lista con depth+rel_type. "Se cade X, cosa resta impattato".
+- Endpoint: POST /api/cmdb/entities/rebuild ora ricostruisce ANCHE il grafo; GET /api/cmdb/entities/{id}/impact; GET /api/cmdb/graph?client_id= (nodi+archi). Scheduler 5min esegue reconcile+build_all.
+- Frontend EntityInventoryPage: sezione "Impatto se cade" nel pannello dettaglio (conteggio a valle + vitali + lista con freccia depth e rel_type).
+- Self-test OK: rebuild -> 2 relazioni (lldp), impact CHASW-A -> FORTIGATE-FW depth1; foglia -> 0. Frontend compila.
+- NOTA: topologia preview sparsa (mac_connections=2, lldp=8); in produzione con LLDP/MAC completi le catene di impatto saranno ricche. Direzione LLDP e euristica (remote=monte); mac_connections e piu affidabile.
+- BACKLOG: Fase 2b mappa grafica interattiva; migliorare inferenza direzione LLDP (chi e switch/firewall); Fase 3 aggancio Situation Engine (verdetto+impatto).
+
+## 2026-06 — Impatto negli alert + Organizzazione (Fase 3 CMDB)
+- alert_enrichment.py: enrich_alert(db,alert) aggiunge ORGANIZZAZIONE (da zyxel_client_links: clienti raggruppati in 1 org Nebula) + IMPATTO a valle (compute_impact via grafo) agli alert di guasto a monte (corr_switch_down/site_isolated/firewall_mgmt_down/isp_down/site_blackout). Messaggio arricchito: "[Org: 86 Bit] ... 🔗 IMPATTO: se cade, restano coinvolti N dispositivi a valle, di cui M vitali (nomi...)". Campi impact_count/impact_vital/org_id/org_name sullalert.
+- Agganciato: emissione corr_* in run_vital_watchdog (alert_engine ~448) e alert site_blackout del watchdog.
+- entity_resolver.reconcile_client: ogni cmdb_entity ora porta org_id/org_name (raggruppamento per organizzazione). Frontend EntityDetail mostra Organizzazione.
+- Self-test OK: enrich su corr_switch_down CHASW-A -> "[Org: 86 Bit] ... IMPATTO 1 a valle (FORTIGATE-FW)"; rebuild all -> entita con org_name=86 Bit.
+- BACKLOG: gruppi org anche nella lista inventario (filtro per organizzazione), report/dashboard per organizzazione, impatto multi-cliente per infra condivisa.
+
+## 2026-06 — Selezione SITE per cliente nel mapping Nebula
+- Un'organizzazione Nebula ha piu site (ognuno col suo firewall). Il backend supportava gia site_ids nel link (ZyxelLinkIn.site_ids) e il sync filtra per site, ma la UI mappava solo org_id (=tutti i site) -> per chi mappa 1 site per cliente mancavano firewall.
+- Frontend ZyxelNebulaSettingsPage: dopo aver mappato un org al cliente, mostra SEMPRE le chip dei site (loadSites via GET /api/zyxel/organizations/{org_id}/sites). Chip "Tutti (N)" = site_ids [] (tutti), chip per-site toggle -> aggiorna site_ids via PUT link. Preload site per tutti gli org mappati (useEffect su links).
+- linkClient(clientId, orgId, siteIds) ora passa site_ids; toggleSite calcola il set.
+- NOTA: non testabile E2E in preview (Nebula API key solo in produzione); frontend compila e i path/contratti backend sono confermati (endpoint sites gia esistente, PUT link accetta site_ids).
+- Testid: zyxel-sites-{cid}, zyxel-site-all-{cid}, zyxel-site-{cid}-{siteId}.
+
+## 2026-06 — Firewall Nebula: vitale + porte + dettagli completi
+- routes/zyxel_nebula.py sync: per ogni firewall Nebula ONLINE -> raccoglie STATO PORTE (best-effort /{sid}/gw/{devId}/port-status|/ports), marca doc is_vital=True, e _upsert_firewall_managed_device() marca is_vital=True + device_type=firewall + aggancia dettagli Nebula (nebula{} + nebula_dev_id) sul managed_device abbinato per MAC o nome (NIENTE IP fittizi -> nessun conflitto). Cosi il firewall risulta vitale, entra in WAN/CMDB/Situation Engine dove ce un managed_device reale.
+- zyxel_devices porta gia: model, sn, mac, firmware, cpu/mem/sessions, traffic, online_status, ora + ports + is_vital. Endpoint GET /clients/{id}/zyxel/devices e /zyxel/devices restituiscono i doc completi.
+- LIMITE: non testabile in preview (Nebula API key solo in produzione); codice corretto-per-costruzione, da verificare in produzione. Endpoint porte Nebula = best-effort (2 nomi tentati) da validare col vero payload.
+- DA FARE (frontend): sezione WAN del cliente con firewall in cima + scheda firewall dedicata che mostra porte/traffico/dettagli. E il pezzo che rende VISIBILE quanto sopra.

@@ -1,0 +1,37 @@
+{
+  "summary": "Validato in produzione il feature 'Firewall Nebula in cima alla WAN'. Backend: 8/8 test pytest passati su GET /api/clients/{client_id}/zyxel/devices (client da3d6e40) — firewall presente con 14 porte reali dall'endpoint Nebula 'ports-status', status coerente con linkSpeed (up per 1000M/10000M/100M, down per linkSpeed null), public_ip=192.168.45.2, line_state='up', wan_interfaces popolato, nat_rules lista vuota, nessun _id Mongo, 401/403 senza auth. Frontend: login admin + 2FA TOTP OK, route /client/{clientId} monta ClientOverviewPage; NebulaFirewalls (data-testid='nebula-firewalls') renderizzato in cima al pannello 'Infrastruttura di Rete' con 1 scheda; verificati status ONLINE, IP pubblico, S/N S252L44100026, MAC, firmware V1.39(ABZI.0), metriche CPU 5% / Mem 39% / Sessioni 1156, 14 chip porte con distinzione visiva up (verde #34C759) vs down (grigio #8E8E93), blocco traffico interfacce (tun0/ge3/vlan55/...), refresh manuale funzionante. Nessun page error, nessuna schermata bianca. Regressione: /client/<uuid-inesistente> mostra 'Cliente non trovato' senza crash.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/clients/{client_id}/zyxel/devices", "issue": "Il campo 'group' delle porte è null per tutte le 14 porte (la risposta reale Nebula ports-status del USG FLEX 700H non include 'portGroup'). Non è un bug bloccante ma il tooltip/etichetta gruppo resta sempre vuoto: valutare fallback (es. mappa WAN/LAN da interface-settings)."},
+      {"endpoint": "GET /api/clients/{client_id}/zyxel/devices", "issue": "nat_rules è [] in produzione (nessuna regola NAT configurata sul firewall reale): il path di rendering NAT (nebula-fw-nat-toggle / nebula-fw-nat-list) NON è verificabile con dati live e resta non testato end-to-end."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "NebulaFirewalls/FirewallCard", "issue": "Il titolo della scheda mostra il MAC '70:49:A2:70:CF:C2' perché fw.name su Nebula coincide col MAC; sarebbe più leggibile usare model+site (es. 'USG FLEX 700H · 700H') come titolo e il MAC solo nella griglia hardware.", "selector": "[data-testid='nebula-fw-name']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Client Overview → Infrastruttura di Rete → Firewall Nebula", "issues": ["Etichette porte e traffico a 7-8px: leggibilità al limite su schermi standard/TV wallboard; considerare 9-10px", "Le porte 'down' usano grigio muted su background quasi trasparente (rgba(142,142,147,0.07)): contrasto basso sul tema dark, ma comunque distinguibili dalle verdi", "Il blocco 'Traffico interfacce' elenca ~10 interfacce (tun0/vlan*) senza scroll/limite: allunga molto la scheda; valutare top-5 + espandi"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_nebula_firewall_ports_iter125.py", "/app/test_reports/pytest/pytest_results_iter125.xml"],
+  "action_items": [
+    "Opzionale: titolo scheda firewall da MAC → model/site (nebula-fw-name)",
+    "Opzionale: fallback per 'group' porta (portGroup assente nella risposta reale Nebula)",
+    "Opzionale: limitare/collassare l'elenco traffico interfacce e aumentare i font 7-8px"
+  ],
+  "critical_code_review_comments": [
+    "In sync_client_devices il fallback dell'endpoint porte itera su ports-status poi port-status: corretto e non regressivo; il break su lista non vuota evita sovrascritture con risposte vuote.",
+    "NebulaFirewalls in caso di errore API fa setFirewalls([]) e si autonasconde silenziosamente: nessun feedback all'operatore in caso di token scaduto/500 — considerare uno stato d'errore minimale (o log) per evitare 'silenzi' diagnostici."
+  ],
+  "updated_files": ["/app/backend/tests/test_nebula_firewall_ports_iter125.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Nessun dato creato: usati i dati reali sincronizzati dallo scheduler nebula_sync_tick.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (login -> /2fa -> verify-2fa) — funzionanti",
+  "context_for_next_testing_agent": "Route overview cliente = /client/{clientId} (unico client in DB: da3d6e40-b3e5-4d46-9787-dde328a3aa36, 86BIT_Office). Test backend riusabile: /app/backend/tests/test_nebula_firewall_ports_iter125.py. Non esiste un secondo cliente reale per testare l'autonascondimento del componente con overview completa: verificato solo via client_id inesistente (pagina 'Cliente non trovato') e via API (200 {devices:[],count:0}). NAT rendering non testabile: nat_rules vuoto sul firewall reale.",
+  "rca_of_the_issue": "La correzione all'endpoint Nebula 'ports-status' (campi portNumber/portGroup/linkSpeed) è confermata funzionante: 14 porte reali in DB, derivazione status da linkSpeed corretta tramite _port_link_status; nessun errore Zyxel nei log del backend durante i tick di sync."
+}

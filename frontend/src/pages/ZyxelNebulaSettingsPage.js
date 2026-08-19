@@ -57,6 +57,7 @@ export default function ZyxelNebulaSettingsPage() {
   const [orgs, setOrgs] = useState([]);
   const [clients, setClients] = useState([]);
   const [links, setLinks] = useState([]);
+  const [sitesByOrg, setSitesByOrg] = useState({});
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -135,19 +136,36 @@ export default function ZyxelNebulaSettingsPage() {
     } catch (e) { toast.error("Errore rimozione"); }
   };
 
-  const linkClient = async (clientId, orgId) => {
+  const linkClient = async (clientId, orgId, siteIds) => {
     try {
       if (orgId === "__unlink__") {
         await axios.delete(`${API}/api/clients/${clientId}/zyxel/link`, { headers });
         toast.success("Mapping rimosso");
       } else {
-        const r = await axios.put(`${API}/api/clients/${clientId}/zyxel/link`, { org_id: orgId }, { headers });
+        const body = { org_id: orgId };
+        if (siteIds !== undefined) body.site_ids = siteIds;
+        const r = await axios.put(`${API}/api/clients/${clientId}/zyxel/link`, body, { headers });
         toast.success(`Cliente mappato · ${r.data.device_count} device (sync avviato)`);
+        loadSites(orgId);
       }
       await reload();
     } catch (e) {
       toast.error(`Errore mapping: ${e.response?.data?.detail || e.message}`);
     }
+  };
+
+  const loadSites = async (orgId) => {
+    if (!orgId || sitesByOrg[orgId]) return;
+    try {
+      const r = await axios.get(`${API}/api/zyxel/organizations/${orgId}/sites`, { headers });
+      setSitesByOrg((prev) => ({ ...prev, [orgId]: r.data.sites || [] }));
+    } catch { /* ignore */ }
+  };
+
+  const toggleSite = async (clientId, orgId, siteId, currentIds) => {
+    const cur = new Set(currentIds || []);
+    if (cur.has(siteId)) cur.delete(siteId); else cur.add(siteId);
+    await linkClient(clientId, orgId, Array.from(cur));
   };
 
   const syncNow = async () => {
@@ -163,6 +181,12 @@ export default function ZyxelNebulaSettingsPage() {
   };
 
   const linkByClient = Object.fromEntries(links.map((l) => [l.client_id, l]));
+
+  useEffect(() => {
+    const orgIds = [...new Set(links.map((l) => l.org_id).filter(Boolean))];
+    orgIds.forEach((oid) => loadSites(oid));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [links]);
 
   const openChart = async (d) => {
     setChartDev(d);
@@ -254,8 +278,11 @@ export default function ZyxelNebulaSettingsPage() {
             <div className="space-y-2 max-h-[360px] overflow-auto">
               {clients.map((c) => {
                 const link = linkByClient[c.id];
+                const orgSites = link ? (sitesByOrg[link.org_id] || []) : [];
+                const selectedSites = link?.site_ids || [];
                 return (
-                  <div key={c.id} className="flex items-center gap-3 py-1.5 border-b border-[var(--bg-border)]/50" data-testid={`zyxel-client-row-${c.id}`}>
+                  <div key={c.id} className="py-1.5 border-b border-[var(--bg-border)]/50" data-testid={`zyxel-client-row-${c.id}`}>
+                   <div className="flex items-center gap-3">
                     <span className="flex-1 text-xs font-medium truncate">{c.name}</span>
                     {link && (
                       <Badge variant="outline" className="text-[10px] text-emerald-300 border-emerald-500/40">
@@ -279,6 +306,29 @@ export default function ZyxelNebulaSettingsPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                   </div>
+                   {link && orgSites.length > 0 && (
+                     <div className="mt-1.5 ml-1 flex flex-wrap items-center gap-1" data-testid={`zyxel-sites-${c.id}`}>
+                       <span className="text-[10px] text-[var(--text-secondary)] mr-1">Site:</span>
+                       <button
+                         onClick={() => linkClient(c.id, link.org_id, [])}
+                         data-testid={`zyxel-site-all-${c.id}`}
+                         className={`px-2 py-0.5 rounded-full text-[10px] border ${selectedSites.length === 0 ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/50" : "text-[var(--text-secondary)] border-[var(--bg-border)]"}`}>
+                         Tutti ({orgSites.length})
+                       </button>
+                       {orgSites.map((s) => {
+                         const on = selectedSites.includes(s.site_id);
+                         return (
+                           <button key={s.site_id}
+                             onClick={() => toggleSite(c.id, link.org_id, s.site_id, selectedSites)}
+                             data-testid={`zyxel-site-${c.id}-${s.site_id}`}
+                             className={`px-2 py-0.5 rounded-full text-[10px] border ${on ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50" : "text-[var(--text-secondary)] border-[var(--bg-border)] hover:border-emerald-500/40"}`}>
+                             {s.name}{typeof s.device_count === "number" ? ` · ${s.device_count}` : ""}
+                           </button>
+                         );
+                       })}
+                     </div>
+                   )}
                   </div>
                 );
               })}

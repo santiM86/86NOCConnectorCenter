@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { API } from "@/App";
-import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut, ChartLineUp } from "@phosphor-icons/react";
+import { X, Warning, WifiHigh, WifiSlash, CircleNotch, Globe, PlusCircle, ArrowSquareOut, ChartLineUp, ShieldWarning, Heartbeat, FloppyDisk, Pulse, CheckCircle, Question, HardDrives } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { SnmpConfigPanel } from "@/components/SnmpConfigPanel";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
@@ -23,6 +23,9 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
   const [community, setCommunity] = useState("public");
   const [proxyLoading, setProxyLoading] = useState(false);
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagError, setDiagError] = useState(false);
 
   useEffect(() => {
     if (!clientId || !deviceIp) return;
@@ -32,6 +35,24 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
       .catch(() => setDetail(null))
       .finally(() => setLoading(false));
   }, [clientId, deviceIp]);
+
+  useEffect(() => {
+    const hasRealIp = deviceIp && !deviceIp.startsWith("mac-");
+    if (!clientId || !hasRealIp || deviceData?.role === "discovered_endpoint") {
+      setDiag(null);
+      return;
+    }
+    const controller = new AbortController();
+    setDiagLoading(true);
+    setDiagError(false);
+    axios.get(`${API}/devices/by-ip/${deviceIp}/diagnosis`, {
+      params: { client_id: clientId }, signal: controller.signal,
+    })
+      .then(res => setDiag(res.data))
+      .catch(err => { if (!axios.isCancel?.(err) && err?.code !== "ERR_CANCELED") { setDiag(null); setDiagError(true); } })
+      .finally(() => setDiagLoading(false));
+    return () => controller.abort();
+  }, [clientId, deviceIp, deviceData?.role]);
 
   if (!deviceIp) return null;
 
@@ -194,6 +215,9 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {hasIp && !isEndpoint && (
+          <DiagnosisSection diag={diag} loading={diagLoading} error={diagError} />
+        )}
+        {hasIp && !isEndpoint && (
           <VendorDetailsPanel deviceIp={deviceIp} clientId={clientId} />
         )}
         {loading && !isEndpoint ? (
@@ -240,6 +264,124 @@ export function DeviceDetailPanel({ clientId, deviceIp, deviceData, onClose, onD
           />
         </ErrorBoundary>
       )}
+    </div>
+  );
+}
+
+const STATE_STYLE = {
+  CRITICAL: { bg: "bg-red-500/15", border: "border-red-500/40", text: "text-red-400", dot: "bg-red-500", label: "CRITICO" },
+  WARNING: { bg: "bg-amber-500/15", border: "border-amber-500/40", text: "text-amber-400", dot: "bg-amber-500", label: "ATTENZIONE" },
+  UNKNOWN: { bg: "bg-slate-500/15", border: "border-slate-500/40", text: "text-slate-300", dot: "bg-slate-500", label: "DA VERIFICARE" },
+  OK: { bg: "bg-emerald-500/15", border: "border-emerald-500/40", text: "text-emerald-400", dot: "bg-emerald-500", label: "OPERATIVO" },
+};
+
+const DOMAIN_META = {
+  reachability: { label: "Rete", Icon: Pulse },
+  predictive: { label: "Guasto imminente", Icon: ChartLineUp },
+  security: { label: "Sicurezza", Icon: ShieldWarning },
+  hardware: { label: "Hardware", Icon: HardDrives },
+  backup: { label: "Backup", Icon: FloppyDisk },
+  performance: { label: "Performance", Icon: Heartbeat },
+  network: { label: "Rete/Config", Icon: ArrowSquareOut },
+  discovery: { label: "Discovery", Icon: Question },
+};
+
+function SignalDot({ ok, label, showNull }) {
+  if ((ok === null || ok === undefined) && !showNull) return null;
+  const cls = ok === null || ok === undefined ? "bg-slate-500" : ok ? "bg-emerald-500" : "bg-red-500";
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+      <span className={`w-1.5 h-1.5 rounded-full ${cls}`} />
+      {label}{ok === null || ok === undefined ? " n/d" : ""}
+    </span>
+  );
+}
+
+function DiagnosisSection({ diag, loading, error }) {
+  if (loading) {
+    return (
+      <div className="rounded-xl border border-[var(--border-subtle)] p-3 flex items-center gap-2 text-xs text-[var(--text-muted)]">
+        <CircleNotch size={16} className="animate-spin text-indigo-400" /> Diagnosi in corso…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div data-testid="device-diagnosis" className="rounded-xl border border-[var(--border-subtle)] p-3 flex items-center gap-2 text-xs text-[var(--text-muted)]">
+        <Question size={14} /> Diagnosi non disponibile
+      </div>
+    );
+  }
+  if (!diag || !diag.found) return null;
+  const st = STATE_STYLE[diag.overall_state] || STATE_STYLE.UNKNOWN;
+  const primary = diag.primary || {};
+  const sig = (diag.evidence?.[0]?.signals) || {};
+  const otherEvidence = (diag.evidence || []).filter((e, i) => i > 0);
+
+  return (
+    <div data-testid="device-diagnosis" className={`rounded-xl border ${st.border} ${st.bg} p-3.5 space-y-3`}>
+      {/* Verdetto principale */}
+      <div className="flex items-start gap-3">
+        <span className={`mt-1 w-2.5 h-2.5 rounded-full ${st.dot} animate-pulse flex-shrink-0`} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-bold uppercase tracking-wider ${st.text}`} data-testid="diagnosis-state">
+              {st.label}
+            </span>
+            {typeof diag.confidence === "number" && diag.confidence > 0 && (
+              <span className="text-[10px] font-mono text-[var(--text-muted)] bg-[var(--bg-deep)] px-1.5 py-0.5 rounded">
+                certezza {diag.confidence}%
+              </span>
+            )}
+          </div>
+          <p className="text-sm font-semibold text-[var(--text-primary)] mt-0.5 leading-snug" data-testid="diagnosis-primary">
+            {primary.situation || "—"}
+          </p>
+          {primary.reasoning && (
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5 leading-snug">{primary.reasoning}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Azione consigliata */}
+      {diag.recommended_action && diag.overall_state !== "OK" && (
+        <div className="flex items-start gap-1.5 rounded-lg bg-[var(--bg-deep)] px-2.5 py-2 border border-[var(--border-subtle)]">
+          <Warning size={13} className={`${st.text} mt-0.5 flex-shrink-0`} weight="fill" />
+          <p className="text-[11px] text-[var(--text-primary)] leading-snug" data-testid="diagnosis-action">
+            {diag.recommended_action}
+          </p>
+        </div>
+      )}
+
+      {/* Prove correlate (altri domini) */}
+      {otherEvidence.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">Prove correlate</p>
+          {otherEvidence.map((e, idx) => {
+            const meta = DOMAIN_META[e.domain] || DOMAIN_META.network;
+            const sc = SEVERITY_COLORS[e.severity] || SEVERITY_COLORS.low;
+            const Icon = meta.Icon;
+            return (
+              <div key={idx} className="flex items-center gap-2 text-[11px]" data-testid={`diagnosis-evidence-${e.domain}`}>
+                <Icon size={13} className={sc.text} weight="duotone" />
+                <span className={`px-1.5 py-0.5 rounded ${sc.bg} ${sc.text} text-[9px] font-semibold uppercase`}>{meta.label}</span>
+                <span className="text-[var(--text-primary)] truncate flex-1">{e.situation}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Segnali di raggiungibilità */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 border-t border-[var(--border-subtle)]">
+        <SignalDot ok={sig.ping} label="PING" showNull />
+        <SignalDot ok={sig.l2_alive} label="L2/MAC" />
+        {sig.datto != null && <SignalDot ok={sig.datto === "online"} label="Datto" />}
+        {sig.wan_rt_up != null && <SignalDot ok={sig.wan_rt_up} label="WAN" />}
+        {sig.hyperv_state && (
+          <span className="text-[10px] text-[var(--text-muted)]">Hyper-V: {sig.hyperv_state}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -439,17 +581,6 @@ function EndpointInfo({ data }) {
           </div>
         )}
       </div>
-
-      {/* SNMP Configuration Panel */}
-      {detail?.managed && clientId && detail?.device_id && (
-        <div className="mt-3 border-t border-[var(--bg-border)] pt-3">
-          <SnmpConfigPanel
-            clientId={clientId}
-            deviceId={detail.device_id}
-            device={detail}
-          />
-        </div>
-      )}
     </div>
   );
 }
