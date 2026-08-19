@@ -5129,3 +5129,11 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Sezione 2 (recovery): calcola durata totale = now - started_at, risolve alert watchdog + corr_site_power_down/isolated, e invia UN messaggio di chiusura: se power_confirmed "Corrente RIPRISTINATA: ... Corrente assente per 1h 47m", altrimenti "Sito RIPRISTINATO: ... Disservizio durato Xh Ym". Campo outage_duration salvato sullalert (per report SLA). Poi cancella lo state.
 - Helper: _fmt_duration (1h 47m / 12m / 1g 2h), _parse_iso, _fmt_local. Retrocompat con vecchio campo first_at.
 - Self-test OK: _fmt_duration(6420)->1h 47m; lifecycle recovery con started 1h47m fa + power_confirmed -> alert "Corrente RIPRISTINATA ... assente per 1h 47m", outage_duration=1h 47m, state cancellato.
+
+## 2026-06 — CMDB Entity Resolution / Inventario Unificato (Fase 1 enterprise)
+- entity_resolver.py: fonde managed_devices + device_poll_status + managed_agents + iLO + cmdb_assets in cmdb_entities con identita stabile. Chiavi (priorita): serial->mac->datto_uid->agent_id->hostname(client)->ip(client), mappate in cmdb_identity_keys (unique). _resolve_entity_id fa merge su chiave forte (sopravvive entita piu vecchia). Reconcile: periodico 5min (scheduler server.py) + on-demand.
+- routes/cmdb_entities.py: GET /api/cmdb/entities (?client_id,?source), GET /api/cmdb/entities/{id}, POST /api/cmdb/entities/rebuild.
+- Frontend EntityInventoryPage.js (menu Inventario Unificato, /cmdb-entities): tabella entita + colonna Cliente + filtro cliente, pannello dettaglio (fonti fuse, chiavi identita, anagrafica manuale) con backdrop+ESC, bottone Ricostruisci con toast.
+- Fix post-review: (1) asset manuali ORFANI (IP non monitorato ma client_id match) ora creano entita; (2) PRUNING entita stale (device eliminati) a fine reconcile; (3) preserva anagrafica manuale (migrazione dati).
+- Test iter124: backend 10/10 PASS, frontend 100%. Self-test post-fix: rebuild idempotente 36 unita->35 entita stabili (merge su datto_uid), pruning ok.
+- BACKLOG: Fase 2 = grafo dipendenze (cmdb_relationships da LLDP/MAC/HyperV) + impact analysis; Fase 3 = aggancio Situation Engine (verdetto+impatto per entita) + report SLA/uptime.
