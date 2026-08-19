@@ -1,3 +1,20 @@
+# 2026-08-19 — Console mobile (iPhone/Android) per il tecnico
+
+## Richiesta utente
+Layout mobile facilmente comprensibile per avere sempre tutte le aziende sotto controllo velocemente.
+
+## Implementazione
+- Nuova pagina `frontend/src/pages/MobileConsolePage.js`, route protetta `/mobile` (in App.js).
+- Mobile-first, single column: header sticky (logo, stato globale, ora aggiornamento, refresh), striscia KPI (Online/Offline/Alert/Clienti KO), barra ricerca + toggle "Solo problemi".
+- Lista aziende ordinata per gravità: card con bordo/colore stato, anello salute %, headline del problema ("WAN DOWN"/"N offline"/…), chip rapide (offline, alert, WAN). Tap per espandere: contatori ON/OFF/ALERT, riga WAN (IP+latenza), dispositivi offline, alert critici/high, footer (disp./stamp./iLO/stato sonda).
+- Dati da `/api/tv/dashboard` (già aggregato), auto-refresh 15s. Nessuna modifica backend.
+
+## Verifica (screenshot viewport 390px)
+Card 86BIT_Office: ring 100%, headline WAN DOWN, chip ⚠50/WAN DOWN; espansa mostra WAN DOWN 192.0.2.1, alert CRIT "Esposizione KEV USG FLEX 700H", footer 8 disp./3 stamp./1 iLO/No sonda. Compila pulito.
+
+---
+
+
 # 2026-08-19 — TV Wallboard redesign + Auto-alert KEV↔Asset
 
 ## Task 1 — TV Dashboard riprogettata (per TV 40", colpo d'occhio)

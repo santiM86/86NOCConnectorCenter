@@ -47,6 +47,7 @@ import PrintersPage from "@/pages/PrintersPage";
 import PrinterDiscoveryPage from "@/pages/PrinterDiscoveryPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
+import MobileConsolePage from "@/pages/MobileConsolePage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
 import OsintPage from "@/pages/OsintPage";
 import RogueDevicesPage from "@/pages/RogueDevicesPage";
@@ -297,6 +298,7 @@ function App() {
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
+            <Route path="/mobile" element={<ProtectedRoute><MobileConsolePage /></ProtectedRoute>} />
             <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/customer-portal" element={<CustomerPortalPage />} />
             <Route path="/2fa" element={<TwoFactorPage />} />
