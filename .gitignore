@@ -83,3 +83,6 @@ credentials.json
 .credentials
 frontend/node_modules/.cache/default-development/2.pack
 frontend/public/dl/frontend-build-v1.tar.gz
+.env
+.env.*
+*.env
