@@ -56,9 +56,8 @@ export default function NetworkPathDiagnosisPage() {
         list.forEach((c) => { cmap[c.id] = c.name; });
         setClients(cmap);
         setClientList(list);
-        // default: cliente "86bit" (la tua sede) se esiste, altrimenti il primo
-        const own = list.find((c) => /86\s*bit/i.test(c.name || "")) || list[0];
-        if (own) setProbeClient(own.id);
+        // default sonda: GLOBALE (una sola sonda per tutti i clienti)
+        setProbeClient("__global__");
         if (live.length) setProbe(live[0].agent_id);
       } catch (e) {
         toast.error(`Caricamento agent fallito: ${e.response?.data?.detail || e.message}`);
@@ -123,8 +122,9 @@ export default function NetworkPathDiagnosisPage() {
           <h3 className="text-sm font-bold">Agent-sonda (installa nella tua sede/NOC)</h3>
         </div>
         <p className="text-[11px] text-[var(--text-secondary)] mb-3">
-          Genera un token per installare l'agent-SONDA da cui partono i traceroute. Da installare
-          UNA volta su una macchina della tua sede (non serve toccare gli agent dei clienti).
+          Genera un token per installare l'agent-SONDA da cui partono i traceroute. Ti basta
+          <b> UNA sonda globale</b> installata nella tua sede/NOC per tracciare il percorso verso
+          <b> tutti i clienti</b> (non serve una sonda per cliente, né toccare gli agent dei clienti).
         </p>
         <div className="flex flex-col md:flex-row gap-3 md:items-end">
           <div className="flex-1">
@@ -132,6 +132,9 @@ export default function NetworkPathDiagnosisPage() {
             <Select value={probeClient} onValueChange={setProbeClient}>
               <SelectTrigger className="mt-1 h-9 text-xs" data-testid="probe-client-select"><SelectValue placeholder="Seleziona…" /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="__global__" className="text-xs font-semibold text-cyan-400" data-testid="probe-client-global">
+                  🌐 Sonda globale (tutti i clienti)
+                </SelectItem>
                 {clientList.map((c) => (
                   <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
                 ))}
@@ -170,7 +173,7 @@ export default function NetworkPathDiagnosisPage() {
                 {agents.length === 0 && <SelectItem value="__none__" disabled>Nessun agent connesso</SelectItem>}
                 {agents.map((a) => (
                   <SelectItem key={a.agent_id} value={a.agent_id} className="text-xs">
-                    {a.hostname || a.agent_id?.slice(0, 8)} · {clients[a.client_id] || "—"}
+                    {a.hostname || a.agent_id?.slice(0, 8)} · {a.client_id === "__global__" ? "🌐 Sonda globale" : (clients[a.client_id] || "—")}
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -623,6 +623,12 @@ async def run_probe_cycle():
                 {"$set": {**diag, "updated_at": now_iso, "results": res_list}},
                 upsert=True,
             )
+            # Confronto IP pubblico REALE (egress rilevato dagli agent) vs atteso
+            try:
+                expected_ips = {r.get("public_ip") for r in res_list if r.get("public_ip")}
+                await _detect_wan_ip_change(cid, expected_ips)
+            except Exception as e:
+                logger.debug(f"detected wan ip change failed for {cid}: {e}")
 
         # v2026-06 SPEED: rilevazione blackout QUASI-LIVE. Se in questo ciclo la
         # WAN di un cliente e' appena passata a offline, non aspettiamo il tick da
@@ -1204,6 +1210,53 @@ async def _detect_public_ip_change(target_id: str, client_id: str, current_ip: s
             "source_type": "wan_public_ip_change",
             "title": f"IP pubblico cambiato: {last.get('public_ip')} → {current_ip}",
             "message": f"L'IP pubblico del target WAN {target_id} e' cambiato. Probabile failover ISP, DHCP renew o riconfig manuale.",
+            "status": "active",
+            "created_at": now_iso,
+        }
+        try:
+            await insert_alert_if_emit(db, _alert)
+        except Exception:
+            pass
+
+
+async def _detect_wan_ip_change(client_id: str, expected_ips: set):
+    """Confronta l'IP pubblico REALE del cliente (egress osservato dagli agent)
+    con l'ultimo noto e con quelli attesi (target WAN configurati). Genera alert
+    al cambio — utile per linee con IP dinamico e per rilevare failover ISP."""
+    doc = await _resolve_detected_public_ip(client_id)
+    detected = (doc or {}).get("public_ip")
+    if not detected:
+        return
+    key = f"detected:{client_id}"
+    last = await db.wan_public_ip_changes.find_one(
+        {"target_id": key}, sort=[("changed_at", -1)], projection={"_id": 0},
+    )
+    if last and last.get("public_ip") == detected:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.wan_public_ip_changes.insert_one({
+        "id": str(uuid.uuid4()),
+        "target_id": key,
+        "client_id": client_id,
+        "public_ip": detected,
+        "previous_ip": last.get("public_ip") if last else None,
+        "detected": True,
+        "changed_at": now_iso,
+    })
+    if last:  # niente alert al primo record (init)
+        mismatch = bool(expected_ips) and detected not in expected_ips
+        _alert = {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "device_id": key,
+            "severity": "high",
+            "source_type": "wan_public_ip_change",
+            "title": f"IP pubblico reale cambiato: {last.get('public_ip')} → {detected}",
+            "message": (
+                f"L'IP pubblico reale del cliente (rilevato dagli agent) è cambiato da "
+                f"{last.get('public_ip')} a {detected}. Probabile IP dinamico rinnovato o failover ISP."
+                + (f" NB: non corrisponde ad alcun IP atteso dei target WAN ({', '.join(sorted(x for x in expected_ips if x))})." if mismatch else "")
+            ),
             "status": "active",
             "created_at": now_iso,
         }

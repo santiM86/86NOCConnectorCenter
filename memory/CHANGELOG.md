@@ -1,3 +1,22 @@
+# 2026-08-19 — Sonda globale + Alert cambio IP pubblico reale
+
+## Richieste utente
+1) Poter creare UNA sonda unica (globale) per tracciare tutti i clienti.
+2) Confrontare l'IP pubblico reale rilevato con quello atteso e generare alert al cambio (IP dinamici / failover).
+
+## Feature A — Sonda globale (NetworkPathDiagnosisPage.js)
+- Aggiunta opzione "🌐 Sonda globale (tutti i clienti)" nel dropdown sede/cliente (valore sentinella client_id="__global__"), impostata come default. Testo aggiornato: una sola sonda nel NOC traccia verso tutti i clienti. Il dropdown agent-sonda mostra "🌐 Sonda globale". Register token con __global__ verificato (200). Il traceroute parte già verso qualsiasi IP destinazione.
+
+## Feature B — Alert cambio IP pubblico reale (external_monitor.py)
+- Nuovo `_detect_wan_ip_change(client_id, expected_ips)`: risolve l'IP egress reale del cliente (managed_agents.public_ip via _resolve_detected_public_ip), lo confronta con l'ultimo noto e con gli IP attesi dei target WAN. Storico in `wan_public_ip_changes` (target_id=`detected:{client_id}`), alert `wan_public_ip_change` severity high al cambio (no alert al primo record), con nota se non combacia con l'atteso. Chiamato in run_probe_cycle per ogni cliente.
+- NB: il precedente `_detect_public_ip_change` seguiva solo l'IP CONFIGURATO (cambiava solo su edit admin); ora c'è il confronto sull'IP REALE.
+
+## Verifica
+Feature A: screenshot opzione globale + register 200. Feature B: test funzionale — init nessun alert, al cambio 11.11.11.11→22.22.22.22 alert generato con nota mismatch, 2 record storico. Compila pulito.
+
+---
+
+
 # 2026-08-19 — WAN + Zyxel: unificazione firewall (dedup) + arricchimento Nebula
 
 ## Richiesta utente
