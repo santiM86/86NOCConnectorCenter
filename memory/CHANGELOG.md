@@ -5123,3 +5123,9 @@ enrichment IP negli alert esistenti con badge reputazione.
 - alert_engine._blackout_timeline(db,client_id,down_at): legge pre_blackout_events e costruisce la timeline "HH:MM UPS su batteria -> HH:MM SITO GIU: MANCANZA CORRENTE CONFERMATA" in ora locale IT (Europe/Rome via zoneinfo, fallback UTC). Helper _fmt_local.
 - Integrata (append al messaggio) in ENTRAMBI i punti che dichiarano il blackout confermato: verdetto corr_site_power_down (run_vital_watchdog) e alert del run_site_blackout_watchdog. Il messaggio Telegram/WebPush ora include la cronologia completa in un unico avviso.
 - Self-test OK: evento pre-blackout (batteria da 5min) -> genera "14:16 UPS su batteria (carica 82%, autonomia ~22min) -> 14:21 SITO GIU: MANCANZA CORRENTE CONFERMATA".
+
+## 2026-06 — Messaggio di chiusura blackout con durata disservizio (SLA)
+- alert_engine.run_site_blackout_watchdog: ridisegnato il lifecycle. In sezione 1 registro started_at DUREVOLE (setOnInsert) per OGNI cliente in blackout, sopravvive anche al path corr (lo state NON viene piu cancellato quando subentra corr, solo unset alert_id). Salvo power_confirmed nello state.
+- Sezione 2 (recovery): calcola durata totale = now - started_at, risolve alert watchdog + corr_site_power_down/isolated, e invia UN messaggio di chiusura: se power_confirmed "Corrente RIPRISTINATA: ... Corrente assente per 1h 47m", altrimenti "Sito RIPRISTINATO: ... Disservizio durato Xh Ym". Campo outage_duration salvato sullalert (per report SLA). Poi cancella lo state.
+- Helper: _fmt_duration (1h 47m / 12m / 1g 2h), _parse_iso, _fmt_local. Retrocompat con vecchio campo first_at.
+- Self-test OK: _fmt_duration(6420)->1h 47m; lifecycle recovery con started 1h47m fa + power_confirmed -> alert "Corrente RIPRISTINATA ... assente per 1h 47m", outage_duration=1h 47m, state cancellato.

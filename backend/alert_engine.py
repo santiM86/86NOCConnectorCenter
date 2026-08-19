@@ -829,6 +829,31 @@ def _fmt_local(dt) -> str:
         return dt.strftime("%H:%M")
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Durata leggibile: '1h 47m', '12m', '2g 3h'."""
+    s = int(max(0, seconds))
+    d, r = divmod(s, 86400)
+    h, r = divmod(r, 3600)
+    m, _ = divmod(r, 60)
+    if d:
+        return f"{d}g {h}h" if h else f"{d}g"
+    if h:
+        return f"{h}h {m}m" if m else f"{h}h"
+    return f"{m}m" if m else "meno di 1m"
+
+
+def _parse_iso(v):
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if isinstance(v, str):
+        try:
+            dt = datetime.fromisoformat(v)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 async def _blackout_timeline(db, client_id: str, down_at: datetime, minutes: int = 30) -> str:
     """Cronologia dell'evento: 'HH:MM UPS su batteria → HH:MM sito giu':
     MANCANZA CORRENTE CONFERMATA'. Vuoto se non c'e' un evento pre-blackout."""
@@ -875,6 +900,17 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     for cid in blackout:
         cname = client_names.get(cid) or (cid[:8] if cid else "")
         cfg = await _resolve_client_config(db, cfg_global, cid)
+        # Start DUREVOLE: registra started_at UNA sola volta; sopravvive a
+        # qualsiasi path (corr o watchdog) per calcolare la durata alla ripresa.
+        confirmed, ups_detail = await _ups_power_loss(db, cid)
+        set_fields = {"client_id": cid, "last_seen_at": now.isoformat()}
+        if confirmed:
+            set_fields["power_confirmed"] = True
+        await db.site_blackout_state.update_one(
+            {"client_id": cid},
+            {"$set": set_fields, "$setOnInsert": {"started_at": now.isoformat()}},
+            upsert=True,
+        )
         # Dedup contro l'alert correlation di sito (piu' ricco) gia' attivo
         corr_active = await db.alerts.find_one({
             "client_id": cid, "status": "active",
@@ -882,18 +918,19 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         })
         state = await db.site_blackout_state.find_one({"client_id": cid})
         if corr_active:
-            # Se avevamo un nostro alert autonomo, chiudilo: subentra il corr
+            # corr gestisce l'alert visibile: se avevamo un nostro alert autonomo
+            # chiudilo, MA mantieni lo state (started_at) per la durata a recovery.
             if state and state.get("alert_id"):
                 await db.alerts.update_one({"id": state["alert_id"]},
                     {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
-                await db.site_blackout_state.delete_one({"client_id": cid})
+                await db.site_blackout_state.update_one({"client_id": cid},
+                    {"$unset": {"alert_id": ""}, "$set": {"via": "corr"}})
+            else:
+                await db.site_blackout_state.update_one({"client_id": cid},
+                    {"$set": {"via": "corr"}})
             continue
         if state and state.get("alert_id"):
-            # gia' emesso -> aggiorna solo il timestamp visto
-            await db.site_blackout_state.update_one({"client_id": cid},
-                {"$set": {"last_seen_at": now.isoformat()}})
-            continue
-        confirmed, ups_detail = await _ups_power_loss(db, cid)
+            continue  # gia' emesso (last_seen aggiornato sopra)
         if confirmed:
             timeline = await _blackout_timeline(db, cid, now)
             title = f"SITO GIU' — MANCANZA CORRENTE CONFERMATA: {cname}"
@@ -917,35 +954,49 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         await _dispatch_notification(db, cfg, alert)
         await db.site_blackout_state.update_one(
             {"client_id": cid},
-            {"$set": {"client_id": cid, "alert_id": alert["id"],
-                      "first_at": now.isoformat(), "last_seen_at": now.isoformat()}},
-            upsert=True,
+            {"$set": {"alert_id": alert["id"], "via": "watchdog"}},
         )
         actions += 1
         logger.warning("[site-blackout] SITO GIU' client=%s", cname)
 
-    # 2) Recovery: clienti che avevano un alert blackout ma NON sono piu' in blackout
+    # 2) Recovery: clienti che avevano un blackout ma NON sono piu' in blackout
     async for state in db.site_blackout_state.find({}):
         cid = state.get("client_id")
         if not cid or cid in blackout:
             continue
         cname = client_names.get(cid) or (cid[:8] if cid else "")
         cfg = await _resolve_client_config(db, cfg_global, cid)
-        aid = state.get("alert_id")
-        if aid:
-            await db.alerts.update_one({"id": aid},
+        # Durata totale del disservizio
+        started = _parse_iso(state.get("started_at") or state.get("first_at"))
+        dur = _fmt_duration((now - started).total_seconds()) if started else None
+        power = bool(state.get("power_confirmed"))
+        # Risolvi l'alert del watchdog (se presente) e gli eventuali alert corr di sito
+        if state.get("alert_id"):
+            await db.alerts.update_one({"id": state["alert_id"]},
                 {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+        await db.alerts.update_many(
+            {"client_id": cid, "status": "active",
+             "source_type": {"$in": ["corr_site_power_down", "corr_site_isolated"]}},
+            {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
         if cfg.get("auto_recovery"):
-            rec = _mk_alert(
-                cid, cname, "Sito", "", "site", "low", "site_blackout_recovery",
-                f"Sito RIPRISTINATO: {cname}",
-                f"Il sito del cliente {cname} e' tornato raggiungibile "
-                f"(agent on-site + WAN operativi). Blackout rientrato.",
-            )
+            if power:
+                title = f"⚡ Corrente RIPRISTINATA: {cname}"
+                msg = (f"La corrente elettrica presso {cname} e' tornata: sito di nuovo "
+                       f"operativo. Corrente assente per {dur}." if dur else
+                       f"La corrente elettrica presso {cname} e' tornata: sito operativo.")
+            else:
+                title = f"Sito RIPRISTINATO: {cname}"
+                msg = (f"Il sito del cliente {cname} e' tornato raggiungibile "
+                       f"(agent on-site + WAN operativi). Disservizio durato {dur}." if dur else
+                       f"Il sito del cliente {cname} e' tornato raggiungibile. Blackout rientrato.")
+            rec = _mk_alert(cid, cname, "Sito", "", "site", "low",
+                            "site_blackout_recovery", title, msg)
+            if dur:
+                rec["outage_duration"] = dur
             await _emit_recovery_notice(db, cfg, rec)
         await db.site_blackout_state.delete_one({"client_id": cid})
         actions += 1
-        logger.info("[site-blackout] recovery client=%s", cname)
+        logger.info("[site-blackout] recovery client=%s durata=%s power=%s", cname, dur, power)
 
     return actions
 
