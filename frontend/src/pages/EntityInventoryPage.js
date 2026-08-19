@@ -11,6 +11,7 @@ const SOURCE_META = {
   agent: { label: "Agent", cls: "bg-violet-500/15 text-violet-400 border-violet-500/40" },
   ilo: { label: "iLO/Redfish", cls: "bg-amber-500/15 text-amber-400 border-amber-500/40" },
   cmdb_manual: { label: "Anagrafica", cls: "bg-fuchsia-500/15 text-fuchsia-400 border-fuchsia-500/40" },
+  nebula: { label: "Zyxel Nebula", cls: "bg-cyan-500/15 text-cyan-400 border-cyan-500/40" },
 };
 
 const KEY_LABEL = { serial: "Serial", mac: "MAC", datto_uid: "Datto UID", agent_id: "Agent ID", hostname: "Hostname", ip: "IP" };

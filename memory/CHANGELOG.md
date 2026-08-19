@@ -1,3 +1,21 @@
+# 2026-08-19 — CMDB: fusione client firewall Nebula in Entity Resolution
+
+## Richiesta utente
+Fondere i client connessi al firewall nel CMDB/Entity Resolution, correlandoli via MAC alle identità già note (SNMP/Datto/Agent) invece di lasciarli in un elenco a sé.
+
+## Implementazione (entity_resolver.py)
+- Nuova fonte `nebula` in `_collect_units`: per ogni firewall del cliente legge `clients[]` e crea/arricchisce un'unità CMDB per IP, con chiave MAC (+ hostname se significativo). Nebula spesso fornisce il MAC anche per IP non mappati dal monitoraggio → merge trasversale via chiave `mac`.
+- attrs: nebula_client, nebula_status, vendor, os, vlan.
+
+## Frontend (EntityInventoryPage.js)
+- Badge dedicato sorgente "Zyxel Nebula" (ciano).
+
+## Verifica (reconcile reale cliente da3d6e40)
+88 unità (62 nuove da Nebula). Entità fuse multi-sorgente: es. PC001 / 86bitserver / DATI = Datto+Monitoraggio+Nebula (MAC aggiunto da Nebula a device già noti). Client standalone inventariati con sorgente Nebula. Screenshot CMDB conferma.
+
+---
+
+
 # 2026-08-19 — NEBULA: scheda firewall arricchita (Client, VPN, Event Logs)
 
 ## Richiesta utente

@@ -126,6 +126,38 @@ async def _collect_units(db, client_id: str) -> List[Dict[str, Any]]:
         if a.get("hostname") and not u["attrs"].get("name"):
             u["attrs"]["name"] = a.get("hostname")
 
+    # Client connessi ai firewall Zyxel Nebula: ogni dispositivo dietro il
+    # firewall arricchisce/crea un'entita' CMDB, correlata via MAC alle identita'
+    # gia' note (SNMP/Datto/Agent) invece di restare un elenco a se'. Nebula
+    # spesso fornisce il MAC anche per IP che il monitoraggio non aveva mappato.
+    async for fw in db.zyxel_devices.find(
+        {"client_id": client_id, "device_type": "firewall"},
+        {"_id": 0, "clients": 1},
+    ):
+        for c in (fw.get("clients") or []):
+            ip = c.get("ip")
+            if not ip:
+                continue
+            u = units.setdefault(ip, {"ip": ip, "keys": {}, "sources": set(), "attrs": {}})
+            u["sources"].add("nebula")
+            mac = _norm_mac(c.get("mac"))
+            if mac:
+                u["keys"].setdefault("mac", mac)
+            host = c.get("hostname")
+            host = host if (host and _norm_mac(host) is None) else None
+            if host and not u["attrs"].get("name"):
+                u["attrs"]["name"] = host
+                u["keys"].setdefault("hostname", str(host).strip().lower())
+            u["attrs"].setdefault("name", host or c.get("vendor") or ip)
+            u["attrs"].setdefault("device_type", "endpoint")
+            u["attrs"].setdefault("vendor", c.get("vendor"))
+            if c.get("os"):
+                u["attrs"].setdefault("os", c.get("os"))
+            if c.get("vlan") is not None:
+                u["attrs"]["vlan"] = c.get("vlan")
+            u["attrs"]["nebula_client"] = True
+            u["attrs"]["nebula_status"] = c.get("status")
+
     for u in units.values():
         u["keys"]["ip"] = f"{client_id}:{u['ip']}"
         if u["keys"].get("hostname"):
