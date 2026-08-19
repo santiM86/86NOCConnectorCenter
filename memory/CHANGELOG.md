@@ -5080,3 +5080,12 @@ enrichment IP negli alert esistenti con badge reputazione.
 - .gitignore: ricostruito da 2890 righe corrotte (blocco .env ripetuto ~300 volte) a 83 righe pulite. I file .env NON sono più ignorati (richiesto dal deploy Emergent).
 - deployment_agent: ora status=PASS, destructive_db_startup_confirmed=false, gitignore_blocks_required_files=false, findings=[].
 - Verificato end-to-end: login info@86bit.it -> requires_2fa -> verify-2fa -> token pieno + refresh_token (JWT persistente stabile).
+
+## 2026-06 — Situation Engine (verdetto unico per dispositivo) — Fase 1+2
+- backend/situation_engine.py: diagnose_device() fonde raggiungibilita (correlation_engine, evidence fusion) + rollup alert attivi per dominio (hardware/backup/security/performance/rete) agganciati per device_ip O device_name -> UN verdetto {overall_state, primary{situation IT, root_cause, confidence}, recommended_action, evidence[], evidence_by_domain}. Primario = liveness se DOWN, altrimenti dominio piu grave (peso security>reachability>hardware>backup>performance>rete).
+- diagnose_client(): counts device + client_situations[] che AGGREGA gli alert client-level per source_type (es. backup x50 in 1 voce) con runbook e client_situation_counts. Classificazione dominio con longest-prefix match.
+- routes/situation.py: GET /api/devices/by-ip/{ip}/diagnosis?client_id=  e  GET /api/clients/{id}/diagnosis (auth JWT). Registrati in server.py.
+- Frontend DeviceDetailPanel.js: card "Diagnosi" (DiagnosisSection) come PRIMO elemento del pannello (indipendente da /network/device-detail), con stato colorato, certezza %, azione consigliata, prove correlate per dominio, pallini segnali (PING/L2/Datto/WAN). AbortController + placeholder errore.
+- Fix pre-esistente: rimosso blocco SNMP in EndpointInfo che usava detail/clientId fuori scope (ReferenceError/crash su Discovery).
+- Test: iter122 backend 15/15 PASS (fusione trasversale validata con alert temporanei), iter123 frontend 100% sui 3 scenari P0 (card presente anche su device-detail 404, in cima).
+- BACKLOG aperto: (P1) colonna STATO DevicesPage contraddice il verdetto Situation Engine -> aggancia /api/devices a compute_status (refactor liveness gia in roadmap). (P2) scrollIntoView del pannello per righe in fondo alla lista. (P3) Fase 3 predittivita (trend temp/SMART/UPS/RAID -> guasto imminente).

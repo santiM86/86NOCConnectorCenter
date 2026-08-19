@@ -203,6 +203,7 @@ from routes.auth import router as auth_router
 from routes.admin import router as admin_router
 from routes.clients import router as clients_router
 from routes.devices import router as devices_router
+from routes.situation import router as situation_router
 from routes.alerts import router as alerts_router
 from routes.audit_routes import router as audit_router
 from routes.vault import router as vault_router
@@ -271,6 +272,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(clients_router)
 app.include_router(devices_router)
+app.include_router(situation_router)
 app.include_router(alerts_router)
 app.include_router(audit_router)
 app.include_router(vault_router)

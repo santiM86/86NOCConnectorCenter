@@ -1,0 +1,38 @@
+{
+  "summary": "ITER 123 — Retest MIRATO frontend del fix P0 (card Diagnosi in DeviceDetailPanel). Login reale info@86bit.it + TOTP OK. Su /devices testati i 3 scenari richiesti cliccando le righe: 10.30.0.201 '86bitserver' (device-detail 404) -> card device-diagnosis PRESENTE e visibile, diagnosis-state='CRITICO', diagnosis-primary='UNREACHABLE', diagnosis-action='Verifica lo stato del dispositivo.', badge 'certezza 80%'; 10.100.61.99 'Auto-10.100.61.99' (404) -> card PRESENTE, state='DA VERIFICARE', primary='NO DATA', action presente; 192.168.1.3 (200) -> card PRESENTE, state='OPERATIVO', badge 'certezza 100%', diagnosis-action ASSENTE (corretto perche' OK), pallini PING/L2/MAC/Datto/WAN presenti. Posizione verificata via getBoundingClientRect/DOM: la card e' il PRIMO figlio del contenitore scrollabile (firstTestid='device-diagnosis', isFirstChild=true, diagTop=230 vs scrollerTop=214, scrollTop=0) e sta sopra VendorDetailsPanel. FIX P0 CONFERMATO RISOLTO. Doppia fetch: mitigata parzialmente (1 sola GET /diagnosis per apertura su 2 dei 3 device, 2 sulla prima apertura dopo il mount della pagina; /network/device-detail resta senza AbortController). Nessun errore console/JS rilevato durante le aperture.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DeviceDetailPanel", "issue": "Il pannello e' position:absolute ancorato al top del contenitore della tabella: cliccando una riga in fondo alla lista (es. 192.168.1.3, riga ~40) la card Diagnosi finisce FUORI dal viewport in alto (misurato diagTop=-506, scrollerTop=-522) e l'utente vede solo la coda del pannello (SNMP config). Serve uno scrollIntoView del pannello (o pannello sticky/fixed) all'apertura.", "selector": "[data-testid=\"device-detail-panel\"]", "priority": "MEDIUM"},
+      {"component": "DiagnosisSection", "issue": "diagnosis-primary mostra il codice macchina in inglese maiuscolo ('UNREACHABLE', 'NO DATA', 'HEALTHY') invece di una frase in italiano; il testo italiano c'e' solo nel reasoning sotto. Incoerente con l'obiettivo 'verdetto leggibile'.", "selector": "[data-testid=\"diagnosis-primary\"]", "priority": "LOW"},
+      {"component": "DiagnosisSection", "issue": "Su 86bitserver (CRITICO/UNREACHABLE) il pallino PING non viene mostrato (signals.ping=null -> SignalDot ritorna null) mentre Datto e WAN sono verdi: visivamente il verdetto CRITICO non ha nessun segnale rosso coerente a supporto (solo L2/MAC rosso). Considerare un pallino grigio 'PING n/d'.", "selector": "[data-testid=\"device-diagnosis\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "DevicesPage colonna STATO vs card Diagnosi", "issue": "Contraddizione ancora presente (P1 di iter122, invertita): la colonna STATO mostra 'Online' per 86bitserver (10.30.0.201) mentre la card Diagnosi dichiara 'CRITICO — UNREACHABLE — Dispositivo irraggiungibile'. Stessa schermata, due verdetti opposti.", "affected_selectors": ["[data-testid^=\"device-row-\"]", "[data-testid=\"diagnosis-state\"]"]},
+      {"flow": "Fetch diagnosi/device-detail", "issue": "Alla prima apertura del pannello dopo il caricamento della pagina si osservano ancora 2 GET /devices/by-ip/{ip}/diagnosis e 2 GET /network/device-detail (StrictMode); dalle aperture successive 1 sola /diagnosis. L'AbortController evita la race ma non la richiesta duplicata, e l'effect di device-detail non ha alcun abort.", "affected_selectors": ["[data-testid=\"device-detail-panel\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "DeviceDetailPanel", "issues": ["Card Diagnosi ora in cima, leggibile, contrasto adeguato (rosso/verde su bg scuro) — OK", "Il blocco VendorDetailsPanel vuoto occupa comunque ~300px con messaggio informativo + 'Nessun dato disponibile' duplicato subito sotto: consigliato collassarlo"]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_123.json"],
+  "action_items": [
+    "P1: allineare la colonna STATO di DevicesPage al verdetto del Situation Engine (86bitserver: 'Online' in lista vs 'CRITICO/UNREACHABLE' nel pannello).",
+    "P2: scrollare il pannello (o la card Diagnosi) nel viewport all'apertura: per righe in fondo alla tabella la diagnosi resta sopra il fold.",
+    "P3: localizzare primary.situation in italiano (o mappare i codici lato FE) e mostrare un pallino neutro quando signals.ping e' null.",
+    "P3: aggiungere AbortController anche all'effect di /network/device-detail per eliminare la richiesta duplicata."
+  ],
+  "critical_code_review_comments": [
+    "DeviceDetailPanel.js riga ~584: il componente EndpointInfo usa `detail?.managed`, `clientId` e `detail.device_id` che NON esistono nel suo scope (sono variabili del componente padre) -> ReferenceError garantito al render di un device con role='discovered_endpoint' (crash del pannello nelle pagine Discovery/LanScanner). Bug latente da correggere: passare detail/clientId come props o rimuovere il blocco.",
+    "Il fix P0 e' corretto: <DiagnosisSection> e' fuori dal ternario `detail ? ...` e primo figlio di .flex-1.overflow-y-auto; verificato a runtime su device con device-detail 404.",
+    "Quando detail=null viene mostrato 'Nessun dato disponibile' subito sotto la card Diagnosi e sotto il messaggio vendor: tre messaggi 'vuoti' consecutivi, valutare un unico stato vuoto."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (per request)", "frontend": "100% sui 3 scenari del fix P0 (card presente/prima posizione/stati corretti); 3 issue minori aperte"},
+  "seed_data_creation": "nessuna",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (login UI funzionante)",
+  "context_for_next_testing_agent": "Fix P0 iter122 VERIFICATO OK: device-diagnosis compare anche con /api/network/device-detail 404 (10.30.0.201 CRITICO, 10.100.61.99 DA VERIFICARE) ed e' il primo figlio dello scroller. Restano: contraddizione colonna STATO vs verdetto, pannello fuori viewport per righe in fondo alla lista, ReferenceError latente in EndpointInfo (detail/clientId non definiti), doppia fetch alla prima apertura. Selettori utili: device-diagnosis, diagnosis-state, diagnosis-primary, diagnosis-action, device-detail-panel, detail-close-btn, riga: tbody tr:has(td:text-is('<ip>')).",
+  "rca_of_the_issue": "Il P0 era causato dall'annidamento di <DiagnosisSection> nel ramo `detail ? ...`; ora e' renderizzato incondizionatamente per hasIp && !isEndpoint come primo elemento dello scroller, quindi indipendente dall'esito di /network/device-detail. Confermato a runtime."
+}
