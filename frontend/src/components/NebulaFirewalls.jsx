@@ -19,7 +19,8 @@ import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import {
   ShieldCheck, Globe, Cpu, Database, Pulse, ArrowsClockwise, PlugsConnected,
-  ArrowLineUp, ArrowLineDown, NetworkSlash, CaretRight,
+   ArrowLineUp, ArrowLineDown, NetworkSlash, CaretRight, LockKey,
+  ListMagnifyingGlass, Circle,
 } from "@phosphor-icons/react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -73,7 +74,28 @@ function FirewallDetail({ fw }) {
   const nat = Array.isArray(fw.nat_rules) ? fw.nat_rules : [];
   const wan = Array.isArray(fw.wan_interfaces) ? fw.wan_interfaces : [];
   const lan = Array.isArray(fw.lan_interfaces) ? fw.lan_interfaces : [];
+  const clients = Array.isArray(fw.clients) ? fw.clients : [];
+  const vpn = fw.vpn_status || {};
+  const vpnCount = (vpn.sites?.length || 0) + (vpn.gateways?.length || 0) + (vpn.remote_aps?.length || 0);
   const lineUp = fw.line_state === "up";
+
+  // Event logs on-demand (Nebula ne restituisce migliaia → caricamento manuale).
+  const [logs, setLogs] = useState(null);
+  const [logsBusy, setLogsBusy] = useState(false);
+  const [logsErr, setLogsErr] = useState(null);
+  const loadLogs = async () => {
+    setLogsBusy(true); setLogsErr(null);
+    try {
+      const token = localStorage.getItem("noc_token");
+      const r = await axios.get(
+        `${API}/api/clients/${encodeURIComponent(fw.client_id)}/zyxel/devices/${encodeURIComponent(fw.dev_id)}/event-logs?minutes=60&limit=150`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setLogs(r.data);
+    } catch (e) {
+      setLogsErr(e.response?.data?.detail || "Errore nel caricamento dei log");
+    } finally { setLogsBusy(false); }
+  };
 
   return (
     <div className="space-y-3">
@@ -251,6 +273,97 @@ function FirewallDetail({ fw }) {
                 </span>
               </div>
             ))}
+          </div>
+        )}
+      </Section>
+
+      {/* Client connessi */}
+      {clients.length > 0 && (
+        <Section title={`Client connessi · ${fw.clients_online ?? clients.filter(c => c.status === "ONLINE").length} online`} count={clients.length}>
+          <div className="max-h-64 overflow-y-auto -mx-1 px-1" data-testid="nebula-fw-clients">
+            <div className="grid grid-cols-[16px_1fr_1fr_auto] gap-x-2 text-[8px] uppercase tracking-wider text-[var(--text-muted)] pb-1 sticky top-0 bg-[var(--bg-card)]">
+              <span></span><span>IP</span><span>Host / Vendor</span><span>VLAN</span>
+            </div>
+            {clients.map((c, i) => {
+              const on = c.status === "ONLINE";
+              const host = c.hostname && c.hostname !== c.mac ? c.hostname : (c.vendor || c.mac);
+              return (
+                <div key={`${c.mac}-${i}`} className="grid grid-cols-[16px_1fr_1fr_auto] gap-x-2 items-center text-[10px] py-1 border-b border-[var(--bg-border)]/40"
+                     data-testid={`nebula-fw-client-${c.mac}`} title={`${c.mac} · ${c.vendor || ""} · ${c.os || ""}`}>
+                  <Circle size={8} weight="fill" style={{ color: on ? C.online : C.muted }} />
+                  <span className="font-mono text-[var(--text-primary)] truncate">{c.ip || "—"}</span>
+                  <span className="truncate text-[var(--text-primary)]">{host}</span>
+                  <span className="font-mono text-[var(--text-muted)] text-right">{c.vlan ?? "—"}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
+      {/* Stato VPN */}
+      <Section title="VPN" count={vpnCount}>
+        {vpnCount === 0 ? (
+          <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1">
+            <LockKey size={12} /> Nessun tunnel VPN attivo sul sito.
+          </p>
+        ) : (
+          <div className="space-y-2 text-[10px]" data-testid="nebula-fw-vpn">
+            {[["Site-to-Site", vpn.sites], ["Gateway", vpn.gateways], ["Remote AP", vpn.remote_aps]].map(([lbl, arr]) =>
+              (arr && arr.length > 0) ? (
+                <div key={lbl}>
+                  <p className="text-[8px] uppercase tracking-wider text-[var(--text-muted)] mb-1">{lbl} ({arr.length})</p>
+                  {arr.map((t, i) => (
+                    <div key={i} className="flex items-center justify-between px-2 py-1 rounded border border-[var(--bg-border)] mb-0.5">
+                      <span className="font-bold text-[var(--text-primary)] truncate">{t.name || t.peerName || t.remoteName || `#${i + 1}`}</span>
+                      <span className="font-mono text-[var(--text-muted)]">{t.status || t.connectionStatus || "—"}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null
+            )}
+          </div>
+        )}
+      </Section>
+
+      {/* Event Logs (on-demand) */}
+      <Section title="Event Logs (ultima ora)">
+        {!logs && !logsBusy && !logsErr && (
+          <button onClick={loadLogs}
+                  className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+                  data-testid="nebula-fw-logs-load">
+            <ListMagnifyingGlass size={13} weight="bold" /> Carica event-log del firewall
+          </button>
+        )}
+        {logsBusy && <p className="text-[10px] text-[var(--text-muted)] flex items-center gap-1"><ArrowsClockwise size={12} className="animate-spin" /> Caricamento…</p>}
+        {logsErr && <p className="text-[10px] text-red-400">{logsErr}</p>}
+        {logs && (
+          <div data-testid="nebula-fw-logs">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[8px] text-[var(--text-muted)]">
+                {logs.count} eventi (su {logs.total_window} negli ultimi {logs.minutes} min)
+              </p>
+              <button onClick={loadLogs} disabled={logsBusy} className="text-[var(--text-muted)] hover:text-cyan-300" title="Aggiorna" data-testid="nebula-fw-logs-refresh">
+                <ArrowsClockwise size={11} weight="bold" className={logsBusy ? "animate-spin" : ""} />
+              </button>
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-0.5">
+              {logs.logs.map((l, i) => (
+                <div key={i} className="text-[9px] px-2 py-1 rounded border border-[var(--bg-border)]/50 font-mono">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[8px] px-1 rounded uppercase shrink-0"
+                          style={{ color: l.category === "Dropped" ? C.warn : "var(--text-muted)", background: "var(--bg-card)" }}>{l.category}</span>
+                    <span className="text-[var(--text-muted)] text-[8px]">{l.timestamp ? new Date(l.timestamp).toLocaleTimeString("it-IT") : ""}</span>
+                  </div>
+                  <p className="text-[var(--text-primary)] mt-0.5 break-words">{l.message}</p>
+                  {(l.src_ip || l.dst_ip) && (
+                    <p className="text-[var(--text-muted)] mt-0.5">
+                      {l.src_ip}{l.src_port ? `:${l.src_port}` : ""} <CaretRight size={8} className="inline" /> {l.dst_ip}{l.dst_port ? `:${l.dst_port}` : ""}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </Section>
