@@ -33,6 +33,7 @@ _DOMAIN_RULES = [
     ("reachability", ("corr_", "site_blackout", "connector_offline", "connector_recovery",
                       "connector_watchdog", "datto_server_offline", "datto_sync_stale",
                       "external_monitor", "unreachable")),
+    ("predictive", ("predictive_",)),
     ("security", ("osint_c2", "osint_exposure", "rogue_device", "security_identity_change",
                   "security_ip_mac_change", "security_mac_change", "security_mac_ip_roam",
                   "movement_anomaly")),
@@ -46,7 +47,7 @@ _DOMAIN_RULES = [
 
 # Pesi di dominio (per scegliere il primario quando il device e' UP).
 _DOMAIN_WEIGHT = {
-    "security": 6, "reachability": 5, "hardware": 4, "backup": 3,
+    "security": 7, "predictive": 6, "reachability": 5, "hardware": 4, "backup": 3,
     "performance": 2, "network": 1, "discovery": 0,
 }
 
@@ -68,6 +69,10 @@ _ACTIONS: Dict[str, str] = {
     "osint_c2": "Comunicazione con IP malevolo noto (C2): possibile COMPROMISSIONE. Isola il device e avvia incident response.",
     "osint_exposure": "CVE attivamente sfruttate esposte su IP pubblico. Applica patch/mitigazioni con priorita'.",
     "rogue_device": "Dispositivo sconosciuto/rogue in rete. Identifica e autorizza o blocca sulla porta.",
+    "predictive_raid": "GUASTO IMMINENTE: RAID degradato/crashed. Verifica i dischi, sostituisci quello guasto e avvia la ricostruzione PRIMA di perdere ridondanza/dati.",
+    "predictive_temp": "GUASTO IMMINENTE: temperatura in salita verso la soglia critica. Verifica ventole/condizionamento e pulizia filtri prima del blocco termico.",
+    "predictive_ups": "GUASTO IMMINENTE: UPS in esaurimento. Verifica l'alimentazione di rete e lo stato/eta' della batteria; pianifica lo spegnimento controllato se resta su batteria.",
+    "predictive": "GUASTO IMMINENTE previsto dai trend. Interveni sul componente segnalato prima del guasto.",
     "traffic_anomaly": "Anomalia di traffico rilevata. Verifica saturazione/eventi anomali sulla porta.",
     "external_monitor_line": "Linea/monitor esterno in errore: la connettivita' verso questo endpoint pubblico e' degradata o assente. Verifica linea ISP/servizio esposto.",
     "external_monitor": "Endpoint monitorato non raggiungibile dall'esterno. Verifica servizio/porta pubblica e stato linea.",

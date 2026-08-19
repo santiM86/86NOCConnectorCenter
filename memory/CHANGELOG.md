@@ -5089,3 +5089,11 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Fix pre-esistente: rimosso blocco SNMP in EndpointInfo che usava detail/clientId fuori scope (ReferenceError/crash su Discovery).
 - Test: iter122 backend 15/15 PASS (fusione trasversale validata con alert temporanei), iter123 frontend 100% sui 3 scenari P0 (card presente anche su device-detail 404, in cima).
 - BACKLOG aperto: (P1) colonna STATO DevicesPage contraddice il verdetto Situation Engine -> aggancia /api/devices a compute_status (refactor liveness gia in roadmap). (P2) scrollIntoView del pannello per righe in fondo alla lista. (P3) Fase 3 predittivita (trend temp/SMART/UPS/RAID -> guasto imminente).
+
+## 2026-06 — Diagnosi Predittiva (Fase 3): situazioni "GUASTO IMMINENTE"
+- backend/predictive.py: evaluate_predictive_alerts() rileva PRIMA del down: (1) RAID degradato/crashed via vendor_metrics raidStatus(11/12)/systemStatus(2) -> critical; (2) trend TEMPERATURA e temperatura DISCHI (regressione lineare su metric_history, proietta ETA alla soglia critica: <=1h critical, <=6h high; fallback vicinanza-soglia); (3) batteria UPS (autonomia<=5min o carica<=20% critical; carica<=60% in calo o su-batteria high). Alert source_type predictive_* deduplicati e AUTO-RISOLTI al ripristino.
+- Aggancio in routes/agent_ws.py (bridge SNMP): dopo evaluate_hardware_alerts -> record_metrics (storicizza temp/disk/ups) + evaluate_predictive_alerts. Best-effort try/except.
+- situation_engine.py: nuovo dominio "predictive" (peso 6, sotto security 7, sopra reachability 5), runbook per predictive_raid/temp/ups. Il verdetto unico rende primaria la situazione predittiva quando il device e UP.
+- Frontend DeviceDetailPanel: DOMAIN_META.predictive = {label:"Guasto imminente", Icon:ChartLineUp} -> compare tra le prove correlate.
+- Self-test OK: RAID degradato->critical; temp 60->74C in 90min -> "soglia critica tra ~25 min" critical; UPS 15%/4min -> critical; recovery -> auto-resolve 0 attivi; diagnose_device: overall CRITICAL, primary=predictive.
+- NOTA: SMART attributi grezzi (settori riallocati/wear) NON sono raccolti (nessun OID nei device_profiles) -> predittivita disco basata su temperatura disco. Estensione SMART = futura (richiede OID agent/profilo).

@@ -942,6 +942,24 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
             )
         except Exception as e:  # noqa: BLE001
             logger.debug("hardware_alerts eval failed ip=%s err=%s", target, e)
+        # v2026-06 Storicizza le metriche (temp/disk/ups) e valuta la DIAGNOSI
+        # PREDITTIVA ("guasto imminente": RAID degradato, trend temp/disco, UPS).
+        try:
+            from routes.metric_history import record_metrics
+            await record_metrics(conn.client_id, target, {"vendor_metrics": _vm_built})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("record_metrics(snmp) failed ip=%s err=%s", target, e)
+        try:
+            from predictive import evaluate_predictive_alerts
+            await evaluate_predictive_alerts(
+                db,
+                client_id=conn.client_id,
+                device_ip=target,
+                vendor_metrics=_vm_built,
+                sys_name=r.get("sys_name"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("predictive eval failed ip=%s err=%s", target, e)
 
 
 async def _bridge_switch_ports(conn: _Connection, data: Dict[str, Any]) -> None:

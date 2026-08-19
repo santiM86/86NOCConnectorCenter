@@ -277,6 +277,7 @@ const STATE_STYLE = {
 
 const DOMAIN_META = {
   reachability: { label: "Rete", Icon: Pulse },
+  predictive: { label: "Guasto imminente", Icon: ChartLineUp },
   security: { label: "Sicurezza", Icon: ShieldWarning },
   hardware: { label: "Hardware", Icon: HardDrives },
   backup: { label: "Backup", Icon: FloppyDisk },
