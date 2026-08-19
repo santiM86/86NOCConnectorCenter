@@ -331,10 +331,11 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         if kind == "site_power_down":
             confirmed, ups_detail = await _ups_power_loss(db, cid)
             if confirmed:
+                timeline = await _blackout_timeline(db, cid, datetime.now(timezone.utc))
                 anchor[3] = ce._V(False, True, "critical", 99, "site_power_down",
                     "SITO TOTALMENTE GIU' con MANCANZA DI CORRENTE CONFERMATA "
                     f"({ups_detail} poco prima del blackout). Firewall/gateway, connettore "
-                    "on-site e la quasi totalita' dei device irraggiungibili.")
+                    "on-site e la quasi totalita' dei device irraggiungibili." + timeline)
                 anchor[3]["power_confirmed"] = True
             else:
                 anchor[3] = ce._V(False, True, "critical", 96, "site_power_down",
@@ -815,6 +816,44 @@ async def _ups_power_loss(db, client_id: str, minutes: int = 20):
     return False, ""
 
 
+def _fmt_local(dt) -> str:
+    """Formatta un datetime UTC in ora locale IT (HH:MM)."""
+    if not isinstance(dt, datetime):
+        return "?"
+    try:
+        from zoneinfo import ZoneInfo
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("Europe/Rome")).strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        return dt.strftime("%H:%M")
+
+
+async def _blackout_timeline(db, client_id: str, down_at: datetime, minutes: int = 30) -> str:
+    """Cronologia dell'evento: 'HH:MM UPS su batteria → HH:MM sito giu':
+    MANCANZA CORRENTE CONFERMATA'. Vuoto se non c'e' un evento pre-blackout."""
+    cutoff = down_at - timedelta(minutes=minutes)
+    try:
+        ev = await db.pre_blackout_events.find_one(
+            {"client_id": client_id, "last_seen_at": {"$gte": cutoff}},
+            sort=[("last_seen_at", -1)],
+        )
+    except Exception:  # noqa: BLE001
+        ev = None
+    if not ev:
+        return ""
+    since = ev.get("on_battery_since") or ev.get("last_seen_at")
+    charge = ev.get("charge")
+    rt = ev.get("runtime_min")
+    extra = ""
+    if charge is not None:
+        extra = f" (carica {charge:.0f}%"
+        extra += f", autonomia ~{rt:.0f} min)" if rt is not None else ")"
+    return (f"\n\n📖 Cronologia evento:\n"
+            f"• {_fmt_local(since)} — UPS passato su batteria{extra}\n"
+            f"• {_fmt_local(down_at)} — SITO GIÙ: MANCANZA DI CORRENTE CONFERMATA")
+
+
 async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     """Emette UN alert critico per cliente quando l'agent on-site e' offline E
     la sonda WAN esterna del Center vede l'internet GIU' (blackout confermato da
@@ -856,11 +895,12 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             continue
         confirmed, ups_detail = await _ups_power_loss(db, cid)
         if confirmed:
+            timeline = await _blackout_timeline(db, cid, now)
             title = f"SITO GIU' — MANCANZA CORRENTE CONFERMATA: {cname}"
             body = (f"Il sito del cliente {cname} risulta TOTALMENTE GIU' e la mancanza di "
                     f"CORRENTE e' CONFERMATA: {ups_detail} rilevato poco prima del blackout. "
                     f"L'agent on-site non risponde e la sonda WAN esterna vede l'internet "
-                    f"irraggiungibile. Tutti i dispositivi del sito sono offline.")
+                    f"irraggiungibile. Tutti i dispositivi del sito sono offline." + timeline)
         else:
             title = f"SITO GIU' / possibile BLACKOUT: {cname}"
             body = (f"Il sito del cliente {cname} risulta TOTALMENTE GIU': l'agent on-site "

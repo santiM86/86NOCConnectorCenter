@@ -5118,3 +5118,8 @@ enrichment IP negli alert esistenti con badge reputazione.
 - predictive.py: quando lUPS va su batteria (_eval_ups on_battery), registra/aggiorna un marker persistente in collection pre_blackout_events {client_id, device_ip, on_battery_since, last_seen_at, charge, runtime, detail}. Cancellato al ritorno su rete (_clear_pre_blackout). Indice TTL 2h (auto-pulizia eventi non recuperati) + unique (client_id,device_ip), creati best-effort al primo uso.
 - alert_engine._ups_power_loss: consulta PRIMA pre_blackout_events (last_seen entro 20min) poi fallback a metric_history. Cosi il blackout (site_power_down anchor + watchdog) viene etichettato "MANCANZA CORRENTE CONFERMATA" in TEMPO REALE gia dal primo secondo del down, ANCHE se lUPS si e spento e non riporta piu (levento persiste lultimo stato noto).
 - Self-test OK: baseline->no; UPS su batteria->evento registrato; UPS spento (nessuna metric fresca)->blackout CONFERMATO via evento; recovery->evento cancellato + non confermato.
+
+## 2026-06 — Cronologia evento nel messaggio blackout (Telegram)
+- alert_engine._blackout_timeline(db,client_id,down_at): legge pre_blackout_events e costruisce la timeline "HH:MM UPS su batteria -> HH:MM SITO GIU: MANCANZA CORRENTE CONFERMATA" in ora locale IT (Europe/Rome via zoneinfo, fallback UTC). Helper _fmt_local.
+- Integrata (append al messaggio) in ENTRAMBI i punti che dichiarano il blackout confermato: verdetto corr_site_power_down (run_vital_watchdog) e alert del run_site_blackout_watchdog. Il messaggio Telegram/WebPush ora include la cronologia completa in un unico avviso.
+- Self-test OK: evento pre-blackout (batteria da 5min) -> genera "14:16 UPS su batteria (carica 82%, autonomia ~22min) -> 14:21 SITO GIU: MANCANZA CORRENTE CONFERMATA".
