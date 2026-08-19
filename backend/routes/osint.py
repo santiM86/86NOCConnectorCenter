@@ -125,9 +125,7 @@ def _asset_category(device_type, model, vendor):
     return None
 
 
-@router.get("/kev/asset-exposure")
-async def kev_asset_exposure(client_id: Optional[str] = None,
-                             current_user: dict = Depends(get_current_user)):
+async def _compute_kev_asset_exposure(client_id: Optional[str] = None):
     """Incrocia il catalogo CISA KEV con i vendor/modelli reali degli asset
     (firewall Zyxel Nebula + dispositivi gestiti/SNMP) per evidenziare quali
     clienti possiedono prodotti colpiti da una vulnerabilità attivamente sfruttata.
@@ -197,6 +195,12 @@ async def kev_asset_exposure(client_id: Optional[str] = None,
         r["client_name"] = cmap.get(r.get("client_id"), r.get("client_id"))
     results.sort(key=lambda r: r["match_count"], reverse=True)
     return {"total": len(results), "assets_scanned": len(assets), "items": results}
+
+
+@router.get("/kev/asset-exposure")
+async def kev_asset_exposure(client_id: Optional[str] = None,
+                             current_user: dict = Depends(get_current_user)):
+    return await _compute_kev_asset_exposure(client_id)
 
 
 @router.get("/exposure")

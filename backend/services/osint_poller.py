@@ -16,6 +16,7 @@ Comportamento scelto: ENRICHMENT + ALERT automatici (nessun blocco automatico).
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -38,6 +39,59 @@ async def osint_feeds_tick() -> None:
             logger.info(f"[osint-feeds] refreshed: {changed}")
     except Exception as e:
         logger.exception(f"[osint-feeds] tick failed: {e}")
+
+
+async def kev_asset_alert_tick() -> dict:
+    """Genera alert per-cliente quando un asset combacia con una CVE del catalogo
+    CISA KEV (attivamente sfruttata). Severity high (critical se ransomware).
+    Dedup stabile per (cliente, dispositivo) via device_id."""
+    try:
+        from routes.osint import _compute_kev_asset_exposure
+        data = await _compute_kev_asset_exposure()
+    except Exception as e:
+        logger.exception(f"[kev-alert] compute failed: {e}")
+        return {"emitted": 0}
+    emitted = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for a in data.get("items", []):
+        cid = a.get("client_id")
+        cves = a.get("matches") or []
+        if not cid or not cves:
+            continue
+        ransom = any(str(m.get("ransomware")).lower() == "known" for m in cves)
+        due_dates = sorted([m.get("due_date") for m in cves if m.get("due_date")])
+        earliest = due_dates[0] if due_dates else None
+        cve_ids = [m.get("cve_id") for m in cves]
+        dev_key = re.sub(r"[^a-z0-9]+", "-", str(a.get("name") or a.get("model") or "asset").lower())
+        alert_doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": cid,
+            "device_id": f"kev:{cid}:{dev_key}",
+            "device_name": a.get("name") or a.get("model"),
+            "severity": "critical" if ransom else "high",
+            "source_type": "kev_exposure",
+            "title": f"Esposizione KEV: {a.get('model') or a.get('name')} — {len(cve_ids)} CVE attivamente sfruttate",
+            "message": (
+                f"L'asset {a.get('name') or ''} ({a.get('vendor')} {a.get('model')}) del cliente "
+                f"{a.get('client_name')} risulta colpito da {len(cve_ids)} vulnerabilità nel catalogo CISA KEV "
+                f"(sfruttamento attivo confermato): {', '.join(cve_ids[:8])}"
+                + (f" +{len(cve_ids) - 8}" if len(cve_ids) > 8 else "") + "."
+                + (f" Scadenza remediation più vicina: {earliest}." if earliest else "")
+                + (" ⚠️ Usata in campagne RANSOMWARE." if ransom else "")
+            ),
+            "status": "active",
+            "created_at": now_iso,
+            "raw_data": ",".join(cve_ids[:20]),
+        }
+        try:
+            await insert_alert_if_emit(db, alert_doc)
+            emitted += 1
+        except Exception as e:
+            logger.debug(f"[kev-alert] emit failed {cid}: {e}")
+    if emitted:
+        logger.info(f"[kev-alert] emitted/updated {emitted} KEV exposure alerts")
+    return {"emitted": emitted, "assets": data.get("total", 0)}
+
 
 
 def _needs_scan(doc: dict | None, now: datetime) -> bool:

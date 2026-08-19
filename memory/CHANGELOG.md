@@ -1,3 +1,22 @@
+# 2026-08-19 — TV Wallboard redesign + Auto-alert KEV↔Asset
+
+## Task 1 — TV Dashboard riprogettata (per TV 40", colpo d'occhio)
+- Riscritti `frontend/src/pages/TvDashboardPage.js` + `TvDashboard.css`.
+- Layout wallboard moderno, alto contrasto, font grandi leggibili da lontano. Ogni cliente = tile con: bordo/colore stato (verde/ambra/rosso), anello salute %, HEADLINE grande del problema dominante ("WAN DOWN" / "N OFFLINE" / "N CRITICI" / "OPERATIVO"), contatori ON/OFF/ALERT, riga WAN (stato+IP+latenza, mostra la linea peggiore), 1 riga top-alert. Niente più liste IP/toner illeggibili.
+- Tile ordinate per gravità (peggiori prima), grid auto-fit responsive, flash rosso sui critici. Mantenuti allarme audio + ticker.
+
+## Task 2 — Auto-alert KEV↔Asset
+- Refactor `routes/osint.py`: estratto `_compute_kev_asset_exposure()` (riusato dalla route).
+- Nuovo `kev_asset_alert_tick()` in `services/osint_poller.py`: genera alert per-cliente per asset esposti a KEV. Severity high, **critical se ransomware**; include lista CVE, scadenza più vicina, flag ransomware. Dedup stabile via device_id `kev:{cid}:{slug}`.
+- Schedulato in `server.py` ogni 6h (kev_asset_alert_tick).
+
+## Verifica
+- TV: screenshot wallboard OK (tile 86BIT_Office, headline WAN DOWN, ring 100%, top-alert KEV, ticker).
+- KEV alert: tick → 1 alert CRITICO "Esposizione KEV: USG FLEX 700H — 5 CVE" per 86BIT_Office con scadenza 2022-06-06 + flag Ransomware. Finisce in dashboard Alert (e su Telegram una volta collegato).
+
+---
+
+
 # 2026-08-19 — KEV ↔ Asset: esposizione clienti a CVE attivamente sfruttate
 
 ## Richiesta utente
