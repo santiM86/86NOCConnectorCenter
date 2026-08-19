@@ -24,6 +24,7 @@ import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
 import DattoRmmSettingsPage from "@/pages/DattoRmmSettingsPage";
 import ZyxelNebulaSettingsPage from "@/pages/ZyxelNebulaSettingsPage";
 import NetworkPathDiagnosisPage from "@/pages/NetworkPathDiagnosisPage";
+import DiagnosisCatalogPage from "@/pages/DiagnosisCatalogPage";
 import AlertEngineSettingsPage from "@/pages/AlertEngineSettingsPage";
 import FingerbankSettingsPage from "@/pages/FingerbankSettingsPage";
 import EncryptionPage from "@/pages/EncryptionPage";
@@ -241,6 +242,7 @@ function App() {
               <Route path="clients" element={<ClientsPage />} />
               <Route path="client/:clientId" element={<ClientOverviewPage />} />
               <Route path="devices" element={<DevicesPage />} />
+              <Route path="diagnosis-catalog" element={<DiagnosisCatalogPage />} />
               <Route path="enterprise" element={<EnterprisePage />} />
               <Route path="agents" element={<AgentsPage />} />
               <Route path="server-metrics" element={<ServerMetricsPage />} />
