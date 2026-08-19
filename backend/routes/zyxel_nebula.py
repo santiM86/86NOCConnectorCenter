@@ -559,7 +559,19 @@ async def sync_client_devices(client_id: str) -> dict:
                             "gateway": w.get("ipv4Gateway"),
                             "netmask": w.get("ipv4Netmask"),
                             "dns": w.get("DNSServers") or [],
+                            "port_group": w.get("portGroupId"),
+                            "vlan": w.get("vlan"),
                         } for w in wan_list]
+                        lan_list = ifs.get("lan") or []
+                        doc["lan_interfaces"] = [{
+                            "interface": l.get("interface"),
+                            "enabled": l.get("enabled"),
+                            "ipv4_type": l.get("ipv4Type"),
+                            "ip": l.get("ipv4Address"),
+                            "netmask": l.get("ipv4Netmask"),
+                            "port_group": l.get("portGroupId"),
+                            "guest_zone": l.get("guestZone"),
+                        } for l in lan_list]
                         # IP pubblico "primario" = primo WAN abilitato con indirizzo
                         primary = next(
                             (w for w in doc["wan_interfaces"] if w.get("enabled") and w.get("public_ip")),
