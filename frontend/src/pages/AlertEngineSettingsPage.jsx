@@ -121,7 +121,8 @@ export default function AlertEngineSettingsPage() {
   const detectChats = async () => {
     setBusy("detect");
     try {
-      const r = await axios.get(`${API}/api/alert-engine/telegram/detect-chats`, { headers });
+      const qs = tgToken.trim() ? `?token=${encodeURIComponent(tgToken.trim())}` : "";
+      const r = await axios.get(`${API}/api/alert-engine/telegram/detect-chats${qs}`, { headers });
       setDetected(r.data.chats || []);
       if (!(r.data.chats || []).length) toast.info("Nessuna chat trovata. Invia prima /start al bot da Telegram.");
     } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }

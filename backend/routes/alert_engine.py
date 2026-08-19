@@ -160,9 +160,9 @@ async def telegram_test(body: dict = None, current_user: dict = Depends(get_curr
 
 
 @router.get("/telegram/detect-chats")
-async def telegram_detect(current_user: dict = Depends(get_current_user)):
+async def telegram_detect(token: str = None, current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
-    res = await tg.detect_chats(db)
+    res = await tg.detect_chats(db, token=(token or None))
     if not res.get("success"):
         raise HTTPException(status_code=400, detail=res.get("error") or res.get("detail") or "getUpdates fallito")
     return res

@@ -1,3 +1,18 @@
+# 2026-08-19 — TELEGRAM: diagnosi collegamento + fix UX "Rileva chat"
+
+## Contesto
+Integrazione Telegram già interamente sviluppata (telegram_notifier.py + endpoint /api/alert-engine/telegram/{test,detect-chats} + UI AlertEngineSettingsPage). Le notifiche non arrivavano perché: token bot salvato NON valido (getMe 401) e telegram_chat_id VUOTO.
+
+## Fix UX applicato
+- `GET /api/alert-engine/telegram/detect-chats` ora accetta query param opzionale `token` → "Rileva chat" può usare il token appena digitato senza doverlo prima salvare (prima usava solo il token in DB, invalido).
+- Frontend `AlertEngineSettingsPage.jsx`: detectChats passa `?token=<digitato>`.
+
+## Azione lato utente (in corso)
+Utente configura da UI (Impostazioni → Alert Engine → Telegram): incolla token @BotFather, invia /start al bot, "Rileva chat", seleziona chat_id, "Test".
+
+---
+
+
 # 2026-08-19 — NEBULA: Scheda Firewall in cima alla WAN + fix endpoint porte (VALIDATO PROD)
 
 ## Richiesta utente
