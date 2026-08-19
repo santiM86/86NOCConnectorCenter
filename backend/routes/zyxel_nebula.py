@@ -391,6 +391,34 @@ async def list_all_zyxel_devices(current_user: dict = Depends(get_current_user))
 
 # ==================== Sync engine ====================
 
+async def _upsert_firewall_managed_device(client_id: str, client_name: str, doc: dict) -> None:
+    """Marca come VITALE il managed_device del firewall (match per MAC o nome) e vi
+    aggancia i dettagli Nebula. Non crea IP fittizi: se il firewall non e' ancora
+    monitorato con un IP reale resta comunque completo nella vista Zyxel/WAN."""
+    try:
+        mac = (doc.get("mac") or "").strip().lower().replace("-", ":")
+        name = (doc.get("name") or "").strip()
+        q = None
+        if mac:
+            q = {"client_id": client_id, "mac": {"$regex": f"^{mac}$", "$options": "i"}}
+            if not await db.managed_devices.find_one(q, {"_id": 0}) and name:
+                q = {"client_id": client_id, "name": name}
+        elif name:
+            q = {"client_id": client_id, "name": name}
+        nebula_ref = {
+            "dev_id": doc.get("dev_id"), "org_id": doc.get("org_id"), "site_id": doc.get("site_id"),
+            "model": doc.get("model"), "sn": doc.get("sn"), "mac": doc.get("mac"),
+            "firmware": doc.get("firmware"), "online_status": doc.get("online_status"),
+        }
+        set_fields = {"is_vital": True, "device_type": "firewall",
+                      "nebula_dev_id": doc.get("dev_id"), "nebula": nebula_ref,
+                      "nebula_synced_at": doc.get("updated_at")}
+        if q:
+            await db.managed_devices.update_one(q, {"$set": set_fields})
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"upsert firewall vital fallito dev={doc.get('dev_id')}: {e}")
+
+
 async def sync_client_devices(client_id: str) -> dict:
     """Sincronizza i device Zyxel di UN cliente mappato: inventario + online/firmware +
     metriche live (CPU/mem/sessioni per gateway, traffico per gateway/switch)."""
@@ -484,7 +512,30 @@ async def sync_client_devices(client_id: str) -> dict:
                 except ZyxelError as e:
                     logger.debug(f"traffic-usage dev={dev_id}: {e}")
 
-            # ===== ALERTING (push + Telegram) con dedup su stato precedente =====
+            # Stato PORTE del firewall/switch (best-effort)
+            if dtype in ("firewall", "switch") and online_map.get(dev_id) == "ONLINE":
+                seg = "gw" if dtype == "firewall" else "sw"
+                for ep in (f"/{sid}/{seg}/{dev_id}/port-status", f"/{sid}/{seg}/{dev_id}/ports"):
+                    try:
+                        ports = await _nebula_request("GET", ep)
+                        if isinstance(ports, list) and ports:
+                            doc["ports"] = [{
+                                "port": p.get("port") or p.get("name") or p.get("interface"),
+                                "name": p.get("name") or p.get("interface"),
+                                "status": p.get("status") or p.get("linkStatus") or p.get("state"),
+                                "speed": p.get("speed") or p.get("linkSpeed"),
+                                "type": p.get("type") or p.get("portType"),
+                            } for p in ports]
+                            break
+                    except ZyxelError as e:
+                        logger.debug(f"port-status dev={dev_id} ep={ep}: {e}")
+
+            # Firewall Nebula = apparato VITALE + managed_device sempre presente,
+            # cosi' compare tra i vitali, in WAN e nel CMDB con tutti i dettagli.
+            if dtype == "firewall":
+                doc["is_vital"] = True
+                await _upsert_firewall_managed_device(client_id, client_name, doc)
+
             prev = await db.zyxel_devices.find_one(
                 {"client_id": client_id, "dev_id": dev_id},
                 {"_id": 0, "online_status": 1, "alert_state": 1},

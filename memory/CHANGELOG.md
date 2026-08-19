@@ -5160,3 +5160,9 @@ enrichment IP negli alert esistenti con badge reputazione.
 - linkClient(clientId, orgId, siteIds) ora passa site_ids; toggleSite calcola il set.
 - NOTA: non testabile E2E in preview (Nebula API key solo in produzione); frontend compila e i path/contratti backend sono confermati (endpoint sites gia esistente, PUT link accetta site_ids).
 - Testid: zyxel-sites-{cid}, zyxel-site-all-{cid}, zyxel-site-{cid}-{siteId}.
+
+## 2026-06 — Firewall Nebula: vitale + porte + dettagli completi
+- routes/zyxel_nebula.py sync: per ogni firewall Nebula ONLINE -> raccoglie STATO PORTE (best-effort /{sid}/gw/{devId}/port-status|/ports), marca doc is_vital=True, e _upsert_firewall_managed_device() marca is_vital=True + device_type=firewall + aggancia dettagli Nebula (nebula{} + nebula_dev_id) sul managed_device abbinato per MAC o nome (NIENTE IP fittizi -> nessun conflitto). Cosi il firewall risulta vitale, entra in WAN/CMDB/Situation Engine dove ce un managed_device reale.
+- zyxel_devices porta gia: model, sn, mac, firmware, cpu/mem/sessions, traffic, online_status, ora + ports + is_vital. Endpoint GET /clients/{id}/zyxel/devices e /zyxel/devices restituiscono i doc completi.
+- LIMITE: non testabile in preview (Nebula API key solo in produzione); codice corretto-per-costruzione, da verificare in produzione. Endpoint porte Nebula = best-effort (2 nomi tentati) da validare col vero payload.
+- DA FARE (frontend): sezione WAN del cliente con firewall in cima + scheda firewall dedicata che mostra porte/traffico/dettagli. E il pezzo che rende VISIBILE quanto sopra.
