@@ -145,6 +145,16 @@ def _dev_type(nebula_type: str) -> str:
     return "network"
 
 
+def _port_link_status(link_speed) -> str:
+    """Deriva lo stato link di una porta dal campo linkSpeed di Nebula.
+    linkSpeed vuoto / 'Down' / '0' = porta giu'; qualsiasi velocita' = su."""
+    s = str(link_speed or "").strip().lower()
+    if not s or s in ("down", "0", "0m", "no link", "disconnected", "n/a", "-"):
+        return "down"
+    return "up"
+
+
+
 # Soglie di alerting per i firewall Zyxel (allineate al profilo zyxel_usg_flex_h).
 ZYXEL_THRESHOLDS = {
     "cpu": (70, 90),          # (warn, crit) %
@@ -512,23 +522,82 @@ async def sync_client_devices(client_id: str) -> dict:
                 except ZyxelError as e:
                     logger.debug(f"traffic-usage dev={dev_id}: {e}")
 
-            # Stato PORTE del firewall/switch (best-effort)
+            # Stato PORTE del firewall/switch.
+            # Endpoint Nebula CORRETTO: /{sid}/{seg}/{dev_id}/ports-status
+            #   - gateway: [{portNumber, portGroup, linkSpeed}]
+            #   - switch : [{portNum,    linkSpeed}]
+            # Lo stato link non e' esplicito: si deriva da linkSpeed (vuoto/Down = giu').
             if dtype in ("firewall", "switch") and online_map.get(dev_id) == "ONLINE":
                 seg = "gw" if dtype == "firewall" else "sw"
-                for ep in (f"/{sid}/{seg}/{dev_id}/port-status", f"/{sid}/{seg}/{dev_id}/ports"):
+                for ep in (f"/{sid}/{seg}/{dev_id}/ports-status",
+                           f"/{sid}/{seg}/{dev_id}/port-status"):
                     try:
                         ports = await _nebula_request("GET", ep)
                         if isinstance(ports, list) and ports:
                             doc["ports"] = [{
-                                "port": p.get("port") or p.get("name") or p.get("interface"),
-                                "name": p.get("name") or p.get("interface"),
-                                "status": p.get("status") or p.get("linkStatus") or p.get("state"),
-                                "speed": p.get("speed") or p.get("linkSpeed"),
-                                "type": p.get("type") or p.get("portType"),
+                                "port": p.get("portNumber") or p.get("portNum") or p.get("port"),
+                                "group": p.get("portGroup"),
+                                "speed": p.get("linkSpeed") or p.get("speed"),
+                                "status": _port_link_status(p.get("linkSpeed") or p.get("speed")),
                             } for p in ports]
                             break
                     except ZyxelError as e:
-                        logger.debug(f"port-status dev={dev_id} ep={ep}: {e}")
+                        logger.debug(f"ports-status dev={dev_id} ep={ep}: {e}")
+
+            # WAN / IP pubblico + stato linea (solo firewall online).
+            # interface-settings → {wan:[{interface,ipv4Type,ipv4Address,ipv4Gateway,enabled}], lan:[...]}
+            if dtype == "firewall" and online_map.get(dev_id) == "ONLINE":
+                try:
+                    ifs = await _nebula_request("GET", f"/{sid}/gw/{dev_id}/interface-settings")
+                    if isinstance(ifs, dict):
+                        wan_list = ifs.get("wan") or []
+                        doc["wan_interfaces"] = [{
+                            "interface": w.get("interface"),
+                            "enabled": w.get("enabled"),
+                            "ipv4_type": w.get("ipv4Type"),
+                            "public_ip": w.get("ipv4Address"),
+                            "gateway": w.get("ipv4Gateway"),
+                            "netmask": w.get("ipv4Netmask"),
+                            "dns": w.get("DNSServers") or [],
+                        } for w in wan_list]
+                        # IP pubblico "primario" = primo WAN abilitato con indirizzo
+                        primary = next(
+                            (w for w in doc["wan_interfaces"] if w.get("enabled") and w.get("public_ip")),
+                            (doc["wan_interfaces"][0] if doc["wan_interfaces"] else None),
+                        )
+                        if primary:
+                            doc["public_ip"] = primary.get("public_ip")
+                            doc["line_state"] = "up" if primary.get("enabled") and primary.get("public_ip") else "down"
+                except ZyxelError as e:
+                    logger.debug(f"interface-settings dev={dev_id}: {e}")
+
+            # Regole NAT (solo firewall online): virtualServer (port-forwarding) + 1:1.
+            if dtype == "firewall" and online_map.get(dev_id) == "ONLINE":
+                try:
+                    nat = await _nebula_request("GET", f"/{sid}/gw/{dev_id}/nat-settings")
+                    if isinstance(nat, dict):
+                        vs = nat.get("virtualServer") or []
+                        o2o = nat.get("oneToOne") or []
+                        doc["nat_rules"] = [{
+                            "type": "virtual_server",
+                            "name": r.get("description"),
+                            "enabled": r.get("enabled"),
+                            "interface": r.get("interface"),
+                            "protocol": r.get("protocol"),
+                            "public_ip": r.get("publicIPv4"),
+                            "public_ports": r.get("publicPorts") or [],
+                            "server_ip": r.get("serverIPv4"),
+                            "server_ports": r.get("serverPorts") or [],
+                        } for r in vs] + [{
+                            "type": "one_to_one",
+                            "name": r.get("name"),
+                            "enabled": r.get("enabled"),
+                            "interface": r.get("interface"),
+                            "public_ip": r.get("publicIPv4"),
+                            "server_ip": r.get("privateIPv4"),
+                        } for r in o2o]
+                except ZyxelError as e:
+                    logger.debug(f"nat-settings dev={dev_id}: {e}")
 
             # Firewall Nebula = apparato VITALE + managed_device sempre presente,
             # cosi' compare tra i vitali, in WAN e nel CMDB con tutti i dettagli.

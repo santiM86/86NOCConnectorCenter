@@ -39,6 +39,7 @@ import {
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
 import BridgeHealthWidget from "@/components/BridgeHealthWidget";
+import NebulaFirewalls from "@/components/NebulaFirewalls";
 import SafeBoundary from "@/components/SafeBoundary";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 import { macroOf, macroLabel, MACRO_DEFS, pickDeviceName } from "@/utils/deviceCategory";
@@ -705,6 +706,10 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
       <div className="noc-panel p-4">
         <h3 className="text-[9px] font-bold uppercase tracking-[0.15em] text-indigo-400 mb-3">Infrastruttura di Rete</h3>
         <div className="space-y-2">
+          {/* Firewall Nebula fissato in cima alla WAN */}
+          <SafeBoundary label="Firewall Nebula">
+            <NebulaFirewalls clientId={clientId} />
+          </SafeBoundary>
           {/* WAN */}
           {wanTargets.length > 0 && (
             <div className="space-y-1.5">

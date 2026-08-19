@@ -1,3 +1,24 @@
+# 2026-08-19 — NEBULA: Scheda Firewall in cima alla WAN + fix endpoint porte (VALIDATO PROD)
+
+## Richiesta utente
+Mostrare i firewall Zyxel Nebula fissati in cima alla sezione WAN dell'overview cliente con scheda dettagliata (IP pubblico, stato linea, S/N, porte, traffico, NAT). "Valida Porte in Produzione".
+
+## Fix critico backend (routes/zyxel_nebula.py)
+- Endpoint porte ERRATO (`port-status`/`ports`) → corretto in `ports-status` (endpoint reale Nebula), campi reali `portNumber`/`portGroup`/`linkSpeed`. Status link derivato da `linkSpeed` via nuovo helper `_port_link_status`.
+- Aggiunto fetch `interface-settings` → `wan_interfaces`, `public_ip`, `line_state`.
+- Aggiunto fetch `nat-settings` → `nat_rules` (virtualServer + oneToOne).
+
+## Frontend
+- Nuovo componente `/app/frontend/src/components/NebulaFirewalls.jsx` (GET /api/clients/{id}/zyxel/devices, filtra firewall, auto-hide se assenti, refresh 30s). Titolo usa `model` se `name`==MAC.
+- Montato in `ClientOverviewPage.js` dentro `SafeBoundary`, in cima alla WAN (pannello Infrastruttura di Rete).
+
+## Validazione (iteration_125.json)
+- Backend 8/8 pytest OK, frontend 100%. Firewall reale cliente da3d6e40: 14 porte reali (up/down coerenti con linkSpeed), public_ip 192.168.45.2, line_state up, CPU 5%/Mem 39%/Sess 1156. Nessun crash/blank.
+- Note: `portGroup` assente nella risposta del USG FLEX 700H (group=null); `nat_rules` vuoto sul FW reale (rendering NAT non testabile live).
+
+---
+
+
 # 2026-07-29 — DEVOPS: Auto-set "latest override" sul Center a fine release
 
 ## Richiesta utente
