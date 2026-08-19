@@ -5153,3 +5153,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - entity_resolver.reconcile_client: ogni cmdb_entity ora porta org_id/org_name (raggruppamento per organizzazione). Frontend EntityDetail mostra Organizzazione.
 - Self-test OK: enrich su corr_switch_down CHASW-A -> "[Org: 86 Bit] ... IMPATTO 1 a valle (FORTIGATE-FW)"; rebuild all -> entita con org_name=86 Bit.
 - BACKLOG: gruppi org anche nella lista inventario (filtro per organizzazione), report/dashboard per organizzazione, impatto multi-cliente per infra condivisa.
+
+## 2026-06 — Selezione SITE per cliente nel mapping Nebula
+- Un'organizzazione Nebula ha piu site (ognuno col suo firewall). Il backend supportava gia site_ids nel link (ZyxelLinkIn.site_ids) e il sync filtra per site, ma la UI mappava solo org_id (=tutti i site) -> per chi mappa 1 site per cliente mancavano firewall.
+- Frontend ZyxelNebulaSettingsPage: dopo aver mappato un org al cliente, mostra SEMPRE le chip dei site (loadSites via GET /api/zyxel/organizations/{org_id}/sites). Chip "Tutti (N)" = site_ids [] (tutti), chip per-site toggle -> aggiorna site_ids via PUT link. Preload site per tutti gli org mappati (useEffect su links).
+- linkClient(clientId, orgId, siteIds) ora passa site_ids; toggleSite calcola il set.
+- NOTA: non testabile E2E in preview (Nebula API key solo in produzione); frontend compila e i path/contratti backend sono confermati (endpoint sites gia esistente, PUT link accetta site_ids).
+- Testid: zyxel-sites-{cid}, zyxel-site-all-{cid}, zyxel-site-{cid}-{siteId}.
