@@ -1,3 +1,33 @@
+# 2026-08-19 — NEBULA: firewall come riga + scheda dispositivo completa
+
+## Richiesta utente
+Mostrare il firewall Nebula come riga normale (nome preciso del prodotto). Al click, scheda con TUTTE le info leggibili: IP per porta/interfaccia, traffico per porta, porte NAT aperte.
+
+## Implementazione
+- Backend (zyxel_nebula.py): aggiunto `lan_interfaces` da `interface-settings` (IP per interfaccia LAN); esteso `wan_interfaces` con port_group/vlan.
+- Frontend (NebulaFirewalls.jsx): riscritto come RIGA compatta cliccabile (usa `model` come nome prodotto) + Dialog "scheda dispositivo" con sezioni: stato+metriche, Identità, Interfacce WAN (IP pubblico/gateway/netmask/DNS/VLAN), Interfacce LAN (IP/netmask/port-group), Porte fisiche (speed/status), Traffico per interfaccia (tx/rx), NAT/Porte aperte.
+
+## Verifica (screenshot, dati reali cliente da3d6e40 - USG FLEX 700H)
+Riga: "USG FLEX 700H · 192.168.45.2 · NEBULA · ONLINE". Dialog: CPU 5%/Mem 39%/Sess 1228, WAN(2) ge1/ge2, LAN(11) vlan2..ge13 con IP reali. Tutto leggibile, nessun crash.
+
+---
+
+
+# 2026-08-19 — TELEGRAM: diagnosi collegamento + fix UX "Rileva chat"
+
+## Contesto
+Integrazione Telegram già interamente sviluppata (telegram_notifier.py + endpoint /api/alert-engine/telegram/{test,detect-chats} + UI AlertEngineSettingsPage). Le notifiche non arrivavano perché: token bot salvato NON valido (getMe 401) e telegram_chat_id VUOTO.
+
+## Fix UX applicato
+- `GET /api/alert-engine/telegram/detect-chats` ora accetta query param opzionale `token` → "Rileva chat" può usare il token appena digitato senza doverlo prima salvare (prima usava solo il token in DB, invalido).
+- Frontend `AlertEngineSettingsPage.jsx`: detectChats passa `?token=<digitato>`.
+
+## Azione lato utente (in corso)
+Utente configura da UI (Impostazioni → Alert Engine → Telegram): incolla token @BotFather, invia /start al bot, "Rileva chat", seleziona chat_id, "Test".
+
+---
+
+
 # 2026-08-19 — NEBULA: Scheda Firewall in cima alla WAN + fix endpoint porte (VALIDATO PROD)
 
 ## Richiesta utente
