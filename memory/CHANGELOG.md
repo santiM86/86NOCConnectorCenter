@@ -1,3 +1,22 @@
+# 2026-08-19 — C2 Correlation: IP dei firewall Nebula vs IOC (ogni 2 min)
+
+## Richiesta utente
+Confrontare gli IP nei log firewall/syslog dei clienti con gli IOC (Feodo, Spamhaus, FireHOL, ThreatFox). Se un dispositivo comunica con un IP malevolo noto → alert critico per quel cliente. Scansione automatica ogni 2 min. Usare i dati che ora arrivano dai firewall Nebula.
+
+## Implementazione (services/osint_poller.py)
+- Nuovo `_scan_nebula_firewalls(agg, now)`: per ogni firewall Zyxel Nebula ONLINE scarica gli event-log (finestra 3 min, cap 8000/fw), estrae src/dst IPv4 e li confronta con gli IOC (`match_ips_against_iocs`, che filtra già gli IP pubblici). I match confluiscono nell'aggregato C2 condiviso.
+- Integrato in `osint_c2_tick` (già schedulato ogni 2 min): oltre a `syslog_events` ora scansiona anche i firewall Nebula → nessun syslog richiesto lato cliente. Alert critico per-tenant via `_emit_c2_alert` (con dedup). Messaggio fonte aggiornato a "syslog/event-log firewall".
+- Protetto da try/except per-firewall: un 404/errore Nebula salta quel firewall senza bloccare il tick.
+
+## Verifica (pipeline end-to-end, mock event-log + IOC Feodo)
+osint_c2_tick → IP 45.155.205.233 (dst nei log firewall) correlato con IOC Feodo/Dridex_C2 → ALERT CRITICO per cliente da3d6e40 (firewall 192.168.45.2). 8.8.8.8 benigno nessun falso positivo. IOC in DB: 6395. Backend 200.
+
+## Nota
+- Endpoint Nebula event-logs a volte risponde 404 intermittente (glitch lato Zyxel): gestito con skip best-effort; il tick riprova al ciclo successivo.
+
+---
+
+
 # 2026-08-19 — Sonda globale + Alert cambio IP pubblico reale
 
 ## Richieste utente

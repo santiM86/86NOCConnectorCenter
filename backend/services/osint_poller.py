@@ -170,6 +170,58 @@ C2_LOOKBACK_MIN = 15        # finestra alla prima esecuzione / fallback
 C2_MAX_EVENTS = 5000        # cap eventi per tick
 
 
+async def _scan_nebula_firewalls(agg: dict, now: datetime) -> int:
+    """Estrae gli IP (src/dst) dagli event-log dei firewall Zyxel Nebula online
+    e li confronta con gli IOC, aggiungendo i match all'aggregato C2 condiviso.
+    Fonte 'live' che non richiede syslog configurato lato cliente."""
+    try:
+        from routes.zyxel_nebula import _nebula_request
+    except Exception:
+        return 0
+    end_ms = int(now.timestamp() * 1000)
+    start_ms = end_ms - 3 * 60 * 1000  # ultimi 3 min (tick ogni 2 min)
+    fws = await db.zyxel_devices.find(
+        {"device_type": "firewall", "online_status": "ONLINE"},
+        {"_id": 0, "dev_id": 1, "site_id": 1, "client_id": 1, "name": 1, "model": 1, "public_ip": 1},
+    ).to_list(300)
+    scanned = 0
+    for fw in fws:
+        if not fw.get("site_id") or not fw.get("dev_id"):
+            continue
+        try:
+            logs = await _nebula_request(
+                "POST", f"/{fw['site_id']}/gw/{fw['dev_id']}/event-logs",
+                json={"startTimestamp": start_ms, "endTimestamp": end_ms},
+            )
+        except Exception as e:
+            logger.debug(f"[osint-c2] nebula event-logs dev={fw.get('dev_id')}: {e}")
+            continue
+        if not isinstance(logs, list) or not logs:
+            continue
+        logs = logs[:8000]  # cap per firewall/tick
+        scanned += len(logs)
+        ips = set()
+        for x in logs:
+            for k in ("srcIpv4", "dstIpv4"):
+                v = x.get(k)
+                if v:
+                    ips.add(v)
+        if not ips:
+            continue
+        mm = await osint.match_ips_against_iocs(list(ips))
+        if not mm:
+            continue
+        cid = fw.get("client_id")
+        for bad_ip, hits in mm.items():
+            entry = agg.setdefault((cid, bad_ip), {
+                "client_id": cid, "bad_ip": bad_ip, "hits": hits,
+                "firewalls": set(), "sample": f"Nebula event-log {fw.get('model') or ''}".strip(),
+                "host": fw.get("name"),
+            })
+            entry["firewalls"].add(fw.get("public_ip") or fw.get("name") or fw["dev_id"])
+    return scanned
+
+
 async def osint_c2_tick() -> dict:
     """Scansiona i syslog_events recenti, estrae gli IP dai messaggi firewall e
     li confronta con gli IOC. Se un dispositivo cliente ha comunicato con un IP
@@ -227,6 +279,10 @@ async def osint_c2_tick() -> dict:
                 })
                 entry["firewalls"].add(fw_ip)
 
+        # Fonte aggiuntiva LIVE: event-log dei firewall Zyxel Nebula
+        nebula_scanned = await _scan_nebula_firewalls(agg, now)
+        scanned += nebula_scanned
+
         for (cid, bad_ip), entry in agg.items():
             if not cid:
                 continue
@@ -270,7 +326,7 @@ async def _emit_c2_alert(entry: dict) -> bool:
     now_iso = datetime.now(timezone.utc).isoformat()
     msg = (f"Un dispositivo del cliente ha comunicato con l'IP {bad_ip}, presente in "
            f"blocklist/IOC ({src_repr}){threat_repr}. Rilevato su firewall/host: {fw_repr}. "
-           f"Verificare immediatamente il dispositivo interessato. Fonte: correlazione OSINT su syslog.")
+           f"Verificare immediatamente il dispositivo interessato. Fonte: correlazione OSINT su syslog/event-log firewall.")
 
     existing = await db.alerts.find_one(
         {"client_id": cid, "source_type": "osint_c2", "raw_data": bad_ip, "status": "active"},
