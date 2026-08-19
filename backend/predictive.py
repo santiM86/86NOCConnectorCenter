@@ -26,6 +26,8 @@ from hardware_alerts import _to_float, _values, SENTINELS
 
 logger = logging.getLogger("predictive")
 
+_PB_IDX_READY = False  # flag: indici pre_blackout_events creati (best-effort)
+
 # Synology RAID-STATUS-MIB raidStatus: 11=Degrade, 12=Crashed.
 _RAID_BAD: Dict[int, str] = {11: "degradato", 12: "in crash"}
 # Synology systemStatus: 2=Failed.
@@ -328,9 +330,53 @@ async def _eval_ups(base, vendor_metrics: dict) -> None:
                        f"Avviso anticipato: verifica l'alimentazione di rete PRIMA che il sito cada.")
         await _emit(**base, source_type="predictive_ups", dedup_key=dk, severity=severity,
                     title=title, message=message)
+        # Marker "pre-blackout": persiste il fatto che l'UPS del cliente e' su
+        # batteria PROPRIO ORA. Il rilevamento blackout lo consulta per confermare
+        # la mancanza corrente in tempo reale, anche se poi l'UPS si spegne e
+        # smette di riportare (l'ultimo stato noto resta qui).
+        await _record_pre_blackout(base, charge, runtime)
     else:
         await _resolve(db, cfg, dk,
                        f"UPS di {base['device_name']} tornato su rete elettrica (carica ripristinata).")
+        await _clear_pre_blackout(base)
+
+
+async def _record_pre_blackout(base, charge, runtime) -> None:
+    """Registra/aggiorna l'evento pre-blackout per (client_id, device_ip)."""
+    now = datetime.now(timezone.utc)
+    global _PB_IDX_READY
+    if not _PB_IDX_READY:
+        try:
+            # TTL 2h: gli eventi non recuperati (UPS spento nel blackout) si
+            # auto-rimuovono; la conferma usa comunque una finestra di 20 min.
+            await base["db"].pre_blackout_events.create_index("last_seen_at", expireAfterSeconds=7200)
+            await base["db"].pre_blackout_events.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
+        except Exception:  # noqa: BLE001
+            pass
+        _PB_IDX_READY = True
+    detail = f"UPS {base['device_ip']} su batteria"
+    if charge is not None:
+        detail += f" (carica {charge:.0f}%"
+        detail += f", autonomia ~{runtime:.0f} min)" if runtime is not None else ")"
+    try:
+        await base["db"].pre_blackout_events.update_one(
+            {"client_id": base["client_id"], "device_ip": base["device_ip"]},
+            {"$set": {"client_id": base["client_id"], "device_ip": base["device_ip"],
+                      "device_name": base["device_name"], "charge": charge,
+                      "runtime_min": runtime, "detail": detail, "last_seen_at": now},
+             "$setOnInsert": {"on_battery_since": now}},
+            upsert=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _clear_pre_blackout(base) -> None:
+    try:
+        await base["db"].pre_blackout_events.delete_one(
+            {"client_id": base["client_id"], "device_ip": base["device_ip"]})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _fmt_eta(hours: float) -> str:

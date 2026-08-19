@@ -5113,3 +5113,8 @@ enrichment IP negli alert esistenti con badge reputazione.
 - FIX: rimosso uso di upsEstimatedMinutesRemaining come indicatore di "su batteria" (e autonomia batteria, presente anche su rete -> falsi positivi). Indicatore certo = carica che cala.
 - Catalogo aggiornato: predictive_ups = "UPS su batteria -> esaurimento" (early high -> critical).
 - Self-test OK: rete 99%/40min->nessun alert; discesa 100->98 slope neg->HIGH early; 15%/4min->CRITICAL; 100%->resolve.
+
+## 2026-06 — Evento PRE-BLACKOUT (conferma corrente in tempo reale)
+- predictive.py: quando lUPS va su batteria (_eval_ups on_battery), registra/aggiorna un marker persistente in collection pre_blackout_events {client_id, device_ip, on_battery_since, last_seen_at, charge, runtime, detail}. Cancellato al ritorno su rete (_clear_pre_blackout). Indice TTL 2h (auto-pulizia eventi non recuperati) + unique (client_id,device_ip), creati best-effort al primo uso.
+- alert_engine._ups_power_loss: consulta PRIMA pre_blackout_events (last_seen entro 20min) poi fallback a metric_history. Cosi il blackout (site_power_down anchor + watchdog) viene etichettato "MANCANZA CORRENTE CONFERMATA" in TEMPO REALE gia dal primo secondo del down, ANCHE se lUPS si e spento e non riporta piu (levento persiste lultimo stato noto).
+- Self-test OK: baseline->no; UPS su batteria->evento registrato; UPS spento (nessuna metric fresca)->blackout CONFERMATO via evento; recovery->evento cancellato + non confermato.

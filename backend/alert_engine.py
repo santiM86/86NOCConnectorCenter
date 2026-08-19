@@ -772,6 +772,19 @@ async def _ups_power_loss(db, client_id: str, minutes: int = 20):
     Gated dietro un blackout gia' confermato (agent+WAN giu'), quindi robusto.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    # 1) Evento PRE-BLACKOUT persistente (registrato da predictive.py quando l'UPS
+    #    e' passato su batteria). Sopravvive allo spegnimento dell'UPS stesso:
+    #    conferma la mancanza corrente in TEMPO REALE dal primo secondo del down.
+    try:
+        ev = await db.pre_blackout_events.find_one(
+            {"client_id": client_id, "last_seen_at": {"$gte": cutoff}},
+            sort=[("last_seen_at", -1)],
+        )
+        if ev:
+            return True, ev.get("detail") or f"UPS {ev.get('device_ip','')} su batteria poco prima del down"
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) Fallback: ultimi valori grezzi da metric_history (ups_charge_pct/runtime).
     q = {"client_id": client_id,
          "metric": {"$in": ["ups_charge_pct", "ups_runtime_min"]},
          "ts": {"$gte": cutoff}}
