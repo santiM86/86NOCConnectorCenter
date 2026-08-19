@@ -48,7 +48,7 @@ function EntityDetail({ id, onClose }) {
             <div className="flex flex-wrap gap-1">{(ent.sources || []).map(s => <SourceBadge key={s} s={s} />)}</div>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            {[["IP principale", ent.primary_ip], ["Tipo", ent.device_type], ["Vitale", ent.is_vital ? "Sì" : "No"],
+            {[["Organizzazione", ent.org_name], ["IP principale", ent.primary_ip], ["Tipo", ent.device_type], ["Vitale", ent.is_vital ? "Sì" : "No"],
               ["Modello", ent.attrs?.model], ["Vendor", ent.attrs?.vendor], ["OS (agent)", ent.attrs?.agent_os],
               ["Nome Datto", ent.attrs?.datto_name], ["VM Hyper-V", ent.attrs?.hyperv_vm_name]].filter(x => x[1]).map(([k, v]) => (
               <div key={k} className="rounded-lg bg-[var(--bg-deep)] p-2">

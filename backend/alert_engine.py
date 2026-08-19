@@ -447,6 +447,8 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         if state.get("level", 0) == 0:
             alert = _mk_alert(cid, cname, dev_name, ip, dev_type, sev, source_type, title,
                               f"Cliente {cname}: {reasoning}")
+            from alert_enrichment import enrich_alert
+            await enrich_alert(db, alert)
             await insert_alert_if_emit(db, alert)
             await _dispatch_notification(db, cfg, alert)
             await db.vital_offline_state.update_one({"client_id": cid, "ip": ip},
@@ -950,6 +952,8 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         )
         if confirmed:
             alert["power_confirmed"] = True
+        from alert_enrichment import enrich_alert
+        await enrich_alert(db, alert)
         await insert_alert_if_emit(db, alert)
         await _dispatch_notification(db, cfg, alert)
         await db.site_blackout_state.update_one(

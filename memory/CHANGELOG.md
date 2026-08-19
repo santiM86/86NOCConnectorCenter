@@ -5146,3 +5146,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Self-test OK: rebuild -> 2 relazioni (lldp), impact CHASW-A -> FORTIGATE-FW depth1; foglia -> 0. Frontend compila.
 - NOTA: topologia preview sparsa (mac_connections=2, lldp=8); in produzione con LLDP/MAC completi le catene di impatto saranno ricche. Direzione LLDP e euristica (remote=monte); mac_connections e piu affidabile.
 - BACKLOG: Fase 2b mappa grafica interattiva; migliorare inferenza direzione LLDP (chi e switch/firewall); Fase 3 aggancio Situation Engine (verdetto+impatto).
+
+## 2026-06 — Impatto negli alert + Organizzazione (Fase 3 CMDB)
+- alert_enrichment.py: enrich_alert(db,alert) aggiunge ORGANIZZAZIONE (da zyxel_client_links: clienti raggruppati in 1 org Nebula) + IMPATTO a valle (compute_impact via grafo) agli alert di guasto a monte (corr_switch_down/site_isolated/firewall_mgmt_down/isp_down/site_blackout). Messaggio arricchito: "[Org: 86 Bit] ... 🔗 IMPATTO: se cade, restano coinvolti N dispositivi a valle, di cui M vitali (nomi...)". Campi impact_count/impact_vital/org_id/org_name sullalert.
+- Agganciato: emissione corr_* in run_vital_watchdog (alert_engine ~448) e alert site_blackout del watchdog.
+- entity_resolver.reconcile_client: ogni cmdb_entity ora porta org_id/org_name (raggruppamento per organizzazione). Frontend EntityDetail mostra Organizzazione.
+- Self-test OK: enrich su corr_switch_down CHASW-A -> "[Org: 86 Bit] ... IMPATTO 1 a valle (FORTIGATE-FW)"; rebuild all -> entita con org_name=86 Bit.
+- BACKLOG: gruppi org anche nella lista inventario (filtro per organizzazione), report/dashboard per organizzazione, impatto multi-cliente per infra condivisa.

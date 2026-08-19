@@ -173,6 +173,15 @@ async def _resolve_entity_id(db, client_id: str, keys: Dict[str, str]) -> str:
 async def reconcile_client(db, client_id: str) -> int:
     units = await _collect_units(db, client_id)
     now = _now()
+    # Organizzazione (Nebula) del cliente: clienti raggruppati in 1 organizzazione
+    org_id = org_name = None
+    try:
+        link = await db.zyxel_client_links.find_one(
+            {"client_id": client_id}, {"_id": 0, "org_id": 1, "org_name": 1})
+        if link:
+            org_id, org_name = link.get("org_id"), link.get("org_name")
+    except Exception:  # noqa: BLE001
+        pass
     touched: List[str] = []
     for u in units:
         keys = {k: v for k, v in u["keys"].items() if v}
@@ -180,6 +189,7 @@ async def reconcile_client(db, client_id: str) -> int:
         touched.append(entity_id)
         doc = {
             "entity_id": entity_id, "client_id": client_id,
+            "org_id": org_id, "org_name": org_name,
             "primary_ip": u["ip"], "name": u["attrs"].get("name") or u["ip"],
             "device_type": u["attrs"].get("device_type"),
             "is_vital": bool(u["attrs"].get("is_vital")),
