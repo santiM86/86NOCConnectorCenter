@@ -76,6 +76,7 @@ async def list_kev(
             {"vendor": {"$regex": q, "$options": "i"}},
             {"product": {"$regex": q, "$options": "i"}},
             {"name": {"$regex": q, "$options": "i"}},
+            {"short_description": {"$regex": q, "$options": "i"}},
         ]
     items = await db.cisa_kev.find(query, {"_id": 0}).sort("date_added", -1).to_list(min(limit, 500))
     return {"total": len(items), "items": items}

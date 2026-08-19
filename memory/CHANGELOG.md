@@ -1,3 +1,19 @@
+# 2026-08-19 — CISA KEV: arricchimento campi (Azione richiesta, Scadenza, Descrizione)
+
+## Richiesta utente
+Incorporare la struttura completa del catalogo CISA KEV: CVE ID, Vendor & Product, Short Description, Required Action & Due Date, Ransomware Flag.
+
+## Implementazione
+- Backend `services/osint_service.py` (refresh_cisa_kev): aggiunti `short_description` (shortDescription), `required_action` (requiredAction), `cwes` all'ingestione del feed ufficiale CISA. `due_date`/`ransomware` già presenti.
+- Backend `routes/osint.py` (list_kev): ricerca estesa anche a `short_description`.
+- Frontend `OsintPage.js`: tabella KEV con nuove colonne "Azione richiesta" e "Scadenza" (due_date in ROSSO se remediation scaduta), descrizione breve/azione in tooltip.
+
+## Verifica
+Refresh forzato: 1670 CVE, tutte con required_action + short_description. Screenshot: colonne visibili, date scadute evidenziate in rosso (es. CVE-2026-20349 Cisco ASA due 2026-08-14). Feed KEV OK.
+
+---
+
+
 # 2026-08-19 — C2 Correlation: IP dei firewall Nebula vs IOC (ogni 2 min)
 
 ## Richiesta utente

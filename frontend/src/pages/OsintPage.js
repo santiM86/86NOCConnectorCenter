@@ -391,24 +391,33 @@ export default function OsintPage() {
                 <th className="text-left px-3 py-2">CVE</th>
                 <th className="text-left px-3 py-2">Vendor / Prodotto</th>
                 <th className="text-left px-3 py-2">Vulnerabilità</th>
+                <th className="text-left px-3 py-2">Azione richiesta</th>
                 <th className="text-left px-3 py-2">Aggiunta</th>
+                <th className="text-left px-3 py-2">Scadenza</th>
                 <th className="text-left px-3 py-2">Ransomware</th>
               </tr>
             </thead>
             <tbody>
-              {kev.map((k) => (
-                <tr key={k.cve_id} className="border-t border-[var(--bg-border)]">
-                  <td className="px-3 py-2 font-mono text-cyan-300">{k.cve_id}</td>
+              {kev.map((k) => {
+                const overdue = k.due_date && new Date(k.due_date) < new Date();
+                return (
+                <tr key={k.cve_id} className="border-t border-[var(--bg-border)] align-top" data-testid={`osint-kev-row-${k.cve_id}`}>
+                  <td className="px-3 py-2 font-mono text-cyan-300 whitespace-nowrap">{k.cve_id}</td>
                   <td className="px-3 py-2">{k.vendor} / {k.product}</td>
-                  <td className="px-3 py-2 text-[10px] max-w-[280px] truncate">{k.name}</td>
-                  <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{k.date_added}</td>
+                  <td className="px-3 py-2 text-[10px] max-w-[240px] truncate" title={k.short_description || k.name}>{k.name}</td>
+                  <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[220px] truncate" title={k.required_action || ""}>{k.required_action || "—"}</td>
+                  <td className="px-3 py-2 text-[10px] text-[var(--text-muted)] whitespace-nowrap">{k.date_added}</td>
+                  <td className="px-3 py-2 text-[10px] whitespace-nowrap" title={overdue ? "Scadenza remediation superata" : ""}>
+                    <span className={overdue ? "text-red-400 font-bold" : "text-[var(--text-muted)]"}>{k.due_date || "—"}</span>
+                  </td>
                   <td className="px-3 py-2">
                     {String(k.ransomware).toLowerCase() === "known"
                       ? <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-300">SÌ</span>
                       : <span className="text-[10px] text-[var(--text-muted)]">—</span>}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
