@@ -381,6 +381,43 @@ async def get_device_metrics(client_id: str, dev_id: str, hours: int = 24,
     return {"metrics": docs, "count": len(docs)}
 
 
+@router.get("/clients/{client_id}/zyxel/devices/{dev_id}/event-logs")
+async def get_device_event_logs(client_id: str, dev_id: str, minutes: int = 60, limit: int = 150,
+                                current_user: dict = Depends(get_current_user)):
+    """Event-log live del firewall Zyxel (on-demand: Nebula ne restituisce migliaia,
+    scarichiamo una finestra breve e teniamo i piu' recenti)."""
+    dev = await db.zyxel_devices.find_one(
+        {"client_id": client_id, "dev_id": dev_id, "device_type": "firewall"},
+        {"_id": 0, "site_id": 1},
+    )
+    if not dev:
+        raise HTTPException(status_code=404, detail="Firewall Zyxel non trovato per questo cliente")
+    minutes = max(5, min(minutes, 360))
+    limit = max(10, min(limit, 500))
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ms = now_ms - minutes * 60 * 1000
+    try:
+        logs = await _nebula_request(
+            "POST", f"/{dev['site_id']}/gw/event-logs",
+            json={"startTimestamp": start_ms, "endTimestamp": now_ms},
+        )
+    except ZyxelError as e:
+        raise HTTPException(status_code=502, detail=f"Nebula event-logs: {e}")
+    if not isinstance(logs, list):
+        logs = []
+    logs.sort(key=lambda x: x.get("timestamp") or 0, reverse=True)
+    out = [{
+        "timestamp": x.get("timestamp"),
+        "category": x.get("category"),
+        "message": x.get("message"),
+        "src_ip": x.get("srcIpv4"),
+        "src_port": x.get("srcPort"),
+        "dst_ip": x.get("dstIpv4"),
+        "dst_port": x.get("dstPort"),
+    } for x in logs[:limit]]
+    return {"logs": out, "count": len(out), "total_window": len(logs), "minutes": minutes}
+
+
 @router.get("/zyxel/links")
 async def list_all_links(current_user: dict = Depends(get_current_user)):
     """Tutti i mapping cliente→org + conteggio device sincronizzati."""
@@ -610,6 +647,41 @@ async def sync_client_devices(client_id: str) -> dict:
                         } for r in o2o]
                 except ZyxelError as e:
                     logger.debug(f"nat-settings dev={dev_id}: {e}")
+
+            # Client connessi al firewall (site-level) + stato VPN.
+            if dtype == "firewall" and online_map.get(dev_id) == "ONLINE":
+                try:
+                    cl = await _nebula_request(
+                        "POST", f"/{sid}/clients",
+                        json=["mac_address", "ipv4", "vlan", "status", "description",
+                              "os_hostname", "manufacturer", "last_seen", "connected_device_id"],
+                    )
+                    if isinstance(cl, list):
+                        mine = [c for c in cl if c.get("connectedTo") == dev_id] or cl
+                        mine.sort(key=lambda c: (c.get("status") != "ONLINE", str(c.get("ipv4Address") or "")))
+                        doc["clients"] = [{
+                            "mac": c.get("macAddress"),
+                            "ip": c.get("ipv4Address"),
+                            "vlan": c.get("vlan"),
+                            "status": c.get("status"),
+                            "hostname": (c.get("osHostname") or {}).get("hostname") or c.get("description"),
+                            "os": (c.get("osHostname") or {}).get("os"),
+                            "vendor": c.get("manufacturer"),
+                            "last_seen": c.get("lastSeen"),
+                        } for c in mine[:500]]
+                        doc["clients_online"] = sum(1 for c in doc["clients"] if c["status"] == "ONLINE")
+                except ZyxelError as e:
+                    logger.debug(f"clients dev={dev_id}: {e}")
+                try:
+                    vpn = await _nebula_request("GET", f"/{sid}/vpn-status")
+                    if isinstance(vpn, dict):
+                        doc["vpn_status"] = {
+                            "sites": vpn.get("sites") or [],
+                            "gateways": vpn.get("gateways") or [],
+                            "remote_aps": vpn.get("remoteAps") or [],
+                        }
+                except ZyxelError as e:
+                    logger.debug(f"vpn-status dev={dev_id}: {e}")
 
             # Firewall Nebula = apparato VITALE + managed_device sempre presente,
             # cosi' compare tra i vitali, in WAN e nel CMDB con tutti i dettagli.

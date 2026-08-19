@@ -1,3 +1,39 @@
+# 2026-08-19 — CMDB: fusione client firewall Nebula in Entity Resolution
+
+## Richiesta utente
+Fondere i client connessi al firewall nel CMDB/Entity Resolution, correlandoli via MAC alle identità già note (SNMP/Datto/Agent) invece di lasciarli in un elenco a sé.
+
+## Implementazione (entity_resolver.py)
+- Nuova fonte `nebula` in `_collect_units`: per ogni firewall del cliente legge `clients[]` e crea/arricchisce un'unità CMDB per IP, con chiave MAC (+ hostname se significativo). Nebula spesso fornisce il MAC anche per IP non mappati dal monitoraggio → merge trasversale via chiave `mac`.
+- attrs: nebula_client, nebula_status, vendor, os, vlan.
+
+## Frontend (EntityInventoryPage.js)
+- Badge dedicato sorgente "Zyxel Nebula" (ciano).
+
+## Verifica (reconcile reale cliente da3d6e40)
+88 unità (62 nuove da Nebula). Entità fuse multi-sorgente: es. PC001 / 86bitserver / DATI = Datto+Monitoraggio+Nebula (MAC aggiunto da Nebula a device già noti). Client standalone inventariati con sorgente Nebula. Screenshot CMDB conferma.
+
+---
+
+
+# 2026-08-19 — NEBULA: scheda firewall arricchita (Client, VPN, Event Logs)
+
+## Richiesta utente
+"Voglio tutte le informazioni". Chiarito che Gateway/DNS/VLAN sono vuoti perché Nebula li restituisce null alla fonte (verificato su risposta grezza). Aggiunte le 3 fonti dati Nebula mancanti.
+
+## Backend (zyxel_nebula.py)
+- Sync firewall: aggiunto `clients` (POST /{sid}/clients → dispositivi dietro il firewall: ip, mac, vlan, hostname, vendor, os, status) + `clients_online`, e `vpn_status` (GET /{sid}/vpn-status → sites/gateways/remote_aps).
+- Nuovo endpoint on-demand `GET /api/clients/{client_id}/zyxel/devices/{dev_id}/event-logs?minutes=&limit=` (POST /{sid}/gw/event-logs): Nebula restituisce migliaia di eventi → finestra breve + cap ai più recenti. NON in polling per non appesantire il sync.
+
+## Frontend (NebulaFirewalls.jsx)
+- Scheda dispositivo: aggiunte sezioni "Client connessi (N online)", "VPN", "Event Logs (on-demand con pulsante Carica)".
+
+## Verifica (screenshot, cliente da3d6e40 USG FLEX 700H)
+Client connessi 52/62 con IP+vendor+stato; VPN 0 (nessun tunnel, reale); Event logs 150 su 20817/60min con categoria/orario/src→dst. Compila pulito, nessun crash.
+
+---
+
+
 # 2026-08-19 — NEBULA: firewall come riga + scheda dispositivo completa
 
 ## Richiesta utente
