@@ -37,6 +37,29 @@ AGENT_HEARTBEAT_STALE_SECONDS = 90
 # risultati piu' recenti di questo valore contano per decidere "WAN giu'"
 # (evita che vecchi doc "online" blocchino per sempre il blackout).
 WAN_PROBE_FRESHNESS_SECONDS = 180
+SNMP_FRESHNESS_SECONDS = 600   # 10 minuti: SNMP poll < 10 min = device raggiungibile
+
+
+def _snmp_fresh(pd: Optional[Mapping[str, Any]], seconds: int = SNMP_FRESHNESS_SECONDS) -> bool:
+    """
+    Ritorna True se il device ha risposto con successo a un poll SNMP
+    recente (entro `seconds`, default 10 minuti).
+
+    Permette di considerare ONLINE un apparato (es. switch HP, server Windows)
+    che ha ICMP disabilitato o filtrato ma risponde correttamente a SNMP.
+    """
+    if not pd:
+        return False
+    if not pd.get("snmp_reachable"):
+        return False
+    at = pd.get("snmp_last_check_at") or pd.get("last_poll_at") or pd.get("last_poll")
+    if not at:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds() < seconds
+    except Exception:
+        return False
 
 
 async def build_clients_without_online_agent(db) -> set:
