@@ -1,3 +1,28 @@
+# 2026-06 — Fix trace "Timeout" + rimosso pannello Bridge Health
+
+## 1. Trace sonda andava in Timeout
+Causa: `count=10` + `max_hops=30` verso host irraggiungibile → il trace durava
+oltre il limite dell'ingress (~60s) → "Timeout della richiesta".
+Fix:
+- Frontend `NetworkPathDiagnosisPage.js`: args ridotti a `max_hops=20, count=3`;
+  cap lato agent `timeout=45` (l'agent aborta e risponde entro 45s, sotto i 60s
+  dell'ingress); axios `timeout=60000`.
+- Backend `agent_ws.py::run_net_trace_via_probe`: default `timeout=45`,
+  `max_hops=20, count=3` (auto-trace e baseline coerenti e non bloccanti).
+
+## 2. Rimosso pannello "BRIDGE HEALTH"
+`ClientOverviewPage.js`: rimosso `<BridgeHealthWidget/>` (+ import) su richiesta
+utente.
+
+## Stato verifica
+Backend importa OK, frontend compila. ⚠️ Il net_trace E2E NON è testabile in
+preview (serve una sonda LIVE in produzione); la rimozione del pannello è
+verificata a compilazione. Attivo in PROD dopo Save to GitHub + redeploy.
+
+---
+
+
+
 # 2026-06 — Baseline trace WAN + confronto nell'alert (da quale hop è cambiato)
 
 ## Richiesta utente

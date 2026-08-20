@@ -38,7 +38,6 @@ import {
   HealthScoreWidget, LifecyclePanel, IloEventsButton,
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
-import BridgeHealthWidget from "@/components/BridgeHealthWidget";
 import NebulaFirewalls from "@/components/NebulaFirewalls";
 import SafeBoundary from "@/components/SafeBoundary";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
@@ -689,12 +688,6 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
             Classifica ora
           </Button>
         </div>
-      )}
-      {/* v2026-02-28: Bridge Health Widget — diagnostica live degli agent SNMP/ping */}
-      {clientId && (
-        <SafeBoundary label="Bridge Health">
-          <BridgeHealthWidget clientId={clientId} />
-        </SafeBoundary>
       )}
 
       {/* iLO Hardware Health Panel spostato nella tab dedicata "iLO" */}

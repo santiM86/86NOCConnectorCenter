@@ -135,7 +135,7 @@ REGISTRY = _Registry()
 
 async def run_net_trace_via_probe(target: str, client_id: Optional[str] = None,
                                   mode: str = "tcp", port: int = 443,
-                                  timeout: float = 110.0) -> Optional[dict]:
+                                  timeout: float = 45.0) -> Optional[dict]:
     """Esegue un net_trace verso `target` usando una sonda LIVE.
     Preferenza: sonda globale (__global__) → agent del cliente → qualsiasi agent
     connesso. Ritorna il Result net_trace già "unwrappato" da AgentReply, o None
@@ -146,7 +146,7 @@ async def run_net_trace_via_probe(target: str, client_id: Optional[str] = None,
     pick = (next((c for c in conns if c.client_id == "__global__"), None)
             or (next((c for c in conns if client_id and c.client_id == client_id), None))
             or conns[0])
-    args = {"target": target, "mode": mode, "port": int(port), "max_hops": 30, "count": 10}
+    args = {"target": target, "mode": mode, "port": int(port), "max_hops": 20, "count": 3}
     try:
         reply = await pick.send_command("net_trace", args, timeout=timeout)
     except Exception as e:  # noqa: BLE001

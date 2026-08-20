@@ -71,13 +71,13 @@ export default function NetworkPathDiagnosisPage() {
     if (!target.trim()) { toast.error("Inserisci IP o host di destinazione"); return; }
     setRunning(true);
     setResult(null);
-    const tId = toast.loading("Traccia percorso in corso… (può richiedere fino a ~90s)");
+    const tId = toast.loading("Traccia percorso in corso… (fino a ~45s)");
     try {
-      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 30, count: 10 };
+      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 20, count: 3 };
       const { data } = await axios.post(
         `${API}/api/agents/${probe}/command`,
-        { name: "net_trace", args, timeout: 115 },
-        { headers },
+        { name: "net_trace", args, timeout: 45 },
+        { headers, timeout: 60000 },
       );
       // La reply dell'agent è AgentReply { ok, error?, result } → il vero esito
       // net_trace è dentro `result` (unwrap, con fallback per PascalCase legacy).
