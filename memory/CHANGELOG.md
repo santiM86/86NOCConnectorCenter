@@ -1,3 +1,35 @@
+# 2026-06 — Telegram: nome dispositivo PARLANTE (no "Hardware Manufacturer/Microsoft")
+
+## Richiesta utente
+Nei messaggi Telegram sostituire "Hardware Manufacturer/Microsoft" (stringa vendor
+SNMP) con l'hostname/nome CMDB reale del server.
+
+## Fix (`alert_engine.py`)
+- Nuovo `_best_device_name(md, ip)`: preferisce hostname reale in ordine
+  `hostname → datto_hostname → sys_name → netbios_name → dns_name`; poi il `name`
+  CMDB SOLO se non è "vendor-like"; altrimenti mostra l'IP (con vendor tra
+  parentesi) — più identificante di una stringa vendor.
+- `_is_vendor_like_name`: scarta stringhe generiche (hardware manufacturer,
+  microsoft corporation/windows, vmware, linux, unknown, "vendor/os" senza cifre…).
+- La projection dei target vitali ora include `sys_name/dns_name/netbios_name/
+  datto_hostname`. `dev_name` nel watchdog usa `_best_device_name`.
+
+## Testing (python -c)
+- name vendor + hostname → "SRVDC01"; solo vendor → "10.x (Hardware…)"; name buono
+  invariato; sys_name usato quando name è vendor. Import OK.
+
+## Verifica Telegram (NON eseguibile da preview)
+Token/chat_id Telegram vivono SOLO nel DB di PRODUZIONE (in preview assenti) →
+impossibile inviare un test dal vivo da qui. Formato + naming verificati via unit
+test. Dopo il redeploy backend, al primo allarme reale comparirà
+`🚨 <b>NOME CLIENTE</b> — <hostname> — [SEV]`.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy backend.
+
+---
+
+
+
 # 2026-06 — Telegram: sempre NOME CLIENTE in grassetto (capire subito il cliente)
 
 ## Richiesta utente

@@ -518,6 +518,37 @@ async def morning_status_digest(db) -> dict:
 
 
 
+def _is_vendor_like_name(n: str) -> bool:
+    """True se il 'nome' è una stringa vendor/OS SNMP poco parlante (non un hostname)."""
+    if not n:
+        return True
+    low = n.strip().lower()
+    generic = ("hardware manufacturer", "manufacturer", "microsoft corporation",
+               "microsoft windows", "unknown", "generic", "n/a", "sconosciuto",
+               "linux", "vmware", "windows")
+    if any(g in low for g in generic):
+        return True
+    # "Hardware Manufacturer/Microsoft" o simili: vendor+os separati da / senza spazi utili
+    return "/" in n and not any(c.isdigit() for c in n) and len(n.split()) <= 3
+
+
+def _best_device_name(md: Dict[str, Any], ip: str) -> str:
+    """Sceglie il nome più PARLANTE del dispositivo: hostname/sysName/DNS reali,
+    poi il name CMDB se non è una stringa vendor, altrimenti l'IP (più identificante
+    di 'Hardware Manufacturer/Microsoft')."""
+    for k in ("hostname", "datto_hostname", "sys_name", "netbios_name", "dns_name"):
+        v = md.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    name = (md.get("name") or md.get("device_name") or "").strip()
+    if name and not _is_vendor_like_name(name):
+        return name
+    if ip:
+        # se abbiamo solo un nome vendor, mostra IP (+ vendor tra parentesi se utile)
+        return f"{ip} ({name})" if name else ip
+    return name or "Sconosciuto"
+
+
 def _mk_alert(client_id: str, client_name: str, device_name: str, device_ip: str,
               device_type: str, severity: str, source_type: str,
               title: str, message: str) -> Dict[str, Any]:
@@ -604,6 +635,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}, {"hyperv_alert_on_off": True}]},
         {"_id": 0, "client_id": 1, "ip": 1, "ip_address": 1, "name": 1, "device_name": 1,
          "device_type": 1, "mac": 1, "mac_address": 1, "hostname": 1, "serial": 1,
+         "sys_name": 1, "dns_name": 1, "netbios_name": 1, "datto_hostname": 1,
          "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1,
          "consecutive_ping_failures": 1},
     ).to_list(10000)
@@ -771,7 +803,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 
     for md, fam, s, v in items:
         cid = md["client_id"]; ip = md.get("ip")
-        dev_name = md.get("name") or md.get("device_name") or ip
+        dev_name = _best_device_name(md, ip)
         cname = client_names.get(cid) or (cid[:8] if cid else "")
         dev_type = md.get("device_type") or fam
         cfg = await _resolve_client_config(db, cfg_global, cid)
