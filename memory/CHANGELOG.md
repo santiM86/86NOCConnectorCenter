@@ -1,3 +1,18 @@
+# 2026-08-19 — Digest mattutino 07:00 (stato clienti, solo critici+down)
+
+## Richiesta utente
+Riepilogo Telegram ogni mattina alle 07:00 con lo stato di tutti i clienti (oltre al digest notturno). Devono comparire SOLO alert critici e down, nient'altro.
+
+## Implementazione
+- `alert_engine.py`: nuovo `morning_status_digest(db)` — legge solo alert ATTIVI e severità CRITICAL, raggruppa per cliente distinguendo "down" (source_type istantaneo) da "critici" (altri critical). Mostra solo i clienti con criticità; se nessuno → "Tutti operativi ✅". Nessun link.
+- `server.py`: schedulato con CronTrigger `hour=7, minute=0, timezone=Europe/Rome` (job `morning_status_digest`), in aggiunta al digest notturno (quiet flush) e agli altri tick.
+
+## Verifica
+morning_status_digest → "☀️ Buongiorno — Stato clienti ARGUS (07:00) · 86BIT_Office: 1 down, 5 critici". Solo alert critici inclusi (high/medium esclusi). Backend riparte pulito, job 07:00 registrato.
+
+---
+
+
 # 2026-08-19 — Digest notturno raggruppato per cliente
 
 ## Richiesta utente

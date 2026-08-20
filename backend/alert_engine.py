@@ -278,6 +278,61 @@ async def telegram_quiet_digest_tick(db) -> dict:
     return {"sent": len(pending)}
 
 
+async def morning_status_digest(db) -> dict:
+    """Riepilogo mattutino (07:00): stato di TUTTI i clienti, mostrando SOLO
+    alert critici e dispositivi down (nient'altro). In aggiunta al digest notturno."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return {"sent": 0}
+    if "telegram" not in (cfg.get("channels") or []) or not cfg.get("telegram_enabled"):
+        return {"sent": 0, "reason": "telegram_off"}
+    # Solo alert ATTIVI e CRITICI
+    active = await db.alerts.find(
+        {"status": "active", "severity": "critical"},
+        {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1},
+    ).to_list(2000)
+    cids = list({a.get("client_id") for a in active if a.get("client_id")})
+    cmap = {}
+    if cids:
+        for c in await db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000):
+            cmap[c["id"]] = c["name"]
+    by_client = {}
+    for a in active:
+        cli = cmap.get(a.get("client_id")) or a.get("client_name") or a.get("client_id") or "—"
+        d = by_client.setdefault(cli, {"down": 0, "crit": 0})
+        if _is_instant_source(a.get("source_type")):
+            d["down"] += 1
+        else:
+            d["crit"] += 1
+    tot = len(active)
+    if not by_client:
+        body = "☀️ <b>Buongiorno — ARGUS</b> (07:00)\nNessun problema critico attivo. Tutti i clienti operativi. ✅"
+    else:
+        lines = []
+        for cli in sorted(by_client, key=lambda c: -(by_client[c]["down"] * 10 + by_client[c]["crit"]))[:60]:
+            d = by_client[cli]
+            parts = []
+            if d["down"]:
+                parts.append(f"{d['down']} down")
+            if d["crit"]:
+                parts.append(f"{d['crit']} critici")
+            lines.append(f"• <b>{cli}</b>: {', '.join(parts)}")
+        body = (f"☀️ <b>Buongiorno — Stato clienti ARGUS</b> (07:00)\n"
+                f"{len(by_client)} clienti con criticità · {tot} alert critici totali\n\n"
+                + "\n".join(lines))
+    try:
+        from telegram_notifier import send_telegram_text
+        await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
+                                 token=cfg.get("telegram_bot_token") or None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning digest send failed: %s", e)
+        return {"sent": 0, "error": str(e)[:120]}
+    logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {tot} critical alerts")
+    return {"sent": 1, "clients": len(by_client), "alerts": tot}
+
+
+
 
 def _mk_alert(client_id: str, client_name: str, device_name: str, device_ip: str,
               device_type: str, severity: str, source_type: str,
