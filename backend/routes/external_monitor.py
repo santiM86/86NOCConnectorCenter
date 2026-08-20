@@ -73,6 +73,23 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
         logger.debug("baseline diff failed: %s", e)
     if verdict and verdict.get("blame") and verdict.get("blame") != "OK":
         lines.append(f"⚖️ COLPA: {verdict['blame']} — {verdict.get('verdict', '')}")
+        # Correlazione outage ISP esterno (IODA/RIPEstat)
+        try:
+            from isp_outage import check_isp_outage
+            asn = verdict.get("asn")
+            isp_name = verdict.get("asn_name") or verdict.get("isp")
+            country = None
+            for h in reversed(hops):
+                g = h.get("geo") or {}
+                if g.get("country_code"):
+                    country = g.get("country_code"); break
+            if asn or country:
+                ext = await check_isp_outage(asn=asn, isp_name=isp_name, country_code=country)
+                verdict["external_outage"] = ext
+                if ext.get("summary"):
+                    lines.append(ext["summary"])
+        except Exception as e:  # noqa: BLE001
+            logger.debug("wan-down external outage correlation failed: %s", e)
     summary = "\n".join(lines)
     try:
         await db.alerts.update_one(
@@ -1559,6 +1576,25 @@ async def fault_diagnose(req: FaultDiagnoseRequest, current_user: dict = Depends
         raise HTTPException(status_code=503, detail="Nessuna sonda live disponibile per la diagnosi.")
 
     combined = combined_verdict(traces)
+    # Correlazione OUTAGE ISP esterno (IODA/RIPEstat/Cloudflare) quando la colpa è
+    # attribuita a un operatore o alla sede del cliente: conferma se diffuso o isolato.
+    try:
+        from isp_outage import check_isp_outage
+        client_tr = next((t for t in traces if t.get("is_client")), traces[0])
+        cv = client_tr.get("verdict") or {}
+        asn = cv.get("asn")
+        isp_name = cv.get("asn_name") or cv.get("isp")
+        country = None
+        for h in reversed(client_tr.get("hops") or []):
+            g = h.get("geo") or {}
+            if g.get("asn") and not asn:
+                asn = g.get("asn"); isp_name = isp_name or g.get("asn_name") or g.get("isp")
+            if g.get("country_code"):
+                country = g.get("country_code"); break
+        if not combined.get("blame") == "OK" and (asn or country):
+            combined["external_outage"] = await check_isp_outage(asn=asn, isp_name=isp_name, country_code=country)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("external outage correlation failed: %s", e)
     probe = next((t.get("probe_agent_id") for t in traces if t.get("probe_agent_id")), None)
     return {
         "target": target, "probe_agent_id": probe,

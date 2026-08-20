@@ -702,6 +702,27 @@ function TracerouteCard({ targets, clientId }) {
                 </span>
               ))}
             </div>
+            {diag.combined.external_outage && (
+              <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/60" data-testid="wan-fault-external-outage">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Correlazione outage esterno</span>
+                  {diag.combined.external_outage.widespread
+                    ? <span className="text-[9px] px-1.5 rounded-full bg-rose-500/20 text-rose-300 font-bold" data-testid="wan-outage-badge">DIFFUSO</span>
+                    : <span className="text-[9px] px-1.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold" data-testid="wan-outage-badge">ISOLATO</span>}
+                  {diag.combined.external_outage.sources?.length > 0 &&
+                    <span className="text-[9px] text-[var(--text-muted)]">fonti: {diag.combined.external_outage.sources.join(", ")}</span>}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] leading-snug mb-1">{diag.combined.external_outage.summary}</div>
+                {(diag.combined.external_outage.signals || []).map((s, i) => (
+                  <div key={i} className="text-[9px] text-[var(--text-muted)] leading-snug">• {s}</div>
+                ))}
+                <div className="flex flex-wrap gap-2 mt-1.5">
+                  {(diag.combined.external_outage.external_links || []).map((l, i) => (
+                    <a key={i} href={l.url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-sky-400 hover:text-sky-300 underline" data-testid={`wan-outage-link-${i}`}>{l.name} ↗</a>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
