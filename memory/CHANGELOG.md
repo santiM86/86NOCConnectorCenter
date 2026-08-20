@@ -1,3 +1,44 @@
+# 2026-06 — TV wallboard denso (200+ clienti) + dorsali sulla mappa + alert dorsale dedicato
+
+## 1. TV Dashboard ridisegnata per 200+ clienti (45")
+Problema: le card grandi non scalavano (con 200+ clienti non si vedeva nulla).
+Nuovo layout triage a due livelli (`TvDashboardPage.js` + `TvDashboard.css`):
+- **DA GESTIRE**: solo i clienti con anomalie, come card COMPATTE in griglia
+  `auto-fill minmax(232px)` ordinate per gravità (headline + ON/OFF/AL/CR + WAN + 1
+  alert). Critici lampeggiano.
+- **OPERATIVI**: tutti i clienti sani come chip minimali verdi (nome + dot) in
+  griglia densa `minmax(148px)` → 200 clienti stanno in una banda compatta.
+- Body scrollabile come fallback. KPI header invariati. Testid preservati
+  (`tv-client-*`, `tv-headline-*`, `tv-tile-wan-*`, `tv-tile-topalert-*`).
+  Verificato via screenshot (contatori senza overflow, sezioni corrette).
+
+## 2. Dorsali evidenziate sulla mappa (`NetworkMap.js`)
+I link di cascata/backbone ora sono più marcati: `strokeWidth` 5 (verificato) / 3
+(probabile) vs ~1.5 degli access, indigo/viola, ed etichetta con prefisso
+**"🔗 DORSALE ✓ portaA↔portaB VLAN N"** → distinti a colpo d'occhio dai
+collegamenti verso valle.
+
+## 3. Alert DEDICATO "PROBLEMA DI DORSALE" (`alert_engine.py::run_backbone_watchdog`)
+Separato dal down del singolo switch. Per ogni switch giù, controlla la porta
+dorsale sul parent (verso quello switch): se **LINK DOWN** o **traffico ZERO** →
+emette alert `critical` `source_type=corr_backbone_down` ("PROBLEMA DI DORSALE:
+PARENT → SWITCH") via pipeline unificata (Telegram/push), dedup per (client,switch),
+auto-resolve quando la dorsale torna ok o lo switch torna su. Se la dorsale passa
+traffico → nessun alert dorsale (è solo lo switch). Agganciato a `run_once` (20s).
+
+## Testing
+- Backbone watchdog (python -c, 4/4 PASS): link-down→alert, dorsale-ok→no alert,
+  zero-traffic→alert, recovery→resolve.
+- TV: screenshot OK. Mappa/NetworkMap + TV compilano (webpack OK). Backend sano.
+
+⚠️ Traffico dorsale disponibile solo se l'agent invia rx_bps/tx_bps per porta; la
+risoluzione peer dipende da LLDP+FDB (cascata). Attivo in PROD dopo Save to GitHub +
+redeploy (backend+frontend), nessun rebuild agent Go.
+
+---
+
+
+
 # 2026-06 — Dorsale switch: porta uplink evidenziata + diagnosi backbone + recovery rapido
 
 ## Richieste utente

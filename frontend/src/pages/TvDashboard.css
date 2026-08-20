@@ -83,6 +83,59 @@
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 .tv-empty { grid-column: 1/-1; display: grid; place-items: center; color: var(--tvmute); font-size: 22px; letter-spacing: 3px; }
 
+/* ---------- v2026-06 Layout triage denso (200+ clienti su 45") ---------- */
+.tv-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; padding-right: 4px; }
+.tv-body::-webkit-scrollbar { width: 8px; }
+.tv-body::-webkit-scrollbar-thumb { background: #2a2f40; border-radius: 4px; }
+.tv-sec { display: flex; flex-direction: column; gap: 8px; }
+.tv-sec-prob { flex: 0 0 auto; }
+.tv-sec-ok { flex: 0 0 auto; }
+.tv-sec-h { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 800;
+  letter-spacing: 2px; text-transform: uppercase; color: var(--tvmute); }
+.tv-sec-h b { font-size: 18px; }
+.tv-sec-h-prob { color: #ff8a3d; }
+.tv-sec-h-ok { color: #2fd85f; }
+.tv-sec-hint { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--tvmute); text-transform: none; }
+.tv-sec-dot { width: 11px; height: 11px; border-radius: 50%; }
+.tv-sec-dot-prob { background: #ff8a3d; animation: tvPulse 1.4s infinite; }
+.tv-sec-dot-ok { background: #2fd85f; }
+
+/* Problemi: card compatte a griglia */
+.tv-prob-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); }
+.tv-pcard { background: var(--tvcard); border: 1px solid var(--tvborder); border-left: 6px solid var(--pc);
+  border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+.tv-pcard-crit { background: linear-gradient(180deg, rgba(255,65,54,.10), var(--tvcard)); }
+.tv-pcard-warn { background: linear-gradient(180deg, rgba(255,191,0,.06), var(--tvcard)); }
+.tv-pcard-flash { animation: tvTileFlash 2.2s ease-in-out infinite; }
+.tv-pcard-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tv-pcard-name { font-size: 18px; font-weight: 800; letter-spacing: .3px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.tv-pcard-nosonda { flex-shrink: 0; font-size: 9px; font-weight: 800; letter-spacing: 1px; color: #ff9500;
+  background: rgba(255,149,0,.14); border-radius: 5px; padding: 2px 5px; }
+.tv-pcard-mid { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.tv-pcard-headline { font-size: 22px; font-weight: 900; letter-spacing: .5px; line-height: 1; white-space: nowrap; }
+.tv-headline-crit { color: #ff4136; }
+.tv-headline-warn { color: #ffbf00; }
+.tv-pcard-counts { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--tvmute); }
+.tv-pcard-counts b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.tv-pcard-wan { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700;
+  padding: 3px 7px; border-radius: 7px; background: rgba(255,255,255,.03); }
+.tv-pcard-wan-txt { color: var(--tvtext); }
+.tv-pcard-lat { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; }
+.tv-pcard-alert { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--tvmute); overflow: hidden; }
+.tv-pcard-alert-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Operativi: chip minimali a griglia densa (heatmap verde) */
+.tv-ok-grid { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
+.tv-ok-chip { display: flex; align-items: center; gap: 7px; background: rgba(47,216,95,.06);
+  border: 1px solid rgba(47,216,95,.20); border-radius: 8px; padding: 5px 9px; overflow: hidden; }
+.tv-ok-dot { width: 8px; height: 8px; border-radius: 50%; background: #2fd85f; flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(47,216,95,.5); }
+.tv-ok-name { font-size: 13px; font-weight: 700; color: #cfe9d6; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.tv-ok-none { color: var(--tvmute); font-size: 14px; padding: 6px 2px; }
+
+
 /* ---------- Client tile ---------- */
 .tv-tile { background: var(--tvcard); border: 1px solid var(--tvborder); border-left-width: 8px;
   border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;

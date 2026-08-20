@@ -243,7 +243,7 @@ function topoToFlowEdges(topoEdges) {
     if (e.type === "wan") strokeWidth = 2.5;
     else if (is10G) strokeWidth = 3;
     else if (e.type === "trunk" || isLldp) strokeWidth = 2;
-    if (isCascade) strokeWidth = 3;
+    if (isCascade) strokeWidth = e.verified ? 5 : 3;  // v2026-06: dorsale più marcata
 
     // Determine color: 10G gets bright orange, LLDP gets cyan
     let color = EDGE_COLORS[e.type] || EDGE_COLORS.custom;
@@ -265,7 +265,7 @@ function topoToFlowEdges(topoEdges) {
       const rp = e.b_port || e.remote_port;
       const ports = (lp || rp) ? `${lp || "?"}↔${rp || "?"}` : "";
       const vlanTxt = e.vlan != null ? ` VLAN ${e.vlan}` : "";
-      const composed = `${e.verified ? "✓" : "~"} ${ports}${vlanTxt}`.trim();
+      const composed = `🔗 DORSALE ${e.verified ? "✓" : "~"} ${ports}${vlanTxt}`.trim();
       label = composed.length > 2 ? composed : (label || composed);
     }
     if (anomaly === "missing") label = "⚠ UPLINK SCOMPARSO";

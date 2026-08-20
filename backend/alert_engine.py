@@ -356,6 +356,101 @@ async def hyperv_vm_state_tick(db) -> dict:
     return {"emitted": emitted, "resolved": resolved}
 
 
+async def run_backbone_watchdog(db, cfg_global: Dict[str, Any]) -> dict:
+    """v2026-06: alert DEDICATO 'PROBLEMA DI DORSALE'. Quando uno switch è giù,
+    controlla la porta DORSALE sul parent (verso quello switch): se è LINK DOWN
+    o passa traffico ZERO → emette un alert SEPARATO dal down del singolo switch
+    (source_type=corr_backbone_down). Auto-resolve quando la dorsale torna ok o
+    lo switch torna su. Dedup per (client, switch)."""
+    from routes.topology_diagram import compute_switch_cascade
+    emitted = 0
+    resolved = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    for client in clients:
+        cid = client.get("id")
+        cname = client.get("name") or cid
+        try:
+            casc = await compute_switch_cascade(cid)
+        except Exception:
+            continue
+        cascade = casc.get("cascade", []) or []
+        if not cascade:
+            continue
+        for node in cascade:
+            up = node.get("uplink")
+            sw_ip = node.get("ip")
+            if not up or not sw_ip:
+                continue
+            dev_key = f"backbone:{cid}:{sw_ip}"
+            md = await db.managed_devices.find_one(
+                {"client_id": cid, "ip": sw_ip},
+                {"_id": 0, "status": 1, "consecutive_ping_failures": 1, "name": 1})
+            is_down = bool(md) and (
+                md.get("status") == "offline"
+                or int(md.get("consecutive_ping_failures") or 0) >= 2)
+            parent_ip = up.get("to_ip")
+            remote_port = up.get("remote_port")
+            parent_name = up.get("to_name") or parent_ip
+            sw_name = node.get("name") or (md or {}).get("name") or sw_ip
+
+            async def _resolve():
+                r = await db.alerts.update_many(
+                    {"client_id": cid, "source_type": "corr_backbone_down",
+                     "device_id": dev_key, "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}})
+                return r.modified_count
+
+            if not is_down or not parent_ip or not remote_port:
+                resolved += await _resolve()
+                continue
+            ports = await db.switch_ports.find(
+                {"client_id": cid, "local_ip": parent_ip}, {"_id": 0}).to_list(2000)
+            rp = str(remote_port).strip().lower()
+            port = next((p for p in ports
+                         if str(p.get("name") or "").strip().lower() == rp
+                         or str(p.get("alias") or "").strip().lower() == rp), None)
+            if not port:
+                resolved += await _resolve()
+                continue
+            oper = port.get("oper")
+            tk = ("rx_bps" in port) or ("tx_bps" in port)
+            rx = int(port.get("rx_bps") or 0)
+            tx = int(port.get("tx_bps") or 0)
+            if oper != 1:
+                reason = f"la porta dorsale {remote_port} su {parent_name} è LINK DOWN"
+            elif tk and (rx + tx) == 0:
+                reason = f"la porta dorsale {remote_port} su {parent_name} è UP ma con traffico a ZERO"
+            else:
+                resolved += await _resolve()  # dorsale ok → è solo lo switch giù
+                continue
+            exists = await db.alerts.find_one(
+                {"client_id": cid, "source_type": "corr_backbone_down",
+                 "device_id": dev_key, "status": "active"}, {"_id": 0, "id": 1})
+            if exists:
+                continue
+            alert_doc = {
+                "id": str(uuid.uuid4()), "client_id": cid, "client_name": cname,
+                "device_id": dev_key, "device_ip": sw_ip, "device_name": sw_name,
+                "severity": "critical", "source_type": "corr_backbone_down",
+                "title": f"PROBLEMA DI DORSALE: {parent_name} → {sw_name}",
+                "message": (f"Cliente {cname}: lo switch «{sw_name}» risulta giù e {reason} "
+                            f"→ probabile guasto della DORSALE (cavo/SFP/uplink), non del solo switch. "
+                            f"Verificare il link fisico verso {parent_name}."),
+                "status": "active", "created_at": now_iso,
+            }
+            try:
+                if await insert_alert_if_emit(db, alert_doc):
+                    await notify_alert_telegram(db, alert_doc)
+                    emitted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[backbone] emit failed {cid}/{sw_ip}: {e}")
+    if emitted or resolved:
+        logger.info(f"[backbone] emitted {emitted} backbone alerts, resolved {resolved}")
+    return {"emitted": emitted, "resolved": resolved}
+
+
+
 
 async def morning_status_digest(db) -> dict:
     """Riepilogo mattutino (07:00): stato di TUTTI i clienti, mostrando SOLO
@@ -1349,6 +1444,10 @@ class AlertEngine:
             await hyperv_vm_state_tick(self.db)
         except Exception as e:  # noqa: BLE001
             logger.warning("hyperv-vm watchdog error: %s", e, exc_info=True)
+        try:
+            await run_backbone_watchdog(self.db, cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backbone watchdog error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,
