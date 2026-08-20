@@ -4,13 +4,14 @@ import "./TvDashboard.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const REFRESH_INTERVAL = 15000;
+const POPUP_TTL_MS = 30000; // popup allarmi critici a schermo per 30s
 
-/* ---------- Audio alarm ---------- */
+/* ---------- Audio alarm + popup criticals ---------- */
 function useAlarmSystem() {
   const audioCtxRef = useRef(null);
-  const prevRef = useRef({ offIPs: new Set(), altIDs: new Set() });
+  const prevRef = useRef({ offIPs: new Set(), altIDs: new Set(), primed: false });
   const [soundOn, setSoundOn] = useState(false);
-  const [alarm, setAlarm] = useState(null);
+  const [popups, setPopups] = useState([]); // {id, kind, client, title, ts}
   const init = useCallback(() => {
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
@@ -22,26 +23,57 @@ function useAlarmSystem() {
     for (let i = 0; i < n; i++) {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = t; o.frequency.value = f;
-      g.gain.setValueAtTime(0.12, now + i * (d + 0.1));
-      g.gain.exponentialRampToValueAtTime(0.001, now + i * (d + 0.1) + d);
+      g.gain.setValueAtTime(0.16, now + i * (d + 0.12));
+      g.gain.exponentialRampToValueAtTime(0.001, now + i * (d + 0.12) + d);
       o.connect(g); g.connect(ctx.destination);
-      o.start(now + i * (d + 0.1)); o.stop(now + i * (d + 0.1) + d);
+      o.start(now + i * (d + 0.12)); o.stop(now + i * (d + 0.12) + d);
     }
   }, []);
+  const pushPopup = useCallback((kind, client, title) => {
+    setPopups(prev => {
+      const fresh = prev.filter(p => Date.now() - p.ts < POPUP_TTL_MS);
+      // dedup: stesso client+titolo già a schermo
+      if (fresh.some(p => p.client === client && p.title === title)) return fresh;
+      const next = [...fresh, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, kind, client, title, ts: Date.now() }];
+      return next.slice(-3); // max 3 popup contemporanei
+    });
+  }, []);
+  const dismiss = useCallback((id) => setPopups(prev => prev.filter(p => p.id !== id)), []);
   const check = useCallback((data) => {
-    if (!soundOn || !data) return;
+    if (!data) return;
     const p = prevRef.current;
     const cO = new Set((data.offline_devices || []).map(d => d.ip));
-    const cA = new Set((data.alerts || []).map(a => a.id));
-    const nO = [...cO].filter(ip => !p.offIPs.has(ip));
-    const nC = (data.alerts || []).filter(a => a.severity === "critical" && !p.altIDs.has(a.id));
-    if (p.offIPs.size > 0 || p.altIDs.size > 0) {
-      if (nO.length > 0) { beep(880, 0.2, 3); setAlarm({ t: "off", m: `NUOVO OFFLINE: ${data.offline_devices.filter(d => nO.includes(d.ip)).map(d => d.name).join(", ")}`, ts: Date.now() }); }
-      else if (nC.length > 0) { beep(660, 0.3, 2, "sawtooth"); setAlarm({ t: "crit", m: `NUOVO ALERT CRITICO: ${nC[0].device_name || nC[0].title}`, ts: Date.now() }); }
+    const cA = new Set((data.alerts || []).filter(a => a.severity === "critical").map(a => a.id));
+    // Primo giro: solo baseline, niente popup/suono (evita valanga all'apertura)
+    if (!p.primed) {
+      prevRef.current = { offIPs: cO, altIDs: cA, primed: true };
+      return;
     }
-    prevRef.current = { offIPs: cO, altIDs: cA };
-  }, [soundOn, beep]);
-  return { soundOn, init, check, alarm };
+    const newOff = (data.offline_devices || []).filter(d => !p.offIPs.has(d.ip));
+    const newCrit = (data.alerts || []).filter(a => a.severity === "critical" && !p.altIDs.has(a.id));
+    let any = false;
+    newCrit.forEach(a => { pushPopup("crit", a.client_name || "—", a.title || a.device_name || "Allarme critico"); any = true; });
+    newOff.forEach(d => { pushPopup("off", d.client_name || "—", `${d.name || d.ip} OFFLINE`); any = true; });
+    if (any && soundOn) {
+      // sirena: alterna due toni, ripetuta
+      beep(880, 0.28, 3, "sawtooth");
+      setTimeout(() => beep(620, 0.28, 3, "square"), 200);
+    }
+    prevRef.current = { offIPs: cO, altIDs: cA, primed: true };
+  }, [soundOn, beep, pushPopup]);
+  // Auto-dismiss dopo POPUP_TTL_MS
+  useEffect(() => {
+    if (popups.length === 0) return;
+    const t = setInterval(() => {
+      setPopups(prev => prev.filter(p => Date.now() - p.ts < POPUP_TTL_MS));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [popups.length]);
+  const testAlarm = useCallback(() => {
+    pushPopup("crit", "TEST · Cliente Demo", "PROBLEMA DI DORSALE: SWITCH01 → SWITCH02");
+    if (soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
+  }, [pushPopup, soundOn, beep]);
+  return { soundOn, init, check, popups, dismiss, testAlarm };
 }
 
 /* ---------- Client severity model ---------- */
@@ -65,7 +97,7 @@ export default function TvDashboardPage() {
   const [data, setData] = useState(null);
   const [clock, setClock] = useState(new Date());
   const [tickerX, setTickerX] = useState(0);
-  const { soundOn, init, check, alarm } = useAlarmSystem();
+  const { soundOn, init, check, popups, dismiss, testAlarm } = useAlarmSystem();
 
   useEffect(() => {
     load();
@@ -107,8 +139,22 @@ export default function TvDashboardPage() {
 
   return (
     <div className={`tv tv-${globalLevel}`} data-testid="tv-dashboard" onClick={!soundOn ? init : undefined}>
-      {alarm && (Date.now() - alarm.ts < 20000) && (
-        <div className={`tv-alarm ${alarm.t === "off" ? "tv-alarm-red" : "tv-alarm-orange"}`} data-testid="tv-alarm-banner">{alarm.m}</div>
+      {/* ===== POPUP GRANDI CENTRALI — allarmi critici (auto 30s) ===== */}
+      {popups.length > 0 && (
+        <div className="tv-popups" data-testid="tv-critical-popups">
+          {popups.map(pp => (
+            <div key={pp.id} className={`tv-popup tv-popup-${pp.kind}`} data-testid="tv-critical-popup">
+              <button className="tv-popup-x" onClick={(e) => { e.stopPropagation(); dismiss(pp.id); }} data-testid="tv-popup-dismiss" aria-label="Chiudi">×</button>
+              <div className="tv-popup-badge">{pp.kind === "off" ? "DISPOSITIVO OFFLINE" : "ALLARME CRITICO"}</div>
+              <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
+              <div className="tv-popup-title" data-testid="tv-popup-title">{pp.title}</div>
+              <div className="tv-popup-foot">
+                <span className="tv-popup-pulse" />
+                {new Date(pp.ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* ===== TOP BAR ===== */}
@@ -137,6 +183,9 @@ export default function TvDashboardPage() {
           </div>
           <button className={`tv-snd ${soundOn ? "tv-snd-on" : ""}`} onClick={init} data-testid="tv-sound-toggle">
             {soundOn ? "♪ ON" : "♪ OFF"}
+          </button>
+          <button className="tv-snd tv-test" onClick={(e) => { e.stopPropagation(); if (!soundOn) init(); testAlarm(); }} data-testid="tv-test-alarm" title="Prova popup + suono allarme">
+            TEST
           </button>
           <div className="tv-time" data-testid="tv-clock">
             <span className="tv-time-h">{clock.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span>

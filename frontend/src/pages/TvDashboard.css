@@ -11,6 +11,39 @@
   --orange: #ff9500;
 }
 
+/* ===== Popup GRANDI centrali per allarmi critici (auto 30s) ===== */
+.tv-popups { position: fixed; inset: 0; z-index: 999; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 22px; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,.55), rgba(0,0,0,.82)); }
+.tv-popup { pointer-events: auto; position: relative; width: min(72vw, 900px);
+  border-radius: 22px; padding: 34px 48px 28px; text-align: center;
+  border: 3px solid; background: #12060a;
+  box-shadow: 0 0 60px 0 rgba(255,65,54,.45), inset 0 0 40px rgba(255,65,54,.08);
+  animation: tvPopupIn .35s cubic-bezier(.2,1.2,.3,1) both, tvPopupPulse 1.6s ease-in-out infinite; }
+.tv-popup-crit { border-color: var(--red); }
+.tv-popup-off { border-color: var(--orange); background: #140b04;
+  box-shadow: 0 0 60px 0 rgba(255,149,0,.45), inset 0 0 40px rgba(255,149,0,.08); }
+@keyframes tvPopupIn { from { opacity: 0; transform: scale(.86) translateY(20px); } to { opacity: 1; transform: none; } }
+@keyframes tvPopupPulse { 0%,100% { box-shadow: 0 0 40px 0 rgba(255,65,54,.30), inset 0 0 30px rgba(255,65,54,.06); }
+  50% { box-shadow: 0 0 80px 6px rgba(255,65,54,.60), inset 0 0 44px rgba(255,65,54,.12); } }
+.tv-popup-badge { display: inline-block; font-size: 20px; font-weight: 900; letter-spacing: 4px;
+  color: #fff; background: var(--red); padding: 6px 18px; border-radius: 10px; margin-bottom: 18px; }
+.tv-popup-off .tv-popup-badge { background: var(--orange); color: #201200; }
+.tv-popup-client { font-size: 64px; font-weight: 900; line-height: 1.02; color: #fff;
+  letter-spacing: .5px; margin-bottom: 10px; word-break: break-word; }
+.tv-popup-title { font-size: 30px; font-weight: 700; color: #ffd7d2; line-height: 1.15; }
+.tv-popup-off .tv-popup-title { color: #ffe6c2; }
+.tv-popup-foot { margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-family: ui-monospace, monospace; font-size: 16px; color: var(--tvmute); }
+.tv-popup-pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--red);
+  animation: tvPulse 1.2s infinite; }
+.tv-popup-off .tv-popup-pulse { background: var(--orange); }
+.tv-popup-x { position: absolute; top: 12px; right: 16px; width: 40px; height: 40px; border-radius: 10px;
+  border: 1px solid var(--tvborder); background: rgba(255,255,255,.06); color: #fff; font-size: 26px;
+  line-height: 1; cursor: pointer; }
+.tv-popup-x:hover { background: rgba(255,255,255,.14); }
+
+
 * { box-sizing: border-box; }
 
 .tv {
@@ -74,6 +107,9 @@
 .tv-snd { background: #141a26; border: 1px solid var(--tvborder); color: var(--tvmute);
   border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer; letter-spacing: 1px; }
 .tv-snd-on { color: var(--green); border-color: rgba(47,216,95,.4); }
+.tv-test { color: #ffb35c; border-color: rgba(255,149,0,.4); font-weight: 800; }
+.tv-test:hover { background: rgba(255,149,0,.14); }
+
 .tv-time { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.05; }
 .tv-time-h { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .tv-time-d { font-size: 11px; color: var(--tvmute); text-transform: uppercase; letter-spacing: 1.5px; }

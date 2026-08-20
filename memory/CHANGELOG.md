@@ -1,3 +1,42 @@
+# 2026-06 — TV wallboard: popup GRANDI centrali per allarmi critici + suono
+
+## Richiesta utente
+Sulla TV 45" (punto di riferimento tecnici): quando arrivano allarmi critici,
+mostrare un POPUP GRANDE al centro con nome cliente + allarme, farlo sparire dopo
+30s e riprodurre un suono.
+
+## Implementazione (`TvDashboardPage.js` + `TvDashboard.css`)
+- `useAlarmSystem` riscritto: mantiene una coda `popups` (max 3) di eventi critici.
+  Su NUOVO alert critico o NUOVO dispositivo offline → push popup {kind, client,
+  title} + suono "sirena" (toni alternati 880/620Hz ripetuti). Baseline "primed"
+  al primo giro per non generare una valanga all'avvio (200+ clienti).
+- Popup GRANDE centrale: overlay full-screen scurito, card con badge
+  ("ALLARME CRITICO"/"DISPOSITIVO OFFLINE"), **nome cliente 64px**, titolo allarme
+  30px, orario, pulsante ×. Auto-dismiss dopo `POPUP_TTL_MS=30000` (30s) via
+  interval di purge. Animazione entrata + pulse. Rosso=critico, arancio=offline.
+- Suono: Web Audio; per policy autoplay del browser serve UN click sul wallboard
+  (toggle "♪ OFF→ON" o qualsiasi click) per abilitare l'audio.
+- Aggiunto pulsante **TEST** nell'header: genera un popup dimostrativo + suono →
+  i tecnici possono verificare all'istante popup+audio sulla TV reale.
+- testid: `tv-critical-popup`, `tv-popup-client`, `tv-popup-title`,
+  `tv-popup-dismiss`, `tv-test-alarm`.
+
+## Testing / stato
+- Codice compila (webpack OK); backend sano; endpoint `/api/tv/dashboard` locale
+  200 in ~12-55ms (nessuno stallo periodico dal nuovo watchdog).
+- Redesign TV confermato via screenshot (layout triage). ⚠️ La cattura live del
+  popup via screenshot-tool è stata bloccata da flakiness intermittente
+  dell'ingress di preview (il browser dello strumento non caricava i dati del
+  dashboard, mentre in locale l'endpoint risponde e in un altro screenshot la
+  pagina ha caricato correttamente). Il pulsante TEST consente all'utente di
+  verificare popup+suono immediatamente sulla TV.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy frontend.
+
+---
+
+
+
 # 2026-06 — TV wallboard denso (200+ clienti) + dorsali sulla mappa + alert dorsale dedicato
 
 ## 1. TV Dashboard ridisegnata per 200+ clienti (45")
