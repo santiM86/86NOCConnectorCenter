@@ -1,3 +1,33 @@
+# 2026-06 — FIX Diagnosi Percorso: "Trace completato (undefined, 0 hop) · NON RAGGIUNTA"
+
+## Problema
+Con l'agent aggiornato (v4.30.4, net_trace ora presente) il trace parte ma il
+risultato è vuoto: `tool` undefined, 0 hop, "NON RAGGIUNTA".
+
+## Root cause (SOLO frontend)
+L'agent Go incapsula OGNI risultato comando in `proto.AgentReply{ ok, error?,
+result }` (json `result`) — vedi `internal/transport/ws.go`. Il backend
+`send_command` restituisce l'intero payload `{ok, result, error}`. Ma il frontend
+leggeva `data.reply.tool` / `data.reply.hops` (livello sbagliato) invece di
+`data.reply.result.tool` → tutto undefined/0. Nessun rebuild agent necessario.
+
+## Fix (`NetworkPathDiagnosisPage.js`)
+In `runTrace`: unwrap del risultato →
+`const r = reply.result || reply.Result || reply;` (+ `replyErr` da reply.error).
+`setResult(r)` così la tabella hop/tool/reached si popola. Fallback `|| reply`
+robusto sia che la reply sia wrappata sia (in futuro) già scartata.
+
+## Testing
+- Struttura verificata contro il proto Go (`AgentReply.Result json:"result"`).
+- Frontend compila (webpack OK). ⚠️ Verifica E2E richiede un agent-sonda LIVE in
+  prod (non disponibile in preview): dopo redeploy frontend, rilanciare il trace.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy frontend.
+
+---
+
+
+
 # 2026-06 — Telegram: nome dispositivo PARLANTE (no "Hardware Manufacturer/Microsoft")
 
 ## Richiesta utente

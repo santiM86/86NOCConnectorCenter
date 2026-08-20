@@ -79,10 +79,14 @@ export default function NetworkPathDiagnosisPage() {
         { name: "net_trace", args, timeout: 115 },
         { headers },
       );
-      const r = data.reply || {};
+      // La reply dell'agent è AgentReply { ok, error?, result } → il vero esito
+      // net_trace è dentro `result` (unwrap, con fallback per PascalCase legacy).
+      const reply = data.reply || {};
+      const r = reply.result || reply.Result || reply;
+      const replyErr = reply.error || reply.Error || r.error;
       setResult(r);
-      if (r.error) toast.error(`Trace: ${r.error}`, { id: tId });
-      else toast.success(`Trace completato (${r.tool}, ${r.hops?.length || 0} hop)`, { id: tId });
+      if (replyErr) toast.error(`Trace: ${replyErr}`, { id: tId });
+      else toast.success(`Trace completato (${r.tool || "?"}, ${r.hops?.length || 0} hop)`, { id: tId });
     } catch (e) {
       toast.error(`Trace fallito: ${e.response?.data?.detail || e.message}`, { id: tId });
     } finally { setRunning(false); }
