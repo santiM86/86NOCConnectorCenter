@@ -1,3 +1,44 @@
+# 2026-06 — FIX "unknown command net_trace": binario agent senza net_trace (VERSION non bumpata)
+
+## Problema segnalato
+Sonda installata ma: (1) non compare nel menu AGENT-SONDA, (2) la Diagnosi Percorso
+fallisce con `unknown command "net_trace"` (anche su agent già connessi, es. SRVDCGAL).
+
+## Root cause (PROVATA)
+- Release GitHub **v4.30.3 pubblicata il 2026-08-17 12:15Z**.
+- Comando **net_trace committato il 2026-08-18 11:36Z** (giorno DOPO la release).
+- `noc-agent/VERSION` è rimasto **4.30.3** → l'`auto-release-agent.yml` (trigger su
+  cambio VERSION) SALTA perché il tag v4.30.3 esiste già → **nessun nuovo binario**.
+- Quindi il binario pubblicato/installato NON contiene net_trace, mentre il sorgente
+  (main.go registra `registerNetTraceCommand`) sì. → ogni agent risponde
+  `unknown command "net_trace"`.
+
+## Fix applicato
+- `noc-agent/VERSION`: 4.30.3 → **4.30.4**.
+- `noc-agent/cmd/agent/main.go`: `Version = "4.30.4"`.
+Al prossimo push su main (Save to GitHub), `auto-release-agent.yml` builda dal main
+CORRENTE (con net_trace) e pubblica la Release **v4.30.4**. `install-noc-agent.ps1`
+scarica `releases/latest` = 4.30.4 → net_trace disponibile.
+
+## Azioni richieste all'utente (non eseguibili da qui)
+1. **Save to GitHub** (push su main) → attendere i workflow "Auto-release agent" +
+   "Release Argus Agent" → verificare che compaia la Release **v4.30.4**.
+2. **Aggiornare gli agent**: reinstallare la sonda (il comando PowerShell prende
+   latest = 4.30.4) OPPURE usare "Aggiorna connector" per il rollout remoto.
+3. Dopo l'update la Diagnosi Percorso funziona. Se la **sonda globale** ancora non
+   compare nel menu dopo la riconnessione, segnalarlo: il backend NON valida
+   `__global__` in `register_agent` (token ok) e `/api/agents` elenca tutti gli
+   agent live, quindi dovrebbe apparire; da verificare il path WS `__global__`.
+
+## Note
+- Go non è installabile nel pod → la build la fa la CI (Go 1.23). Il codice net_trace
+  è committato con test (`internal/nettrace/nettrace_test.go`). Se la CI fallisse il
+  build, correggere e ribumpare.
+
+---
+
+
+
 # 2026-06 — FIX TV: tutti i clienti mostravano "NO SONDA" (fonte heartbeat sbagliata)
 
 ## Problema segnalato
