@@ -1762,6 +1762,19 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                        "configured": cf_token, "source": ("db" if cf_from_db else ("env" if cf_token else None)),
                        "masked": cf_masked, "note": cf_note},
     }
+    try:
+        from downdetector import status_info as _dd_status
+        dd_info = await _dd_status()
+    except Exception:
+        dd_info = {"configured": False, "source": None, "masked_client_id": None}
+    sources["downdetector"] = {
+        "name": "Downdetector Enterprise (Ookla)", "kind": "Segnalazioni utenti in tempo reale (crowdsourced)",
+        "requires_key": True, "enabled": dd_info.get("configured", False), "ok": None,
+        "configured": dd_info.get("configured", False), "source": dd_info.get("source"),
+        "masked": dd_info.get("masked_client_id"),
+        "note": (f"Credenziali configurate ({'UI/DB' if dd_info.get('source') == 'db' else 'env'})"
+                 if dd_info.get("configured") else "A pagamento — inserisci Client ID + Secret qui sotto"),
+    }
     if test:
         import time as _t
         now = int(_t.time())
@@ -1799,6 +1812,17 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                         sources["cloudflare"]["ok"] = False; sources["cloudflare"]["note"] = str(e)
         except Exception as e:  # noqa: BLE001
             logger.debug("outage-sources status test failed: %s", e)
+        # Downdetector live test (client httpx separato)
+        if sources["downdetector"]["configured"]:
+            try:
+                from downdetector import check_downdetector
+                dd = await check_downdetector("Telecom Italia", "IT")
+                sources["downdetector"]["ok"] = bool(dd.get("ok")) and dd.get("error") is None
+                sources["downdetector"]["note"] = ("Credenziali valide — API raggiungibile"
+                                                   if sources["downdetector"]["ok"]
+                                                   else (dd.get("error") or "Errore autenticazione"))
+            except Exception as e:  # noqa: BLE001
+                sources["downdetector"]["ok"] = False; sources["downdetector"]["note"] = str(e)
 
     active = await db.isp_outage_state.count_documents({"active": True})
     last = await db.isp_outage_state.find_one({}, {"_id": 0, "last_seen": 1}, sort=[("last_seen", -1)])
@@ -1866,6 +1890,54 @@ async def delete_cloudflare_token(current_user: dict = Depends(get_current_user)
     require_admin(current_user)
     await db.settings.delete_one({"key": "cloudflare_radar_token"})
     return {"ok": True}
+
+
+class DowndetectorCredsRequest(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+@router.put("/outage-sources/downdetector-creds")
+async def set_downdetector_creds(req: DowndetectorCredsRequest, current_user: dict = Depends(get_current_user)):
+    """Salva (cifrate) le credenziali Downdetector Enterprise e le verifica."""
+    require_admin(current_user)
+    from security import security_manager
+    cid = (req.client_id or "").strip()
+    csec = (req.client_secret or "").strip()
+    if len(cid) < 6 or len(csec) < 6:
+        raise HTTPException(status_code=400, detail="Client ID / Secret non validi")
+    # verifica: prova a ottenere un token OAuth2
+    import httpx
+    base = _os_env("DD_BASE_URL", "https://downdetectorapi.com/v2").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as c:
+            r = await c.post(f"{base}/tokens", params={"grant_type": "client_credentials"},
+                             auth=(cid, csec), headers={"Accept": "application/json"})
+            if r.status_code != 200 or not r.json().get("access_token"):
+                raise HTTPException(status_code=400, detail="Credenziali rifiutate da Downdetector (verifica Client ID/Secret e piano attivo)")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Impossibile verificare le credenziali: {e}")
+    await db.settings.update_one({"key": "downdetector_client_id"},
+        {"$set": {"key": "downdetector_client_id", "value": security_manager.encrypt_credential(cid),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await db.settings.update_one({"key": "downdetector_client_secret"},
+        {"$set": {"key": "downdetector_client_secret", "value": security_manager.encrypt_credential(csec),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True, "masked_client_id": "…" + cid[-4:]}
+
+
+@router.delete("/outage-sources/downdetector-creds")
+async def delete_downdetector_creds(current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    await db.settings.delete_many({"key": {"$in": ["downdetector_client_id", "downdetector_client_secret"]}})
+    return {"ok": True}
+
+
+def _os_env(k, d=None):
+    import os as _o
+    return _o.environ.get(k, d)
 
 
 async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:

@@ -47,6 +47,9 @@ export default function OutageSourcesSettingsPage() {
   const [asn, setAsn] = useState("AS3269");
   const [cfToken, setCfToken] = useState("");
   const [savingToken, setSavingToken] = useState(false);
+  const [ddId, setDdId] = useState("");
+  const [ddSecret, setDdSecret] = useState("");
+  const [savingDd, setSavingDd] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -81,6 +84,31 @@ export default function OutageSourcesSettingsPage() {
     try {
       await axios.delete(`${API}/api/external-monitor/outage-sources/cloudflare-token`, { headers });
       toast.success("Token rimosso");
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore rimozione");
+    }
+  };
+
+  const saveDd = async () => {
+    if (!ddId.trim() || !ddSecret.trim()) { toast.error("Inserisci Client ID e Client Secret"); return; }
+    setSavingDd(true);
+    try {
+      await axios.put(`${API}/api/external-monitor/outage-sources/downdetector-creds`,
+        { client_id: ddId.trim(), client_secret: ddSecret.trim() }, { headers });
+      toast.success("Credenziali Downdetector salvate e verificate (cifrate)");
+      setDdId(""); setDdSecret("");
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio credenziali");
+    } finally { setSavingDd(false); }
+  };
+
+  const deleteDd = async () => {
+    if (!window.confirm("Rimuovere le credenziali Downdetector? La correlazione userà solo le altre fonti.")) return;
+    try {
+      await axios.delete(`${API}/api/external-monitor/outage-sources/downdetector-creds`, { headers });
+      toast.success("Credenziali rimosse");
       await reload();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore rimozione");
@@ -183,6 +211,47 @@ export default function OutageSourcesSettingsPage() {
               className="text-[10px] text-sky-400 hover:underline mt-1.5 inline-block">
               Apri la pagina API Tokens di Cloudflare ↗
             </a>
+          </div>
+        )}
+
+        {/* Gestione credenziali Downdetector Enterprise */}
+        {!loading && status?.sources?.downdetector && (
+          <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-4" data-testid="downdetector-creds-card">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold flex items-center gap-2">
+                Downdetector Enterprise (Ookla)
+                {status.sources.downdetector.configured
+                  ? <span className="text-[9px] px-1.5 rounded-full bg-emerald-500/15 text-emerald-300">CONFIGURATO ({status.sources.downdetector.source === "db" ? "UI" : "env"})</span>
+                  : <span className="text-[9px] px-1.5 rounded-full bg-amber-500/15 text-amber-300">A PAGAMENTO — NON CONFIGURATO</span>}
+              </p>
+              {status.sources.downdetector.masked &&
+                <code className="text-[10px] font-mono text-[var(--text-muted)]">ID {status.sources.downdetector.masked}</code>}
+            </div>
+            <p className="text-[10px] text-[var(--text-muted)] mb-2">
+              Servizio <strong>Enterprise a pagamento</strong> (autenticazione OAuth 2.0). Ottieni <strong>Client ID</strong> e
+              <strong> Client Secret</strong> dalla dashboard Enterprise Downdetector e incollali qui. Salvati cifrati (AES-256-GCM) e verificati subito.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <Input value={ddId} onChange={(e) => setDdId(e.target.value)} placeholder="Client ID"
+                className="h-8 text-xs font-mono bg-[var(--bg-input)]" data-testid="downdetector-clientid-input" />
+              <Input type="password" autoComplete="off" value={ddSecret} onChange={(e) => setDdSecret(e.target.value)} placeholder="Client Secret"
+                className="h-8 text-xs font-mono bg-[var(--bg-input)]" data-testid="downdetector-secret-input" />
+            </div>
+            <div className="flex gap-2 mt-2">
+              <Button onClick={saveDd} disabled={savingDd || !ddId || !ddSecret} size="sm"
+                className="gap-1 bg-red-600 hover:bg-red-700 h-8" data-testid="downdetector-save">
+                {savingDd ? <ArrowsClockwise size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                {savingDd ? "…" : "Salva e verifica"}
+              </Button>
+              {status.sources.downdetector.source === "db" && (
+                <Button onClick={deleteDd} size="sm" variant="outline"
+                  className="gap-1 h-8 border-red-500/40 text-red-300 hover:bg-red-500/10" data-testid="downdetector-delete">
+                  <XCircle size={14} /> Rimuovi
+                </Button>
+              )}
+              <a href="https://enterprise.downdetector.com/" target="_blank" rel="noreferrer"
+                className="text-[10px] text-sky-400 hover:underline self-center ml-1">Dashboard Enterprise ↗</a>
+            </div>
           </div>
         )}
 

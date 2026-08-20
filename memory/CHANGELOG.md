@@ -6024,3 +6024,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Status endpoint mostra `configured/source(db|env)/masked`.
 - UI `OutageSourcesSettingsPage.jsx`: card "Token Cloudflare Radar" con input password, "Salva e verifica", "Rimuovi", badge CONFIGURATO(UI/env)+masked, link a dash.cloudflare API tokens.
 - Rimosso CLOUDFLARE_RADAR_TOKEN da .env → unica fonte gestita da UI/DB. Testato end-to-end (PUT→db, status source=db ok, screenshot UI).
+
+## 2026-06 (septies) — Integrazione Downdetector Enterprise (Ookla) v2
+- **NEW** `backend/downdetector.py`: client OAuth2 (POST {base}/tokens?grant_type=client_credentials, Basic Auth client_id:client_secret → JWT 1h, cache in-memory+lock). `check_downdetector(isp_name,country)` → risolve company per slug/nome (filtro country IT) e legge `status` (success/warning/danger). Credenziali cifrate in db.settings (downdetector_client_id/secret), fallback env DD_CLIENT_ID/DD_CLIENT_SECRET. Base override DD_BASE_URL.
+- Integrato come 4ª fonte in `isp_outage.check_isp_outage` → status warning/danger = segnale widespread.
+- **NEW** endpoint `PUT/DELETE /api/external-monitor/outage-sources/downdetector-creds` (admin, verifica live le credenziali prima di salvare). Status endpoint espone la fonte downdetector (configured/source/masked + test live).
+- UI `OutageSourcesSettingsPage.jsx`: 4ª riga fonte + card credenziali (Client ID + Client Secret, salva/verifica/rimuovi, link Dashboard Enterprise).
+- Testato: status mostra 4 fonti; PUT con credenziali finte → correttamente rifiutato dall'OAuth reale Downdetector; screenshot UI OK. Credenziali reali da inserire dall'utente (servizio a pagamento).
