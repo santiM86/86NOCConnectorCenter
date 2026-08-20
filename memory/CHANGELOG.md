@@ -1,3 +1,26 @@
+# 2026-06 — Traceroute nella scheda WAN cliente ora via sonda-agent (preconfigurato)
+
+## Problema
+Il pannello "TRACEROUTE (DAL NOC)" (`WanClientTab.jsx::TracerouteCard`) eseguiva
+il traceroute sul CENTER, che non ha `tracert` → "tracert non installato", 0 hop.
+
+## Fix
+`TracerouteCard` ricablato per usare la stessa pipeline funzionante (net_trace via
+sonda-agent): riceve `clientId`, seleziona in automatico la sonda (agent live del
+cliente → sonda globale `__global__` → qualsiasi live), POST
+`/api/agents/{probe}/command` con `net_trace {target, mode:icmp, max_hops:20,
+count:3}`, timeout 45s (agent) / 60s (axios). L'IP pubblico è già precompilato dal
+target WAN. Mostra tool/hop/esito + quale sonda ha eseguito. Unwrap `reply.result`.
+Titolo aggiornato "Traceroute (via sonda)".
+
+## Stato
+Frontend compila (1 warning preesistente). ⚠️ E2E richiede sonda live in prod.
+Attivo dopo Save to GitHub + redeploy frontend.
+
+---
+
+
+
 # 2026-06 — Diagnosi Percorso: auto sonda+IP per cliente + geo/ISP per hop
 
 ## 1. Selettore Cliente (auto sonda + IP pubblico)

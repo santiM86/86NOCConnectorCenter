@@ -578,19 +578,44 @@ function MultiIspCard({ clientId }) {
 }
 
 // =================== TRACEROUTE ===================
-function TracerouteCard({ targets }) {
+function TracerouteCard({ targets, clientId }) {
   const [hops, setHops] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [info, setInfo] = useState("");
   const [selTarget, setSelTarget] = useState(targets[0]?.public_ip || "1.1.1.1");
 
   const run = async () => {
     setLoading(true);
     setHops(null);
+    setInfo("");
     try {
-      const r = await axios.post(`${API}/external-monitor/traceroute`, { target: selTarget, max_hops: 20 });
-      setHops(r.data.hops || []);
+      // Trova una sonda LIVE: agent del cliente, altrimenti sonda globale
+      const token = localStorage.getItem("noc_token");
+      const hdr = { headers: { Authorization: `Bearer ${token}` } };
+      const ag = await axios.get(`${API}/agents`, hdr);
+      const live = (ag.data || []).filter(a => a.live);
+      const probe = live.find(a => a.client_id === clientId)
+        || live.find(a => a.client_id === "__global__")
+        || live[0];
+      if (!probe) { setInfo("Nessuna sonda-agent connessa. Installa/aggiorna la sonda."); return; }
+      const r = await axios.post(
+        `${API}/agents/${probe.agent_id}/command`,
+        { name: "net_trace", args: { target: selTarget, mode: "icmp", max_hops: 20, count: 3 }, timeout: 45 },
+        { ...hdr, timeout: 60000 },
+      );
+      const reply = r.data.reply || {};
+      const res = reply.result || reply.Result || reply;
+      const list = (res.hops || []).map(h => ({
+        hop: h.hop, ip: h.timeout ? null : (h.ip || h.host),
+        rtt_ms: h.timeout ? null : (h.avg_ms != null ? Math.round(h.avg_ms * 10) / 10 : null),
+        timeout: h.timeout,
+      }));
+      setHops(list);
+      setInfo(`${res.tool || "trace"} · ${list.length} hop · ${res.reached ? "destinazione raggiunta" : "NON raggiunta"} · sonda ${probe.client_id === "__global__" ? "globale" : "cliente"}`);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore traceroute");
+      const msg = e.code === "ECONNABORTED" ? "Timeout: il trace ha superato 60s" : (e.response?.data?.detail || "Errore traceroute");
+      toast.error(msg);
+      setInfo(msg);
     } finally { setLoading(false); }
   };
 
@@ -599,7 +624,7 @@ function TracerouteCard({ targets }) {
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Path size={13} weight="bold" className="text-orange-400" />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300">Traceroute (dal NOC)</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300">Traceroute (via sonda)</span>
         </div>
       </div>
       <div className="flex gap-2 mb-2">
@@ -608,19 +633,17 @@ function TracerouteCard({ targets }) {
           {loading ? "…" : "Esegui"}
         </button>
       </div>
+      {info && <div className="text-[9px] text-[var(--text-muted)] mb-1">{info}</div>}
       {hops && hops.length > 0 && (
         <div className="space-y-0.5 max-h-48 overflow-y-auto">
           {hops.map((h, i) => (
             <div key={i} className="flex items-center gap-2 text-[10px] font-mono py-0.5 border-b border-[var(--bg-border)]/40 last:border-0">
               <span className="w-5 text-orange-400">{h.hop || "?"}</span>
-              <span className="flex-1 text-[var(--text-primary)]">{h.ip || "*"}</span>
+              <span className="flex-1 text-[var(--text-primary)]">{h.timeout ? <span className="text-rose-400">* * *</span> : (h.ip || "*")}</span>
               <span className="tabular-nums text-[var(--text-muted)]">{h.rtt_ms != null ? `${h.rtt_ms}ms` : ""}</span>
             </div>
           ))}
         </div>
-      )}
-      {hops && hops.length === 1 && hops[0].error && (
-        <div className="text-[10px] text-red-400 text-center py-2">{hops[0].error}</div>
       )}
     </div>
   );
@@ -1056,7 +1079,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           {/* FASE 2: SaaS Reachability + Traceroute */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <SaasReachabilityCard clientId={clientId} />
-            <TracerouteCard targets={targets} />
+            <TracerouteCard targets={targets} clientId={clientId} />
           </div>
         </>
       )}
