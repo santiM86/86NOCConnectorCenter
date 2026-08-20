@@ -1,3 +1,18 @@
+# 2026-08-19 — Digest notturno raggruppato per cliente
+
+## Richiesta utente
+Riepilogo notturno raggruppato per cliente con conteggio per categoria (es. "ACME: 3 KEV, 1 anomalia"), SENZA link alla console.
+
+## Implementazione (alert_engine.py — telegram_quiet_digest_tick)
+- Raggruppamento per client_name → conteggio per categoria con label leggibili (kev_exposure→KEV, osint_c2→C2, traffic_anomaly→anomalia traffico, rogue→dispositivo rogue, wan_public_ip_change→cambio IP, predictive_*→guasto imminente, datto_sync_stale→sync Datto).
+- Clienti ordinati per volume alert; header con totali (N alert, X critici/Y alti, M clienti). Nessun link.
+
+## Verifica
+Digest generato: "ACME: 3 KEV, 1 anomalia traffico / Beta Srl: 2 C2, 1 cambio IP / Gamma: 1 dispositivo rogue". Backend sintassi OK.
+
+---
+
+
 # 2026-08-19 — Telegram Quiet Hours (riepilogo notturno)
 
 ## Richiesta utente

@@ -237,15 +237,35 @@ async def telegram_quiet_digest_tick(db) -> dict:
     if not pending:
         return {"sent": 0}
     if "telegram" in (cfg.get("channels") or []) and cfg.get("telegram_enabled"):
-        by_sev = {"critical": 0, "high": 0}
-        lines = []
-        for p in pending[:40]:
+        _LABELS = {
+            "kev_exposure": "KEV", "osint_c2": "C2", "traffic_anomaly": "anomalia traffico",
+            "traffic": "anomalia traffico", "rogue": "dispositivo rogue",
+            "new_devices_detected": "dispositivo rogue", "wan_public_ip_change": "cambio IP",
+            "predictive_raid": "guasto imminente", "predictive_ups": "guasto imminente",
+            "predictive_temp": "guasto imminente", "datto_sync_stale": "sync Datto",
+        }
+        def _label(st):
+            st = str(st or "")
+            if st in _LABELS:
+                return _LABELS[st]
+            if st.startswith("predictive"):
+                return "guasto imminente"
+            return st.replace("_", " ") or "alert"
+        # raggruppa per cliente → {categoria: conteggio}
+        by_client, by_sev = {}, {"critical": 0, "high": 0}
+        for p in pending:
             by_sev[p.get("severity", "critical")] = by_sev.get(p.get("severity", "critical"), 0) + 1
-            lines.append(f"• [{p.get('client_name') or '—'}] {p.get('title')}")
-        extra = len(pending) - 40
-        body = (f"🌙 Riepilogo notturno ARGUS — {len(pending)} alert accodati\n"
-                f"({by_sev.get('critical',0)} critici, {by_sev.get('high',0)} alti)\n\n"
-                + "\n".join(lines) + (f"\n… e altri {extra}." if extra > 0 else ""))
+            cli = p.get("client_name") or "—"
+            cats = by_client.setdefault(cli, {})
+            lbl = _label(p.get("source_type"))
+            cats[lbl] = cats.get(lbl, 0) + 1
+        lines = []
+        for cli in sorted(by_client, key=lambda c: -sum(by_client[c].values()))[:60]:
+            parts = ", ".join(f"{n} {lbl}" for lbl, n in sorted(by_client[cli].items(), key=lambda x: -x[1]))
+            lines.append(f"• <b>{cli}</b>: {parts}")
+        body = (f"🌙 <b>Riepilogo notturno ARGUS</b> — {len(pending)} alert accodati\n"
+                f"({by_sev.get('critical', 0)} critici, {by_sev.get('high', 0)} alti) · {len(by_client)} clienti\n\n"
+                + "\n".join(lines))
         try:
             from telegram_notifier import send_telegram_text
             await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
