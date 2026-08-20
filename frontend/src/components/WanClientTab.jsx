@@ -586,6 +586,8 @@ function TracerouteCard({ targets, clientId }) {
   const [info, setInfo] = useState("");
   const [ranAt, setRanAt] = useState(null);
   const [selTarget, setSelTarget] = useState(targets[0]?.public_ip || "1.1.1.1");
+  const [diag, setDiag] = useState(null);       // risultato fault-diagnose (verdetto colpa)
+  const [diagLoading, setDiagLoading] = useState(false);
   const lsKey = `wan_trace_last_${clientId}_${selTarget}`;
 
   useEffect(() => {
@@ -605,12 +607,13 @@ function TracerouteCard({ targets, clientId }) {
   const isPub = (ip) => ip && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
 
   const run = async () => {
-    setLoading(true); setRows(null); setInfo("");
+    setLoading(true); setRows(null); setInfo(""); setDiag(null);
     try {
       const token = localStorage.getItem("noc_token");
       const hdr = { headers: { Authorization: `Bearer ${token}` } };
       const ag = await axios.get(`${API}/agents`, hdr);
-      const live = (ag.data || []).filter(a => a.live);
+      const agList = Array.isArray(ag.data) ? ag.data : (ag.data?.agents || []);
+      const live = agList.filter(a => a.live);
       const probe = live.find(a => a.client_id === clientId) || live.find(a => a.client_id === "__global__") || live[0];
       if (!probe) { setInfo("Nessuna sonda-agent connessa."); return; }
       const r = await axios.post(`${API}/agents/${probe.agent_id}/command`,
@@ -636,6 +639,28 @@ function TracerouteCard({ targets, clientId }) {
 
   const geoHops = (rows || []).filter(r => r.geo && r.geo.lat != null && r.geo.lon != null);
 
+  const runDiag = async () => {
+    setDiagLoading(true); setDiag(null);
+    try {
+      const token = localStorage.getItem("noc_token");
+      const hdr = { headers: { Authorization: `Bearer ${token}` } };
+      const r = await axios.post(`${API}/external-monitor/fault-diagnose`,
+        { client_id: clientId, target: selTarget, mode: "icmp" },
+        { ...hdr, timeout: 120000 });
+      setDiag(r.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Diagnosi colpa fallita");
+    } finally { setDiagLoading(false); }
+  };
+
+  const BLAME_STYLE = {
+    "OK": { bg: "bg-emerald-500/10", br: "border-emerald-500/40", tx: "text-emerald-300" },
+    "Cliente": { bg: "bg-amber-500/10", br: "border-amber-500/40", tx: "text-amber-300" },
+    "ISP": { bg: "bg-rose-500/10", br: "border-rose-500/40", tx: "text-rose-300" },
+    "Sito destinazione": { bg: "bg-violet-500/10", br: "border-violet-500/40", tx: "text-violet-300" },
+    "Sonda": { bg: "bg-slate-500/10", br: "border-slate-500/40", tx: "text-slate-300" },
+  };
+
   return (
     <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3" data-testid="wan-traceroute-card">
       <div className="flex items-center gap-2 mb-2">
@@ -652,8 +677,34 @@ function TracerouteCard({ targets, clientId }) {
           <Input value={selTarget} onChange={e => setSelTarget(e.target.value)} placeholder="IP o hostname" className="h-7 text-[10px] font-mono bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="wan-traceroute-input" />
         )}
         <button onClick={run} disabled={loading || !selTarget} className="text-[9px] px-2 rounded border border-orange-500/40 hover:bg-orange-500/10 text-orange-300 disabled:opacity-50" data-testid="wan-traceroute-run">{loading ? "…" : "Esegui"}</button>
+        <button onClick={runDiag} disabled={diagLoading || !selTarget} className="text-[9px] px-2 rounded border border-rose-500/40 hover:bg-rose-500/10 text-rose-300 disabled:opacity-50" data-testid="wan-fault-diagnose-run" title="Traceroute multi-ancora + verdetto automatico su chi è la colpa del disservizio">{diagLoading ? "…" : "⚖️ Diagnosi colpa"}</button>
       </div>
       {info && <div className="text-[9px] text-[var(--text-muted)] mb-1">{info}</div>}
+
+      {/* Verdetto automatico "di chi è la colpa" (multi-ancora) */}
+      {diag && diag.combined && (() => {
+        const st = BLAME_STYLE[diag.combined.blame] || BLAME_STYLE["ISP"];
+        return (
+          <div className={`rounded-lg border ${st.br} ${st.bg} p-2.5 mb-2`} data-testid="wan-fault-verdict">
+            <div className="flex items-center gap-2 mb-1">
+              <span className={`text-[10px] font-bold uppercase tracking-wider ${st.tx}`} data-testid="wan-fault-blame">
+                Colpa: {diag.combined.blame}
+              </span>
+              <span className="text-[9px] px-1.5 rounded-full bg-black/30 text-[var(--text-muted)]">confidenza {diag.combined.confidence}</span>
+              <span className={`ml-auto text-[9px] font-semibold ${st.tx}`}>{diag.combined.headline}</span>
+            </div>
+            <div className="text-[10px] text-[var(--text-secondary)] leading-snug mb-1.5">{diag.combined.verdict}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(diag.traces || []).map((t, i) => (
+                <span key={i} className="text-[9px] px-1.5 py-0.5 rounded border border-[var(--bg-border)] bg-[var(--bg-card)] font-mono flex items-center gap-1" data-testid={`wan-fault-anchor-${i}`}>
+                  {t.is_client ? "🎯" : "🌐"} {t.target}
+                  <span className={t.reached ? "text-emerald-400" : "text-rose-400"}>{t.reached ? "OK" : "DOWN"}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Mini-mappa geografica del percorso */}
       {geoHops.length > 0 && (

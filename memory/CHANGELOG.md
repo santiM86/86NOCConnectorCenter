@@ -5976,3 +5976,11 @@ enrichment IP negli alert esistenti con badge reputazione.
 - zyxel_devices porta gia: model, sn, mac, firmware, cpu/mem/sessions, traffic, online_status, ora + ports + is_vital. Endpoint GET /clients/{id}/zyxel/devices e /zyxel/devices restituiscono i doc completi.
 - LIMITE: non testabile in preview (Nebula API key solo in produzione); codice corretto-per-costruzione, da verificare in produzione. Endpoint porte Nebula = best-effort (2 nomi tentati) da validare col vero payload.
 - DA FARE (frontend): sezione WAN del cliente con firewall in cima + scheda firewall dedicata che mostra porte/traffico/dettagli. E il pezzo che rende VISIBILE quanto sopra.
+
+## 2026-06 — Fix Traceroute WAN + Blame Engine (Kit prova disservizio ISP)
+- **BUGFIX**: card "TRACEROUTE (VIA SONDA)" nel tab WAN dava "Errore traceroute". Root cause: `WanClientTab.jsx` chiamava `.filter()` sulla risposta di `GET /api/agents` che è un oggetto `{agents:[...]}` (non array) → TypeError mascherato. Fix: `Array.isArray(ag.data) ? ag.data : ag.data?.agents`.
+- **NEW — Blame Engine** (`backend/fault_attribution.py`): `attribute_fault()` (verdetto singolo trace: LAN/CPE/ultimo-miglio-ISP/backbone-carrier/destinazione/sonda) + `combined_verdict()` (multi-ancora: distingue colpa Cliente vs ISP-carrier vs Sito vs Sonda). Unit-tested.
+- **NEW — endpoint** `POST /api/external-monitor/fault-diagnose` (external_monitor.py): traceroute multi-ancora via sonda (target cliente + 1.1.1.1 + 8.8.8.8), arricchimento geo/ASN (`_enrich_hops_geo`/`_geoip_cached`), ritorna `combined` + `traces[]`. 503 se nessuna sonda live.
+- **NEW — Telegram/alert**: `_auto_trace_on_wan_down` ora arricchisce geo e allega il verdetto "⚖️ COLPA: X — ..." al messaggio e in `alert.net_trace.verdict`.
+- **UI**: `WanClientTab.jsx` TracerouteCard: nuovo bottone `wan-fault-diagnose-run` ("⚖️ Diagnosi colpa") + banner verdetto `wan-fault-verdict` con chip per-ancora.
+- Testato frontend (iteration_127.json): crash sparito, degrado grazioso senza sonda live, nuova UI OK (4/4). Live trace end-to-end NON testabile in preview (nessuna sonda-agent live) — verificare in produzione.

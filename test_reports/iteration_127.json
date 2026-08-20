@@ -1,0 +1,25 @@
+{
+  "summary": "Frontend-only retest of the WAN tab TRACEROUTE (VIA SONDA) card on client 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36). Logged in via UI with info@86bit.it + TOTP 2FA, opened tab WAN (2 targets). Verified (1) the previous JS crash on 'Esegui' is gone — card now shows the graceful message 'Nessuna sonda-agent connessa.' with ZERO pageerror/unhandled exceptions (no 'filter is not a function'); (2) the new '⚖️ Diagnosi colpa' button (wan-fault-diagnose-run) is present, enabled and clickable — POST /api/external-monitor/fault-diagnose returns 503 and a readable Italian toast 'Nessuna sonda live disponibile per la diagnosi.' appears, no crash, no wan-fault-verdict banner (expected without live probe); (3) target select switch + second 'Esegui' run also handled gracefully. Backend sanity via API script confirmed GET /api/agents returns {agents:[...]} (object, hence the original bug) and fault-diagnose 503 detail text matches.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ClientOverviewPage / toast", "issues": ["Error toast renders top-right overlapping the 'Ricarica' button of the polling-warning banner; consider offsetting the toast container", "React console warning (dev only): <span> cannot be a child of <option> in WanClientTab line ~674 due to dynamic-expression wrapper — hydration warning, harmless in prod build but noisy"]}
+    ]
+  },
+  "test_report_links": ["/app/tests/wan_probe.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "TracerouteCard.run(): agent list parsing now defensive (Array.isArray || data.agents) — good; consider applying the same guard to other places calling GET /api/agents to avoid the same class of bug.",
+    "runDiag() sets diag only on success and never clears info; if a previous verdict exists it stays visible after a failed re-run — consider resetting/annotating stale verdicts."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% (4/4 scenarios)"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked via UI 2FA)",
+  "context_for_next_testing_agent": "Only client with WAN targets in preview: 86BIT_Office id da3d6e40-b3e5-4d46-9787-dde328a3aa36 (targets 8.8.8.8 firewall, 1.1.1.1 router). URL /client/{id} then click tab text 'WAN ('. No live agents in preview → traceroute/fault-diagnose always degrade gracefully. GET /api/auth/me returns 403 pre-auth (observed in console as failed resource) — harmless but worth confirming it is intentional.",
+  "rca_of_the_issue": "Original bug: GET /api/agents returns {agents:[...]}; frontend called .filter() directly on the object → TypeError swallowed by generic catch showing 'Errore traceroute'. Fix (Array.isArray guard + ag.data.agents fallback) verified working in the browser."
+}

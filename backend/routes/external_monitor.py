@@ -39,6 +39,14 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
     hops = res.get("hops") or []
     reached = bool(res.get("reached"))
     tool = res.get("tool") or "?"
+    # Arricchimento geo/ASN + verdetto automatico "di chi è la colpa"
+    verdict = None
+    try:
+        from fault_attribution import attribute_fault
+        hops = await _enrich_hops_geo(hops)
+        verdict = attribute_fault(hops, reached, target=public_ip, is_client_target=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("fault attribution failed: %s", e)
     last_ok, first_break = None, None
     for h in hops:
         if h.get("timeout") or (h.get("loss_pct") or 0) >= 100:
@@ -63,6 +71,8 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
                              + f" (baseline del {(bl.get('captured_at') or '')[:10]})")
     except Exception as e:  # noqa: BLE001
         logger.debug("baseline diff failed: %s", e)
+    if verdict and verdict.get("blame") and verdict.get("blame") != "OK":
+        lines.append(f"⚖️ COLPA: {verdict['blame']} — {verdict.get('verdict', '')}")
     summary = "\n".join(lines)
     try:
         await db.alerts.update_one(
@@ -75,6 +85,7 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
                     "target": public_ip, "tool": tool, "reached": reached, "hops": hops,
                     "probe_agent_id": res.get("_probe_agent_id"),
                     "baseline_diff": baseline_diff,
+                    "verdict": verdict,
                     "ran_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "message": {"$concat": [{"$ifNull": ["$message", ""]}, "\n\n", summary]},
@@ -1468,6 +1479,92 @@ async def get_geo_ip(ip: str, current_user: dict = Depends(get_current_user)):
     info["cached_at"] = datetime.now(timezone.utc).isoformat()
     await db.wan_geoip_cache.update_one({"ip": ip}, {"$set": info}, upsert=True)
     return {"cached": False, **{k: v for k, v in info.items() if k != "cached_at"}}
+
+
+async def _geoip_cached(ip: str) -> dict:
+    """Come get_geo_ip ma riusabile internamente (cache 30gg + fetch)."""
+    cached = await db.wan_geoip_cache.find_one({"ip": ip}, {"_id": 0})
+    if cached and cached.get("cached_at"):
+        try:
+            dt = datetime.fromisoformat(cached["cached_at"].replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - dt) < timedelta(days=30):
+                return {k: v for k, v in cached.items() if k != "cached_at"}
+        except Exception:
+            pass
+    info = await _fetch_geoip(ip)
+    info["cached_at"] = datetime.now(timezone.utc).isoformat()
+    await db.wan_geoip_cache.update_one({"ip": ip}, {"$set": info}, upsert=True)
+    return {k: v for k, v in info.items() if k != "cached_at"}
+
+
+async def _enrich_hops_geo(hops: list) -> list:
+    """Arricchisce ogni hop pubblico con geo/ASN (campo `geo`)."""
+    from fault_attribution import _is_private
+    pub_ips = set()
+    for h in (hops or []):
+        ip = h.get("ip") or h.get("host")
+        if ip and _is_private(ip) is False:
+            pub_ips.add(ip)
+    geo_map = {}
+    for ip in pub_ips:
+        try:
+            geo_map[ip] = await _geoip_cached(ip)
+        except Exception:
+            geo_map[ip] = None
+    for h in (hops or []):
+        ip = h.get("ip") or h.get("host")
+        if ip in geo_map:
+            h["geo"] = geo_map[ip]
+    return hops
+
+
+class FaultDiagnoseRequest(BaseModel):
+    client_id: str
+    target: str                       # IP pubblico del cliente (destinazione principale)
+    mode: str = "icmp"
+    extra_anchors: Optional[list] = None  # default: 1.1.1.1, 8.8.8.8
+
+
+@router.post("/fault-diagnose")
+async def fault_diagnose(req: FaultDiagnoseRequest, current_user: dict = Depends(get_current_user)):
+    """Kit prova disservizio ISP: esegue un traceroute multi-ancora via sonda
+    (destinazione cliente + ancore pubbliche) e restituisce un VERDETTO automatico
+    su "di chi è la colpa" (cliente / ISP-carrier / sito / sonda)."""
+    from routes.agent_ws import run_net_trace_via_probe
+    from fault_attribution import attribute_fault, combined_verdict
+
+    target = (req.target or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="target mancante")
+    anchors = req.extra_anchors if req.extra_anchors is not None else ["1.1.1.1", "8.8.8.8"]
+    plan = [(target, True)] + [(a, False) for a in anchors if a and a != target]
+
+    async def _one(dst: str, is_client: bool):
+        res = await run_net_trace_via_probe(dst, client_id=req.client_id, mode=req.mode)
+        if not res:
+            return None
+        hops = await _enrich_hops_geo(res.get("hops") or [])
+        reached = bool(res.get("reached"))
+        verdict = attribute_fault(hops, reached, target=dst, is_client_target=is_client)
+        return {
+            "target": dst, "is_client": is_client, "tool": res.get("tool"),
+            "reached": reached, "hops": hops, "verdict": verdict,
+            "probe_agent_id": res.get("_probe_agent_id"),
+            "probe_client_id": res.get("_probe_client_id"),
+        }
+
+    results = await asyncio.gather(*[_one(d, c) for d, c in plan])
+    traces = [r for r in results if r]
+    if not traces:
+        raise HTTPException(status_code=503, detail="Nessuna sonda live disponibile per la diagnosi.")
+
+    combined = combined_verdict(traces)
+    probe = next((t.get("probe_agent_id") for t in traces if t.get("probe_agent_id")), None)
+    return {
+        "target": target, "probe_agent_id": probe,
+        "combined": combined, "traces": traces,
+        "ran_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:
