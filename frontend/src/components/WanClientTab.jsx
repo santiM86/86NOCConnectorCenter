@@ -578,49 +578,110 @@ function MultiIspCard({ clientId }) {
 }
 
 // =================== TRACEROUTE ===================
-function TracerouteCard({ targets }) {
-  const [hops, setHops] = useState(null);
+const ISP_PALETTE = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#60a5fa", "#fb923c", "#e879f9"];
+
+function TracerouteCard({ targets, clientId }) {
+  const [rows, setRows] = useState(null);     // [{hop, ip, rtt_ms, timeout, geo}]
   const [loading, setLoading] = useState(false);
+  const [info, setInfo] = useState("");
+  const [ranAt, setRanAt] = useState(null);
   const [selTarget, setSelTarget] = useState(targets[0]?.public_ip || "1.1.1.1");
+  const lsKey = `wan_trace_last_${clientId}_${selTarget}`;
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(lsKey) || "null");
+      if (saved) { setRows(saved.rows); setInfo(saved.info); setRanAt(saved.ranAt); }
+      else { setRows(null); setInfo(""); setRanAt(null); }
+    } catch { /* noop */ }
+  }, [lsKey]);
+
+  const ispColor = useMemo(() => {
+    const m = {}; let i = 0;
+    (rows || []).forEach(r => { const k = r.geo?.isp; if (k && !(k in m)) { m[k] = ISP_PALETTE[i % ISP_PALETTE.length]; i++; } });
+    return m;
+  }, [rows]);
+
+  const isPub = (ip) => ip && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
 
   const run = async () => {
-    setLoading(true);
-    setHops(null);
+    setLoading(true); setRows(null); setInfo("");
     try {
-      const r = await axios.post(`${API}/external-monitor/traceroute`, { target: selTarget, max_hops: 20 });
-      setHops(r.data.hops || []);
+      const token = localStorage.getItem("noc_token");
+      const hdr = { headers: { Authorization: `Bearer ${token}` } };
+      const ag = await axios.get(`${API}/agents`, hdr);
+      const live = (ag.data || []).filter(a => a.live);
+      const probe = live.find(a => a.client_id === clientId) || live.find(a => a.client_id === "__global__") || live[0];
+      if (!probe) { setInfo("Nessuna sonda-agent connessa."); return; }
+      const r = await axios.post(`${API}/agents/${probe.agent_id}/command`,
+        { name: "net_trace", args: { target: selTarget, mode: "icmp", max_hops: 20, count: 3 }, timeout: 45 },
+        { ...hdr, timeout: 60000 });
+      const reply = r.data.reply || {}; const res = reply.result || reply.Result || reply;
+      const list = (res.hops || []).map(h => ({ hop: h.hop, ip: h.timeout ? null : (h.ip || h.host), rtt_ms: h.timeout ? null : (h.avg_ms != null ? Math.round(h.avg_ms * 10) / 10 : null), timeout: h.timeout, geo: null }));
+      // geo per hop pubblico
+      const pubIps = [...new Set(list.filter(x => isPub(x.ip)).map(x => x.ip))];
+      const geoMap = Object.fromEntries(await Promise.all(pubIps.map(async ip => {
+        try { const g = await axios.get(`${API}/external-monitor/geo-ip/${encodeURIComponent(ip)}`, hdr); return [ip, g.data]; } catch { return [ip, null]; }
+      })));
+      list.forEach(x => { if (isPub(x.ip)) x.geo = geoMap[x.ip]; });
+      const now = new Date().toISOString();
+      const infoTxt = `${res.tool || "trace"} · ${list.length} hop · ${res.reached ? "raggiunta" : "NON raggiunta"} · sonda ${probe.client_id === "__global__" ? "globale" : "cliente"}`;
+      setRows(list); setInfo(infoTxt); setRanAt(now);
+      try { localStorage.setItem(lsKey, JSON.stringify({ rows: list, info: infoTxt, ranAt: now })); } catch { /* noop */ }
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore traceroute");
+      const msg = e.code === "ECONNABORTED" ? "Timeout: trace oltre 60s" : (e.response?.data?.detail || "Errore traceroute");
+      toast.error(msg); setInfo(msg);
     } finally { setLoading(false); }
   };
 
+  const geoHops = (rows || []).filter(r => r.geo && r.geo.lat != null && r.geo.lon != null);
+
   return (
     <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3" data-testid="wan-traceroute-card">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Path size={13} weight="bold" className="text-orange-400" />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300">Traceroute (dal NOC)</span>
-        </div>
+      <div className="flex items-center gap-2 mb-2">
+        <Path size={13} weight="bold" className="text-orange-400" />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300">Traceroute (via sonda)</span>
+        {ranAt && <span className="ml-auto text-[9px] text-[var(--text-muted)]">ultimo: {new Date(ranAt).toLocaleString("it-IT")}</span>}
       </div>
       <div className="flex gap-2 mb-2">
-        <Input value={selTarget} onChange={e => setSelTarget(e.target.value)} placeholder="IP o hostname" className="h-7 text-[10px] font-mono bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="wan-traceroute-input" />
-        <button onClick={run} disabled={loading || !selTarget} className="text-[9px] px-2 rounded border border-orange-500/40 hover:bg-orange-500/10 text-orange-300 disabled:opacity-50" data-testid="wan-traceroute-run">
-          {loading ? "…" : "Esegui"}
-        </button>
+        {targets.length > 1 ? (
+          <select value={selTarget} onChange={e => setSelTarget(e.target.value)} className="h-7 text-[10px] font-mono bg-[var(--bg-card)] border border-[var(--bg-border)] rounded px-1 flex-1" data-testid="wan-traceroute-target-select">
+            {targets.map(t => <option key={t.id || t.public_ip} value={t.public_ip}>{t.label || t.public_ip} · {t.public_ip}</option>)}
+          </select>
+        ) : (
+          <Input value={selTarget} onChange={e => setSelTarget(e.target.value)} placeholder="IP o hostname" className="h-7 text-[10px] font-mono bg-[var(--bg-card)] border-[var(--bg-border)]" data-testid="wan-traceroute-input" />
+        )}
+        <button onClick={run} disabled={loading || !selTarget} className="text-[9px] px-2 rounded border border-orange-500/40 hover:bg-orange-500/10 text-orange-300 disabled:opacity-50" data-testid="wan-traceroute-run">{loading ? "…" : "Esegui"}</button>
       </div>
-      {hops && hops.length > 0 && (
-        <div className="space-y-0.5 max-h-48 overflow-y-auto">
-          {hops.map((h, i) => (
-            <div key={i} className="flex items-center gap-2 text-[10px] font-mono py-0.5 border-b border-[var(--bg-border)]/40 last:border-0">
-              <span className="w-5 text-orange-400">{h.hop || "?"}</span>
-              <span className="flex-1 text-[var(--text-primary)]">{h.ip || "*"}</span>
-              <span className="tabular-nums text-[var(--text-muted)]">{h.rtt_ms != null ? `${h.rtt_ms}ms` : ""}</span>
+      {info && <div className="text-[9px] text-[var(--text-muted)] mb-1">{info}</div>}
+
+      {/* Mini-mappa geografica del percorso */}
+      {geoHops.length > 0 && (
+        <svg viewBox="0 0 360 180" className="w-full rounded-md mb-2 bg-[#0b1220] border border-[var(--bg-border)]" style={{ height: 120 }} data-testid="wan-traceroute-map">
+          <polyline fill="none" stroke="#334155" strokeWidth="1" strokeDasharray="3 3"
+            points={geoHops.map(h => `${h.geo.lon + 180},${90 - h.geo.lat}`).join(" ")} />
+          {geoHops.map((h, i) => (
+            <g key={i}>
+              <circle cx={h.geo.lon + 180} cy={90 - h.geo.lat} r="3.2" fill={ispColor[h.geo.isp] || "#94a3b8"} stroke="#0b1220" strokeWidth="0.8" />
+            </g>
+          ))}
+        </svg>
+      )}
+
+      {rows && rows.length > 0 && (
+        <div className="space-y-0.5 max-h-52 overflow-y-auto">
+          {rows.map((h, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px] py-0.5 border-b border-[var(--bg-border)]/40 last:border-0">
+              <span className="w-4 text-orange-400 font-mono">{h.hop || "?"}</span>
+              <span className="w-1.5 h-3 rounded-sm flex-shrink-0" style={{ background: h.geo?.isp ? (ispColor[h.geo.isp] || "#94a3b8") : "transparent" }} />
+              <span className="font-mono text-[var(--text-primary)] w-28 truncate">{h.timeout ? <span className="text-rose-400">* * *</span> : (h.ip || "*")}</span>
+              <span className="flex-1 text-[9px] text-[var(--text-muted)] truncate">
+                {h.timeout ? "" : h.geo ? `${h.geo.city ? h.geo.city + ", " : ""}${h.geo.country || ""}${h.geo.isp ? " · " + h.geo.isp : ""}` : (isPub(h.ip) ? "" : "rete locale")}
+              </span>
+              <span className="tabular-nums text-[var(--text-muted)] font-mono">{h.rtt_ms != null ? `${h.rtt_ms}ms` : ""}</span>
             </div>
           ))}
         </div>
-      )}
-      {hops && hops.length === 1 && hops[0].error && (
-        <div className="text-[10px] text-red-400 text-center py-2">{hops[0].error}</div>
       )}
     </div>
   );
@@ -1056,7 +1117,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           {/* FASE 2: SaaS Reachability + Traceroute */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <SaasReachabilityCard clientId={clientId} />
-            <TracerouteCard targets={targets} />
+            <TracerouteCard targets={targets} clientId={clientId} />
           </div>
         </>
       )}

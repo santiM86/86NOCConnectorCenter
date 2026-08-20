@@ -41,6 +41,34 @@ export default function NetworkPathDiagnosisPage() {
   const [probeLabel, setProbeLabel] = useState("sonda-trace-86bit");
   const [genToken, setGenToken] = useState(null);
   const [genBusy, setGenBusy] = useState(false);
+  const [geoByIp, setGeoByIp] = useState({});
+  const [targetClient, setTargetClient] = useState("");
+
+  const isPublicIp = (ip) => ip && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
+
+  const pickClient = async (cid) => {
+    setTargetClient(cid);
+    if (!cid) return;
+    const own = agents.find((a) => a.client_id === cid);
+    const glob = agents.find((a) => a.client_id === "__global__");
+    if (own) setProbe(own.agent_id);
+    else if (glob) setProbe(glob.agent_id);
+    try {
+      const { data } = await axios.get(`${API}/api/external-monitor/detected-public-ip/${encodeURIComponent(cid)}`, { headers });
+      if (data?.public_ip) { setTarget(data.public_ip); toast.success(`IP pubblico ${clients[cid] || ""}: ${data.public_ip}`); }
+      else toast.info("IP pubblico non ancora rilevato per questo cliente");
+    } catch { /* noop */ }
+  };
+
+  const enrichGeo = async (hops) => {
+    const ips = [...new Set((hops || []).map((h) => h.ip).filter(isPublicIp))];
+    if (!ips.length) { setGeoByIp({}); return; }
+    const entries = await Promise.all(ips.map(async (ip) => {
+      try { const { data } = await axios.get(`${API}/api/external-monitor/geo-ip/${encodeURIComponent(ip)}`, { headers }); return [ip, data]; }
+      catch { return [ip, null]; }
+    }));
+    setGeoByIp(Object.fromEntries(entries));
+  };
 
   useEffect(() => {
     (async () => {
@@ -85,6 +113,7 @@ export default function NetworkPathDiagnosisPage() {
       const r = reply.result || reply.Result || reply;
       const replyErr = reply.error || reply.Error || r.error;
       setResult(r);
+      enrichGeo(r.hops || []);
       if (replyErr) toast.error(`Trace: ${replyErr}`, { id: tId });
       else toast.success(`Trace completato (${r.tool || "?"}, ${r.hops?.length || 0} hop)`, { id: tId });
     } catch (e) {
@@ -166,6 +195,20 @@ export default function NetworkPathDiagnosisPage() {
           l'interruzione è nel carrier o nell'ultimo miglio/CPE. TCP :443 aggira i blocchi ICMP.
         </p>
 
+        <div className="mb-3">
+          <Label className="text-[10px] uppercase tracking-wider flex items-center gap-1"><MapPin size={11} /> Cliente da tracciare (auto: sonda + IP pubblico)</Label>
+          <Select value={targetClient} onValueChange={pickClient}>
+            <SelectTrigger className="mt-1 h-9 text-xs" data-testid="path-trace-client-select">
+              <SelectValue placeholder="Scegli un cliente → compila IP e sonda in automatico…" />
+            </SelectTrigger>
+            <SelectContent>
+              {clientList.map((c) => (
+                <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <Label className="text-[10px] uppercase tracking-wider flex items-center gap-1"><Radio size={11} /> Agent-sonda</Label>
@@ -230,19 +273,34 @@ export default function NetworkPathDiagnosisPage() {
                 <tr className="border-b border-[var(--bg-border)]">
                   <th className="text-left py-2 px-2 w-12">Hop</th>
                   <th className="text-left py-2 px-2">IP / Host</th>
-                  <th className="text-left py-2 px-2 w-24">Loss %</th>
-                  <th className="text-left py-2 px-2 w-24">Latenza</th>
+                  <th className="text-left py-2 px-2">Località · ISP · Organizzazione</th>
+                  <th className="text-left py-2 px-2 w-20">Loss %</th>
+                  <th className="text-left py-2 px-2 w-20">Latenza</th>
                 </tr>
               </thead>
               <tbody>
-                {result.hops.map((h) => (
+                {result.hops.map((h) => {
+                  const g = geoByIp[h.ip];
+                  const priv = h.ip && !isPublicIp(h.ip);
+                  return (
                   <tr key={h.hop} className="border-b border-[var(--bg-border)]/40" data-testid={`path-trace-hop-${h.hop}`}>
                     <td className="py-1.5 px-2 font-mono text-[var(--text-secondary)]">{h.hop}</td>
                     <td className="py-1.5 px-2 font-mono">{h.timeout ? <span className="text-rose-400">* * * (nessuna risposta)</span> : (h.ip || h.host || "—")}</td>
+                    <td className="py-1.5 px-2 text-[11px]" data-testid={`path-trace-hop-geo-${h.hop}`}>
+                      {h.timeout ? "—" : priv ? <span className="text-[var(--text-muted)]">Rete locale / privata</span>
+                        : g ? (
+                          <span>
+                            {g.city ? `${g.city}${g.country ? ", " + g.country : ""}` : (g.country || "—")}
+                            {g.isp && <span className="text-cyan-300"> · {g.isp}</span>}
+                            {g.org && g.org !== g.isp && <span className="text-[var(--text-muted)]"> · {g.org}</span>}
+                          </span>
+                        ) : <span className="text-[var(--text-muted)]">…</span>}
+                    </td>
                     <td className={`py-1.5 px-2 font-mono ${lossColor(h.loss_pct, h.timeout)}`}>{h.timeout ? "100" : (h.loss_pct ?? 0)}%</td>
                     <td className="py-1.5 px-2 font-mono">{h.timeout ? "—" : `${(h.avg_ms ?? 0).toFixed(1)} ms`}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
