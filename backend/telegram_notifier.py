@@ -13,6 +13,7 @@ Uso principale (dall'Alert Engine):
 from __future__ import annotations
 
 import os
+import re
 import html
 import logging
 from typing import Optional
@@ -32,12 +33,31 @@ _SEVERITY_EMOJI = {
 }
 
 
-def _fmt(title: str, message: str, severity: str) -> str:
+def _fmt(title: str, message: str, severity: str,
+         client_name: Optional[str] = None, device_name: Optional[str] = None) -> str:
+    """Formato standard: sempre <b>NOME CLIENTE</b> in testa, poi
+    dispositivo · stato · [SEVERITÀ], quindi l'escalation/messaggio.
+    Così si capisce SEMPRE a colpo d'occhio di quale cliente si tratta."""
     emoji = _SEVERITY_EMOJI.get((severity or "medium").lower(), "\U0001F4E2")
     sev_label = (severity or "medium").upper()
-    safe_title = html.escape(title or "Alert")
+    # Pulisci il titolo dai prefissi ridondanti ("CRITICO:", "CRITICAL —", ...)
+    raw_title = title or "Alert"
+    state = re.sub(r"^\s*(critico|critical|alert|allarme|warning|attenzione)\s*[:\-\u2014]?\s*",
+                   "", raw_title, flags=re.IGNORECASE).strip() or raw_title
+    cli = html.escape(client_name) if client_name else "Cliente sconosciuto"
+    dev = html.escape(device_name) if device_name else ""
+    # Riga 1: 🚨 <b>CLIENTE</b> — dispositivo — [SEV]
+    head = f"{emoji} <b>{cli}</b>"
+    if dev and dev.lower() not in state.lower():
+        head += f" \u2014 {dev}"
+    head += f" \u2014 [{sev_label}]"
+    safe_state = html.escape(state)
     safe_msg = html.escape(message or "")
-    return f"{emoji} <b>[{sev_label}] {safe_title}</b>\n\n{safe_msg}"
+    parts = [head, safe_state]
+    if safe_msg:
+        parts.append("")
+        parts.append(safe_msg)
+    return "\n".join(parts)
 
 
 async def _resolve_token(db, token: Optional[str]) -> Optional[str]:
@@ -100,9 +120,13 @@ async def send_alert_telegram(
     severity: str = "high",
     chat_id: Optional[str] = None,
     token: Optional[str] = None,
+    client_name: Optional[str] = None,
+    device_name: Optional[str] = None,
 ) -> dict:
-    """Invia un alert formattato su Telegram."""
-    return await send_telegram_text(db, _fmt(title, message, severity), chat_id=chat_id, token=token)
+    """Invia un alert formattato su Telegram (sempre con NOME CLIENTE in testa)."""
+    return await send_telegram_text(
+        db, _fmt(title, message, severity, client_name, device_name),
+        chat_id=chat_id, token=token)
 
 
 async def detect_chats(db, token: Optional[str] = None) -> dict:

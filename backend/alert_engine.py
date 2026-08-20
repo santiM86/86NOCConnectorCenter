@@ -220,6 +220,14 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
         return "queued"
     try:
         from telegram_notifier import send_alert_telegram
+        # Nome cliente SEMPRE presente: fallback dal DB se assente nell'alert_doc
+        client_name = alert_doc.get("client_name")
+        if not client_name and alert_doc.get("client_id"):
+            try:
+                c = await db.clients.find_one({"id": alert_doc["client_id"]}, {"_id": 0, "name": 1})
+                client_name = (c or {}).get("name")
+            except Exception:
+                client_name = None
         await send_alert_telegram(
             db,
             title=alert_doc.get("title", "Alert"),
@@ -227,6 +235,8 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
             severity=alert_doc.get("severity", "high"),
             chat_id=cfg.get("telegram_chat_id") or None,
             token=cfg.get("telegram_bot_token") or None,
+            client_name=client_name,
+            device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
         )
         return True
     except Exception as e:  # noqa: BLE001
