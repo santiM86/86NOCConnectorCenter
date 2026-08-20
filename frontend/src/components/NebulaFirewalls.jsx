@@ -43,6 +43,37 @@ function productName(fw) {
   return fw.model || (!nameIsMac ? fw.name : null) || "Firewall Zyxel";
 }
 
+/** True se l'IP è privato (RFC1918 / CGNAT / link-local / loopback) → NON è un IP pubblico. */
+function isPrivateIp(ip) {
+  if (!ip || typeof ip !== "string") return false;
+  const m = ip.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2]);
+  if (a === 10) return true;                          // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true;   // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true;  // 100.64.0.0/10 (CGNAT)
+  if (a === 169 && b === 254) return true;            // 169.254.0.0/16 (link-local)
+  if (a === 127) return true;                          // loopback
+  return false;
+}
+
+/**
+ * Risolve il VERO IP pubblico del firewall.
+ * L'IP dell'interfaccia WAN riportato da Nebula può essere PRIVATO quando il
+ * firewall è dietro un modem/router ISP che fa NAT (doppio NAT). In quel caso
+ * non è l'IP pubblico: si usa (in ordine) il target WAN collegato (config admin),
+ * poi l'IP pubblico auto-rilevato dagli agent del cliente (egress NAT visto
+ * dall'ingress), infine l'IP dell'interfaccia solo se già pubblico.
+ */
+function resolvePublicIp(wt, fw, detected) {
+  const wanIface = fw?.public_ip || null;
+  const cands = [wt?.public_ip, detected, wanIface];
+  const realPublic = cands.find((ip) => ip && !isPrivateIp(ip)) || null;
+  const behindNat = !!wanIface && isPrivateIp(wanIface);
+  return { realPublic, wanIface, behindNat };
+}
+
 /** Riga chiave→valore leggibile. */
 function KV({ k, v, mono = true, color }) {
   return (
@@ -114,7 +145,7 @@ function WanConnectivity({ wt }) {
   );
 }
 
-function FirewallDetail({ fw, wt }) {
+function FirewallDetail({ fw, wt, detectedPubIp }) {
   const online = fw.online_status === "ONLINE";
   const stColor = online ? C.online : C.offline;
   const ports = Array.isArray(fw.ports) ? fw.ports : [];
@@ -156,9 +187,31 @@ function FirewallDetail({ fw, wt }) {
         <span className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded border"
               style={{ borderColor: lineUp ? `${C.online}40` : `${C.warn}40`, background: lineUp ? `${C.online}0F` : `${C.warn}0F` }}
               data-testid="nebula-fw-public-ip">
-          <Globe size={12} weight="bold" style={{ color: lineUp ? C.online : C.warn }} />
-          IP pubblico: <span className="font-mono font-bold">{wt?.public_ip || fw.public_ip || "—"}</span>
+          {(() => {
+            const { realPublic } = resolvePublicIp(wt, fw, detectedPubIp);
+            return (
+              <>
+                <Globe size={12} weight="bold" style={{ color: realPublic ? (lineUp ? C.online : C.warn) : C.warn }} />
+                IP pubblico:{" "}
+                {realPublic
+                  ? <span className="font-mono font-bold">{realPublic}</span>
+                  : <span className="font-mono font-bold" style={{ color: C.warn }}>non rilevato</span>}
+              </>
+            );
+          })()}
         </span>
+        {(() => {
+          const { behindNat, wanIface } = resolvePublicIp(wt, fw, detectedPubIp);
+          if (!behindNat) return null;
+          return (
+            <span className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider"
+                  style={{ color: C.warn, background: `${C.warn}1A` }}
+                  data-testid="nebula-fw-behind-nat"
+                  title="La WAN del firewall ha un IP privato: il firewall è dietro un modem/router ISP che fa NAT (doppio NAT). L'IP pubblico reale è quello dell'apparato a monte / rilevato dagli agent.">
+              <NetworkSlash size={12} weight="bold" /> dietro NAT · IP WAN: <span className="font-mono">{wanIface}</span>
+            </span>
+          );
+        })()}
         <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
           Linea WAN: <span className="font-bold uppercase" style={{ color: lineUp ? C.online : C.muted }}>{fw.line_state || "n/d"}</span>
         </span>
@@ -217,7 +270,8 @@ function FirewallDetail({ fw, wt }) {
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-x-6">
-                  <KV k="IP pubblico" v={w.public_ip} color={C.online} />
+                  <KV k="IP interfaccia" v={w.public_ip ? (isPrivateIp(w.public_ip) ? `${w.public_ip} · privato` : w.public_ip) : "—"}
+                      color={w.public_ip ? (isPrivateIp(w.public_ip) ? C.warn : C.online) : undefined} />
                   <KV k="Gateway" v={w.gateway} />
                   <KV k="Netmask" v={w.netmask} />
                   <KV k="VLAN" v={w.vlan} />
@@ -427,6 +481,7 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [openId, setOpenId] = useState(null);
+  const [detectedPubIp, setDetectedPubIp] = useState(null);
 
   const fetchData = useCallback(async () => {
     if (!clientId) return;
@@ -445,6 +500,16 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
       setLoaded(true);
       setLoading(false);
     }
+  }, [clientId]);
+
+  // IP pubblico WAN reale auto-rilevato dagli agent del cliente (egress NAT).
+  useEffect(() => {
+    if (!clientId) return;
+    const token = localStorage.getItem("noc_token");
+    axios.get(`${API}/api/external-monitor/detected-public-ip/${encodeURIComponent(clientId)}`,
+      { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => setDetectedPubIp(r.data?.public_ip || null))
+      .catch(() => setDetectedPubIp(null));
   }, [clientId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -474,7 +539,8 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
           const online = fw.online_status === "ONLINE";
           const sc = online ? C.online : C.offline;
           const wt = wanTargets.find((t) => t.linked_nebula_dev_id && t.linked_nebula_dev_id === fw.dev_id);
-          const pubIp = wt?.public_ip || fw.public_ip;
+          const { realPublic, wanIface, behindNat } = resolvePublicIp(wt, fw, detectedPubIp);
+          const pubIp = realPublic || wanIface;
           const wr = wt?.result;
           const ispOk = wr?.gateway_ping?.reachable;
           return (
@@ -488,7 +554,17 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
             >
               <ShieldCheck size={14} weight="bold" style={{ color: sc }} />
               <span className="font-bold text-[var(--text-primary)]" data-testid="nebula-fw-name">{productName(fw)}</span>
-              {pubIp && <span className="font-mono text-[var(--text-muted)] text-[10px]">{pubIp}</span>}
+              {pubIp && (
+                <span className="font-mono text-[var(--text-muted)] text-[10px]"
+                      style={behindNat && !realPublic ? { color: C.warn } : undefined}
+                      title={behindNat ? `WAN dietro NAT (IP interfaccia privato: ${wanIface})` : undefined}>
+                  {pubIp}{behindNat && realPublic ? "" : ""}
+                </span>
+              )}
+              {behindNat && (
+                <span className="text-[8px] px-1 rounded font-bold" style={{ color: C.warn, background: `${C.warn}18` }}
+                      title="Firewall dietro modem/router ISP (doppio NAT)">NAT</span>
+              )}
               <span className="text-[8px] px-1 rounded bg-cyan-500/10 text-cyan-400">NEBULA</span>
               {wr?.ping?.latency_ms != null && <span className="font-mono text-[var(--text-muted)] text-[10px]">{wr.ping.latency_ms}ms</span>}
               {wr?.gateway_ping && (
@@ -515,7 +591,7 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
                   <span className="text-[10px] font-normal text-[var(--text-muted)]">· {active.site_name || active.site_id}</span>
                 </DialogTitle>
               </DialogHeader>
-              <FirewallDetail fw={active} wt={wanTargets.find((t) => t.linked_nebula_dev_id && t.linked_nebula_dev_id === active.dev_id)} />
+              <FirewallDetail fw={active} wt={wanTargets.find((t) => t.linked_nebula_dev_id && t.linked_nebula_dev_id === active.dev_id)} detectedPubIp={detectedPubIp} />
             </>
           )}
         </DialogContent>
