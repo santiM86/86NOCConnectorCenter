@@ -1,3 +1,26 @@
+# 2026-06 — Diagnosi Percorso: auto sonda+IP per cliente + geo/ISP per hop
+
+## 1. Selettore Cliente (auto sonda + IP pubblico)
+`NetworkPathDiagnosisPage.js`: nuovo Select "Cliente da tracciare". Scegliendo un
+cliente: seleziona in automatico la sonda (agent live del cliente, altrimenti la
+sonda globale `__global__`) e compila la destinazione con l'IP pubblico rilevato
+(`GET /api/external-monitor/detected-public-ip/{cid}`).
+
+## 2. Geolocalizzazione per hop
+Nuova colonna "Località · ISP · Organizzazione": per ogni hop con IP PUBBLICO si
+interroga `GET /api/external-monitor/geo-ip/{ip}` (city/country/isp/org). Gli IP
+privati mostrano "Rete locale / privata". Enrichment lanciato dopo il trace
+(`enrichGeo`), risultati in `geoByIp`.
+
+## Stato
+Frontend compila (1 warning preesistente). ⚠️ geo-ip richiede auth (il frontend
+passa già il token). E2E richiede sonda live + dati prod. Attivo dopo Save to
+GitHub + redeploy frontend.
+
+---
+
+
+
 # 2026-06 — Fix trace "Timeout" + rimosso pannello Bridge Health
 
 ## 1. Trace sonda andava in Timeout
