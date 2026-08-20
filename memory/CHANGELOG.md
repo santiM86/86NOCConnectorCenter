@@ -5984,3 +5984,29 @@ enrichment IP negli alert esistenti con badge reputazione.
 - **NEW — Telegram/alert**: `_auto_trace_on_wan_down` ora arricchisce geo e allega il verdetto "⚖️ COLPA: X — ..." al messaggio e in `alert.net_trace.verdict`.
 - **UI**: `WanClientTab.jsx` TracerouteCard: nuovo bottone `wan-fault-diagnose-run` ("⚖️ Diagnosi colpa") + banner verdetto `wan-fault-verdict` con chip per-ancora.
 - Testato frontend (iteration_127.json): crash sparito, degrado grazioso senza sonda live, nuova UI OK (4/4). Live trace end-to-end NON testabile in preview (nessuna sonda-agent live) — verificare in produzione.
+
+## 2026-06 (bis) — Correlazione OUTAGE ISP esterno (opzione d)
+- **NEW** `backend/isp_outage.py`: `check_isp_outage(asn, isp_name, country_code)` correla il guasto con fonti pubbliche per capire se DIFFUSO (outage carrier/nazionale) o ISOLATO (sede cliente).
+  - IODA (Georgia Tech) `/v2/outages/alerts` per ASN e per Paese — gratis, no key.
+  - RIPEstat `as-overview` → `announced` (crollo BGP totale ASN) — gratis, no key.
+  - Cloudflare Radar `/radar/annotations/outages` — OPZIONALE, richiede env `CLOUDFLARE_RADAR_TOKEN` (account free).
+  - Downdetector/OutageReport/Open Fiber: NESSUNA API → forniti come link pre-compilati per l'operatore rilevato (mappa slug Downdetector.it).
+- Integrato in `POST /api/external-monitor/fault-diagnose` → `combined.external_outage`, e in `_auto_trace_on_wan_down` (verdetto + summary Telegram).
+- UI `WanClientTab.jsx`: sezione "Correlazione outage esterno" con badge DIFFUSO/ISOLATO, segnali e link cliccabili (`wan-fault-external-outage`, `wan-outage-badge`, `wan-outage-link-*`).
+- Testato modulo con chiamate reali IODA+RIPEstat (AS3269 TIM → correttamente "ISOLATO/nessun outage diffuso"). Live end-to-end via sonda non testabile in preview.
+
+## 2026-06 (ter) — Cloudflare Radar attivo
+- Token `CLOUDFLARE_RADAR_TOKEN` aggiunto a backend/.env (permesso Account>Radar>Read).
+- Verificato live: GET /radar/annotations/outages (globale + filtrato asn/location) → success:True.
+- La correlazione outage (isp_outage.py) ora usa 3 fonti: IODA + RIPEstat + Cloudflare Radar.
+- ⚠️ PRODUZIONE: impostare la stessa variabile CLOUDFLARE_RADAR_TOKEN nell'ambiente di deploy (i secret .env non vanno su GitHub).
+
+## 2026-06 (quater) — Early-warning OUTAGE OPERATORE proattivo
+- **NEW** `run_isp_outage_watch()` in external_monitor.py: task periodico (300s, via coordinator.schedule) che:
+  1. raggruppa i clienti per ASN operatore (geo dell'IP pubblico dei wan_targets abilitati),
+  2. per ogni ASN chiama `check_isp_outage` (IODA/RIPEstat/Cloudflare),
+  3. se outage DIFFUSO nuovo → crea alert (source_type=isp_outage_watch, client_id=None, affected_clients[]) + Telegram proattivo via notify_alert_telegram ("le linee potrebbero cadere a breve"),
+  4. idempotente per ASN via db.isp_outage_state, con AUTO-RECOVERY (resolve alert + telegram rientro).
+- Severità: critical se bgp_withdrawn/national, altrimenti high.
+- Testato: rami nuovo-outage / idempotenza / recovery verificati con simulazione (patch check_isp_outage); ciclo live confermato ("2 operatori controllati, 0 outage attivi"). Telegram rispetta config globale (no-op se disabilitato).
+- Nessuna modifica frontend: gli alert compaiono nel feed Alert + Telegram.
