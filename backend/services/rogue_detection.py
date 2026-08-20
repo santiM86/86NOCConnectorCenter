@@ -314,6 +314,11 @@ async def _emit_rogue_alert(client_id: str, ep: dict, mac: str) -> bool:
     }
     await insert_alert_if_emit(db, alert_doc)
     await _notify(alert_doc)
+    try:
+        from alert_engine import notify_alert_telegram
+        await notify_alert_telegram(db, alert_doc)
+    except Exception:
+        pass
     return True
 
 

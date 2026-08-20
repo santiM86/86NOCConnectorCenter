@@ -1,3 +1,307 @@
+# 2026-06 — TV wallboard: popup GRANDI centrali per allarmi critici + suono
+
+## Richiesta utente
+Sulla TV 45" (punto di riferimento tecnici): quando arrivano allarmi critici,
+mostrare un POPUP GRANDE al centro con nome cliente + allarme, farlo sparire dopo
+30s e riprodurre un suono.
+
+## Implementazione (`TvDashboardPage.js` + `TvDashboard.css`)
+- `useAlarmSystem` riscritto: mantiene una coda `popups` (max 3) di eventi critici.
+  Su NUOVO alert critico o NUOVO dispositivo offline → push popup {kind, client,
+  title} + suono "sirena" (toni alternati 880/620Hz ripetuti). Baseline "primed"
+  al primo giro per non generare una valanga all'avvio (200+ clienti).
+- Popup GRANDE centrale: overlay full-screen scurito, card con badge
+  ("ALLARME CRITICO"/"DISPOSITIVO OFFLINE"), **nome cliente 64px**, titolo allarme
+  30px, orario, pulsante ×. Auto-dismiss dopo `POPUP_TTL_MS=30000` (30s) via
+  interval di purge. Animazione entrata + pulse. Rosso=critico, arancio=offline.
+- Suono: Web Audio; per policy autoplay del browser serve UN click sul wallboard
+  (toggle "♪ OFF→ON" o qualsiasi click) per abilitare l'audio.
+- Aggiunto pulsante **TEST** nell'header: genera un popup dimostrativo + suono →
+  i tecnici possono verificare all'istante popup+audio sulla TV reale.
+- testid: `tv-critical-popup`, `tv-popup-client`, `tv-popup-title`,
+  `tv-popup-dismiss`, `tv-test-alarm`.
+
+## Testing / stato
+- Codice compila (webpack OK); backend sano; endpoint `/api/tv/dashboard` locale
+  200 in ~12-55ms (nessuno stallo periodico dal nuovo watchdog).
+- Redesign TV confermato via screenshot (layout triage). ⚠️ La cattura live del
+  popup via screenshot-tool è stata bloccata da flakiness intermittente
+  dell'ingress di preview (il browser dello strumento non caricava i dati del
+  dashboard, mentre in locale l'endpoint risponde e in un altro screenshot la
+  pagina ha caricato correttamente). Il pulsante TEST consente all'utente di
+  verificare popup+suono immediatamente sulla TV.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy frontend.
+
+---
+
+
+
+# 2026-06 — TV wallboard denso (200+ clienti) + dorsali sulla mappa + alert dorsale dedicato
+
+## 1. TV Dashboard ridisegnata per 200+ clienti (45")
+Problema: le card grandi non scalavano (con 200+ clienti non si vedeva nulla).
+Nuovo layout triage a due livelli (`TvDashboardPage.js` + `TvDashboard.css`):
+- **DA GESTIRE**: solo i clienti con anomalie, come card COMPATTE in griglia
+  `auto-fill minmax(232px)` ordinate per gravità (headline + ON/OFF/AL/CR + WAN + 1
+  alert). Critici lampeggiano.
+- **OPERATIVI**: tutti i clienti sani come chip minimali verdi (nome + dot) in
+  griglia densa `minmax(148px)` → 200 clienti stanno in una banda compatta.
+- Body scrollabile come fallback. KPI header invariati. Testid preservati
+  (`tv-client-*`, `tv-headline-*`, `tv-tile-wan-*`, `tv-tile-topalert-*`).
+  Verificato via screenshot (contatori senza overflow, sezioni corrette).
+
+## 2. Dorsali evidenziate sulla mappa (`NetworkMap.js`)
+I link di cascata/backbone ora sono più marcati: `strokeWidth` 5 (verificato) / 3
+(probabile) vs ~1.5 degli access, indigo/viola, ed etichetta con prefisso
+**"🔗 DORSALE ✓ portaA↔portaB VLAN N"** → distinti a colpo d'occhio dai
+collegamenti verso valle.
+
+## 3. Alert DEDICATO "PROBLEMA DI DORSALE" (`alert_engine.py::run_backbone_watchdog`)
+Separato dal down del singolo switch. Per ogni switch giù, controlla la porta
+dorsale sul parent (verso quello switch): se **LINK DOWN** o **traffico ZERO** →
+emette alert `critical` `source_type=corr_backbone_down` ("PROBLEMA DI DORSALE:
+PARENT → SWITCH") via pipeline unificata (Telegram/push), dedup per (client,switch),
+auto-resolve quando la dorsale torna ok o lo switch torna su. Se la dorsale passa
+traffico → nessun alert dorsale (è solo lo switch). Agganciato a `run_once` (20s).
+
+## Testing
+- Backbone watchdog (python -c, 4/4 PASS): link-down→alert, dorsale-ok→no alert,
+  zero-traffic→alert, recovery→resolve.
+- TV: screenshot OK. Mappa/NetworkMap + TV compilano (webpack OK). Backend sano.
+
+⚠️ Traffico dorsale disponibile solo se l'agent invia rx_bps/tx_bps per porta; la
+risoluzione peer dipende da LLDP+FDB (cascata). Attivo in PROD dopo Save to GitHub +
+redeploy (backend+frontend), nessun rebuild agent Go.
+
+---
+
+
+
+# 2026-06 — Dorsale switch: porta uplink evidenziata + diagnosi backbone + recovery rapido
+
+## Richieste utente
+1. Con più switch, mostrare SEMPRE la porta che fa da DORSALE (uplink verso il
+   "sopra": gateway/switch a monte), distinta dalla porta verso lo switch a valle.
+2. Quando uno switch va offline, verificare SUBITO se l'uplink/dorsale passa
+   traffico: se è tutto a ZERO (o link down) → possibile problema di DORSALE.
+3. Rendere il RIENTRO ONLINE dello switch veloce quanto il down (event-driven).
+
+## Implementazione
+**#1 Direzione dorsale** (`routes/topology.py::get_switch_ports`): usando la
+cascata (rank/level per switch), ogni porta uplink ora ha `uplink_direction`
+("upstream"=dorsale / "downstream"=verso valle) e `is_backbone`. La dorsale =
+porta verso gateway o switch di livello inferiore.
+- Frontend `PortCableView.js`: banner in cima ("DORSALE ↑ verso …" ambra /
+  "Collegamento ↓ verso switch a valle" indaco) + preferisce il nome switch
+  RISOLTO dalla cascata (`uplink_to.peer_name`) invece del generico "HPE" LLDP.
+- Frontend `SwitchPortsPage.js`: badge "DORSALE ↑" / "SWITCH ↓ (valle)" nel
+  dettaglio porta e nel riepilogo uplink.
+
+**#2 Diagnosi dorsale** (`alert_enrichment.py::_backbone_diagnosis`): per gli
+alert `corr_switch_down`/`corr_switch_unreachable`, trova la porta sul parent
+(dorsale) verso lo switch giù e aggiunge al messaggio:
+- LINK DOWN → "probabile problema di DORSALE (cavo/SFP/uplink)".
+- UP ma traffico ZERO → "verificare la DORSALE/uplink (possibile guasto backbone)".
+- UP con traffico → "la dorsale funziona, il down riguarda il solo switch".
+
+**#3 Recovery rapido** (`routes/agent_ws.py::_bridge_ping_poll`): al RIENTRO
+online di un device VITALE/infra che era in fallimento (≥2 poll persi), sveglia
+SUBITO `run_vital_watchdog` (stesso trigger event-driven del down) → il recovery
+Telegram/push parte all'istante, non al tick.
+
+## Testing
+- `_backbone_diagnosis` (python -c, 3/3 PASS): link-down / zero-traffic / traffic-ok.
+- Import backend OK; frontend compila (solo warning exhaustive-deps preesistente).
+- Recovery: riusa il trigger event-driven già validato (fix down rapido).
+
+⚠️ Traffico dorsale disponibile solo se l'agent invia i contatori rx_bps/tx_bps
+per porta; se assenti, non si dichiara "zero" (evita falsi). La risoluzione del
+peer dorsale dipende da LLDP+FDB (cascata). Attivo in PROD dopo Save to GitHub +
+redeploy (backend+frontend), nessun rebuild agent Go.
+
+---
+
+
+
+# 2026-06 — Allerta "switch/device VITALE giù" QUASI-ISTANTANEA (fix ritardo)
+
+## Incident utente
+Due switch di un cliente hanno perso corrente al mattino ma l'allarme è arrivato
+tardi. Richiesta: rilevazione praticamente immediata.
+
+## Root cause (3 ritardi sommati)
+1. **Finestra evidenza L2 = 15 min**: uno switch spento resta nelle tabelle FDB/ARP
+   → `l2_alive=True` → verdetto "healthy" → NESSUN alert fino a ~15 min.
+2. **Tick motore alert = 60s**.
+3. Nessun trigger event-driven per il down del singolo device vitale (solo per il
+   blackout WAN). In più il gate temporale `vital_warn_minutes` (3 min) ritardava
+   ancora gli alert a bassa confidenza (switch_unreachable conf 75).
+
+## Fix (scelte utente: event-driven ON, conferma ~30s/2 poll, tick 20s)
+- `alert_engine.py`:
+  - `CHECK_INTERVAL_SECONDS` 60→**20** (rete di sicurezza).
+  - Nuovi `VITAL_FAST_FAILURES=2`, `VITAL_L2_FRESH_SECONDS=120` + helper
+    `_vital_direct_down(md, pd, now)`: per device VITALI/infra con poll DIRETTO
+    (ICMP) fallito ≥2 volte consecutive ed entro 120s, in `run_vital_watchdog`
+    si IGNORA l'evidenza L2 stantia (`s["l2_alive"]=False`) e si marca
+    `s["_fast_confirmed"]` → l'alert **bypassa il gate `vital_warn_minutes`** e
+    scatta subito. Proiezione arricchita con `consecutive_ping_failures`.
+- `routes/agent_ws.py`: `_trigger_vital_watchdog_soon()` (throttle 8s) + hook in
+  `_bridge_ping_poll`: quando un device VITALE/infra raggiunge il 2° fail ICMP
+  consecutivo, esegue SUBITO `run_vital_watchdog` in background (event-driven),
+  senza attendere il tick.
+- Il debounce di DISPLAY (`managed_devices.status`, soglia 5) resta invariato per
+  non far lampeggiare le card; cambia solo il percorso di ALLERTA.
+
+## Testing (python -c, 3/3 PASS)
+- Switch 2 fail + evidenza L2 stantia → alert immediato (prima restava healthy 15 min).
+- Switch 1 fail → nessun alert ancora (conferma 30s non raggiunta).
+- Switch 2 fail senza L2 → alert (baseline). Backend sano, motore "interval=20s".
+
+⚠️ Sub-secondo impossibile (rilevazione a polling ~15s). Tempo tipico ora: ~30s
+(2 poll) + trigger event-driven. Attivo in PROD dopo Save to GitHub + redeploy backend
+(nessun rebuild agent Go). Vale SOLO per device vitali/infrastruttura (no stampanti).
+
+---
+
+
+
+# 2026-06 — Alert VM Hyper-V attesa accesa ma SPENTA (host raggiungibile)
+
+## Richiesta utente
+Distinguere lo spegnimento VOLONTARIO di una VM (nessun allarme) da un crash
+inatteso su un host Hyper-V SANO/raggiungibile. Se una VM che DEVE restare accesa
+(toggle `hyperv_alert_on_off` in CMDB) risulta spenta mentre l'host è online →
+alert CRITICO.
+
+## Implementazione (solo backend)
+- `alert_engine.py::hyperv_vm_state_tick(db)`: itera `db.backup_status` con
+  `hyperv_connected=True` e `hyperv_vms`. Per ogni VM `state` != running/on/started
+  incrocia i `managed_devices` del cliente con `hyperv_alert_on_off=True`
+  (match su `hyperv_vm_name` o `name`). Emette alert `critical`
+  `source_type="hyperv_vm_down"`, `device_id=hypervvm:<cid>:<vm>` via
+  `insert_alert_if_emit` + `notify_alert_telegram` (pipeline unificata: rispetta
+  quiet hours/severità). Dedup su alert attivo per device_key.
+- AUTO-RESOLVE: quando la VM torna `Running` l'alert attivo viene risolto
+  (`status=resolved`, `resolved_at`).
+- Agganciato a `AlertEngine.run_once()` (gira nel ciclo esistente del motore).
+
+## Testing (python -c, 4/4 PASS)
+1. VM off + monitorata → 1 alert critical emesso.
+2. Re-run → dedup, nessun duplicato.
+3. VM torna Running → auto-resolve (0 attivi).
+4. VM off ma NON monitorata (`hyperv_alert_on_off=False`) → nessun alert.
+Backend sano (health 200) dopo le modifiche.
+
+⚠️ In PROD attivo dopo Save to GitHub + redeploy backend. Nessun rebuild agent Go.
+La consegna Telegram usa la config globale già attiva (chat_id 6212726125).
+
+---
+
+
+
+# 2026-08-19 — Digest mattutino 07:00 (stato clienti, solo critici+down)
+
+## Richiesta utente
+Riepilogo Telegram ogni mattina alle 07:00 con lo stato di tutti i clienti (oltre al digest notturno). Devono comparire SOLO alert critici e down, nient'altro.
+
+## Implementazione
+- `alert_engine.py`: nuovo `morning_status_digest(db)` — legge solo alert ATTIVI e severità CRITICAL, raggruppa per cliente distinguendo "down" (source_type istantaneo) da "critici" (altri critical). Mostra solo i clienti con criticità; se nessuno → "Tutti operativi ✅". Nessun link.
+- `server.py`: schedulato con CronTrigger `hour=7, minute=0, timezone=Europe/Rome` (job `morning_status_digest`), in aggiunta al digest notturno (quiet flush) e agli altri tick.
+
+## Verifica
+morning_status_digest → "☀️ Buongiorno — Stato clienti ARGUS (07:00) · 86BIT_Office: 1 down, 5 critici". Solo alert critici inclusi (high/medium esclusi). Backend riparte pulito, job 07:00 registrato.
+
+---
+
+
+# 2026-08-19 — Digest notturno raggruppato per cliente
+
+## Richiesta utente
+Riepilogo notturno raggruppato per cliente con conteggio per categoria (es. "ACME: 3 KEV, 1 anomalia"), SENZA link alla console.
+
+## Implementazione (alert_engine.py — telegram_quiet_digest_tick)
+- Raggruppamento per client_name → conteggio per categoria con label leggibili (kev_exposure→KEV, osint_c2→C2, traffic_anomaly→anomalia traffico, rogue→dispositivo rogue, wan_public_ip_change→cambio IP, predictive_*→guasto imminente, datto_sync_stale→sync Datto).
+- Clienti ordinati per volume alert; header con totali (N alert, X critici/Y alti, M clienti). Nessun link.
+
+## Verifica
+Digest generato: "ACME: 3 KEV, 1 anomalia traffico / Beta Srl: 2 C2, 1 cambio IP / Gamma: 1 dispositivo rogue". Backend sintassi OK.
+
+---
+
+
+# 2026-08-19 — Telegram Quiet Hours (riepilogo notturno)
+
+## Richiesta utente
+Fascia oraria (default 22:00–07:00) in cui i critici NON-down vengono accorpati in un riepilogo di fine finestra, mentre i veri down restano istantanei.
+
+## Implementazione (alert_engine.py)
+- Config: `telegram_quiet_enabled` (default True), `telegram_quiet_start` "22:00", `telegram_quiet_end` "07:00".
+- Helper `_in_quiet_hours` (fuso Europe/Rome), `_is_instant_source` (keyword: down/offline/blackout/power/isolat/situation/reach/liveness/vital/connector).
+- `notify_alert_telegram`: durante quiet, alert non-istantanei → accodati in `telegram_quiet_queue`; istantanei → inviati subito.
+- `_dispatch_notification` (motore) ora passa dal percorso unificato `notify_alert_telegram` → soglia+quiet valgono anche per il motore.
+- Nuovo `telegram_quiet_digest_tick(db)`: al termine della finestra invia UN riepilogo (send_telegram_text) e marca la coda come inviata. Schedulato ogni 5 min in server.py.
+- UI (AlertEngineSettingsPage): switch quiet-hours + orari inizio/fine.
+
+## Verifica
+in_quiet OK; site_down=istantaneo (inviato), C2/KEV=accodati; digest non parte durante quiet, parte a fine finestra (1 alert flushato). Frontend compila pulito.
+
+---
+
+
+# 2026-08-19 — Telegram: soglia severità (solo CRITICAL di default)
+
+## Richiesta utente
+Inviare su Telegram solo gli alert di livello critical, per evitare decine/centinaia di messaggi non urgenti.
+
+## Implementazione
+- `alert_engine.py`: nuovo campo config `telegram_min_severity` (default **"critical"**) + helper `_telegram_severity_ok(cfg, severity)` con ranking severità.
+- Applicato ai DUE punti di invio: `_dispatch_notification` (motore) e `notify_alert_telegram` (C2/KEV/rogue/traffico/IP change). Ora inviano solo se severità ≥ soglia.
+- Frontend `AlertEngineSettingsPage.jsx`: selettore "Invia su Telegram" → "Solo CRITICI" (default) / "Alti e Critici".
+
+## Verifica
+`telegram_min_severity=critical` → high bloccato (False), critical inviato (True). Frontend compila pulito. Nessun doppio invio.
+
+---
+
+
+# 2026-08-19 — Notifiche Telegram unificate (tutti gli alert high/critical)
+
+## Richiesta utente (opzione A)
+Far arrivare su Telegram TUTTI gli alert high/critical, inclusi C2, KEV, rogue, anomalie traffico, cambio IP pubblico (non solo quelli del motore).
+
+## Implementazione
+- Nuovo helper riutilizzabile `notify_alert_telegram(db, alert_doc)` in `alert_engine.py`: legge la config globale, invia Telegram solo se canale abilitato + severità high/critical.
+- Collegato a tutti gli emitter che prima saltavano Telegram:
+  - `services/osint_poller.py`: C2 (`_notify_c2_alert`) + KEV (`kev_asset_alert_tick`, con dedup cross-run aggiunto).
+  - `services/rogue_detection.py`, `services/traffic_anomaly.py`.
+  - `routes/external_monitor.py`: cambio IP pubblico reale.
+- Gli alert del motore continuano ad usare `_dispatch_notification` (nessun doppio invio: gli emitter esterni usano solo il nuovo helper).
+
+## STATO CONFIGURAZIONE (IMPORTANTE)
+- Il codice è pronto e verificato (backend 200, sintassi OK). MA la config Telegram nel DB NON è valida: `alert_engine_config global` ha `telegram_chat_id` VUOTO e un `telegram_bot_token` INVALIDO (getMe → 401, 35 char = non è un token reale). Quindi al momento NESSUN messaggio viene recapitato. L'utente deve incollare un token @BotFather valido + salvare il chat_id.
+
+---
+
+
+# 2026-08-19 — Console mobile (iPhone/Android) per il tecnico
+
+## Richiesta utente
+Layout mobile facilmente comprensibile per avere sempre tutte le aziende sotto controllo velocemente.
+
+## Implementazione
+- Nuova pagina `frontend/src/pages/MobileConsolePage.js`, route protetta `/mobile` (in App.js).
+- Mobile-first, single column: header sticky (logo, stato globale, ora aggiornamento, refresh), striscia KPI (Online/Offline/Alert/Clienti KO), barra ricerca + toggle "Solo problemi".
+- Lista aziende ordinata per gravità: card con bordo/colore stato, anello salute %, headline del problema ("WAN DOWN"/"N offline"/…), chip rapide (offline, alert, WAN). Tap per espandere: contatori ON/OFF/ALERT, riga WAN (IP+latenza), dispositivi offline, alert critici/high, footer (disp./stamp./iLO/stato sonda).
+- Dati da `/api/tv/dashboard` (già aggregato), auto-refresh 15s. Nessuna modifica backend.
+
+## Verifica (screenshot viewport 390px)
+Card 86BIT_Office: ring 100%, headline WAN DOWN, chip ⚠50/WAN DOWN; espansa mostra WAN DOWN 192.0.2.1, alert CRIT "Esposizione KEV USG FLEX 700H", footer 8 disp./3 stamp./1 iLO/No sonda. Compila pulito.
+
+---
+
+
 # 2026-08-19 — TV Wallboard redesign + Auto-alert KEV↔Asset
 
 ## Task 1 — TV Dashboard riprogettata (per TV 40", colpo d'occhio)

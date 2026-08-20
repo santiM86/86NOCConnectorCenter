@@ -7,7 +7,7 @@
 import React, { useState } from "react";
 import {
   Lightning, ArrowUp, ArrowDown, Plug, Link as LinkIcon,
-  Cloud, WifiHigh, Monitor, HardDrives, X,
+  Cloud, WifiHigh, Monitor, HardDrives, X, Stack,
 } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import axios from "axios";
@@ -123,6 +123,33 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
           </button>
         </div>
 
+        {/* Banner DORSALE / downlink (da cascata LLDP+FDB) */}
+        {p.uplink_to && (
+          <div
+            className={`rounded-lg border p-2 flex items-center gap-2 text-[11px] ${p.is_backbone ? "border-amber-400/50 bg-amber-500/10" : "border-indigo-400/40 bg-indigo-500/10"}`}
+            data-testid="port-cable-uplink-banner"
+          >
+            <Stack size={14} weight="fill" className={p.is_backbone ? "text-amber-300" : "text-indigo-300"} />
+            {p.is_backbone ? (
+              <span>
+                <b className="text-amber-200">DORSALE ↑</b> — porta di uplink verso{" "}
+                <b>{p.uplink_to.peer_name}</b> {p.uplink_to.peer_kind === "gateway" ? "(gateway)" : "(switch a monte)"}
+              </span>
+            ) : (
+              <span>
+                <b className="text-indigo-200">Collegamento ↓</b> verso switch a valle{" "}
+                <b>{p.uplink_to.peer_name}</b>
+              </span>
+            )}
+            {p.uplink_to.remote_port && (
+              <span className="font-mono text-[var(--text-muted)]">→ porta {p.uplink_to.remote_port}</span>
+            )}
+            <span className={`ml-auto text-[8px] font-bold px-1 py-0.5 rounded ${p.uplink_to.verified ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"}`}>
+              {p.uplink_to.verified ? "✓ VERIFICATO" : "~ PROBABILE"}
+            </span>
+          </div>
+        )}
+
         {/* Schema verticale */}
         <div className="flex flex-col items-stretch">
 
@@ -205,19 +232,19 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                     <SourceBadge source={n.match_source} />
                   </div>
                   <div className="font-semibold text-sm truncate">
-                    {n.remote_ip ? (
-                      <Link to={`/devices/${encodeURIComponent(n.remote_ip)}`} className="hover:underline" style={{ color: remote.color }}>
-                        {n.remote_device_name || n.remote_sys_name || n.remote_ip}
+                    {(p.uplink_to?.peer_ip || n.remote_ip) ? (
+                      <Link to={`/devices/${encodeURIComponent(p.uplink_to?.peer_ip || n.remote_ip)}`} className="hover:underline" style={{ color: remote.color }}>
+                        {p.uplink_to?.peer_name || n.remote_device_name || n.remote_sys_name || n.remote_ip}
                       </Link>
                     ) : (
-                      <span style={{ color: remote.color }}>{n.remote_device_name || n.remote_sys_name || "(sconosciuto)"}</span>
+                      <span style={{ color: remote.color }}>{p.uplink_to?.peer_name || n.remote_device_name || n.remote_sys_name || "(sconosciuto)"}</span>
                     )}
                   </div>
                   <div className="text-[10px] font-mono text-[var(--text-muted)] break-all">
-                    {n.remote_port_desc && <span>porta {n.remote_port_desc} </span>}
-                    {n.remote_port_id && !n.remote_port_desc && <span>{n.remote_port_id} </span>}
-                    {n.remote_ip && <span>· {n.remote_ip} </span>}
-                    {!n.remote_ip && n.remote_chassis_id && <span>· {n.remote_chassis_id}</span>}
+                    {(p.uplink_to?.remote_port || n.remote_port_desc) && <span>porta {p.uplink_to?.remote_port || n.remote_port_desc} </span>}
+                    {n.remote_port_id && !n.remote_port_desc && !p.uplink_to?.remote_port && <span>{n.remote_port_id} </span>}
+                    {(p.uplink_to?.peer_ip || n.remote_ip) && <span>· {p.uplink_to?.peer_ip || n.remote_ip} </span>}
+                    {!(p.uplink_to?.peer_ip || n.remote_ip) && n.remote_chassis_id && <span>· {n.remote_chassis_id}</span>}
                   </div>
                   {n.remote_sys_desc && (
                     <div className="text-[9px] text-[var(--text-muted)] italic truncate mt-0.5">{n.remote_sys_desc}</div>

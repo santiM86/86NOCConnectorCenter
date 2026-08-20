@@ -4,13 +4,14 @@ import "./TvDashboard.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const REFRESH_INTERVAL = 15000;
+const POPUP_TTL_MS = 30000; // popup allarmi critici a schermo per 30s
 
-/* ---------- Audio alarm ---------- */
+/* ---------- Audio alarm + popup criticals ---------- */
 function useAlarmSystem() {
   const audioCtxRef = useRef(null);
-  const prevRef = useRef({ offIPs: new Set(), altIDs: new Set() });
+  const prevRef = useRef({ offIPs: new Set(), altIDs: new Set(), primed: false });
   const [soundOn, setSoundOn] = useState(false);
-  const [alarm, setAlarm] = useState(null);
+  const [popups, setPopups] = useState([]); // {id, kind, client, title, ts}
   const init = useCallback(() => {
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
@@ -22,26 +23,57 @@ function useAlarmSystem() {
     for (let i = 0; i < n; i++) {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = t; o.frequency.value = f;
-      g.gain.setValueAtTime(0.12, now + i * (d + 0.1));
-      g.gain.exponentialRampToValueAtTime(0.001, now + i * (d + 0.1) + d);
+      g.gain.setValueAtTime(0.16, now + i * (d + 0.12));
+      g.gain.exponentialRampToValueAtTime(0.001, now + i * (d + 0.12) + d);
       o.connect(g); g.connect(ctx.destination);
-      o.start(now + i * (d + 0.1)); o.stop(now + i * (d + 0.1) + d);
+      o.start(now + i * (d + 0.12)); o.stop(now + i * (d + 0.12) + d);
     }
   }, []);
+  const pushPopup = useCallback((kind, client, title) => {
+    setPopups(prev => {
+      const fresh = prev.filter(p => Date.now() - p.ts < POPUP_TTL_MS);
+      // dedup: stesso client+titolo già a schermo
+      if (fresh.some(p => p.client === client && p.title === title)) return fresh;
+      const next = [...fresh, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, kind, client, title, ts: Date.now() }];
+      return next.slice(-3); // max 3 popup contemporanei
+    });
+  }, []);
+  const dismiss = useCallback((id) => setPopups(prev => prev.filter(p => p.id !== id)), []);
   const check = useCallback((data) => {
-    if (!soundOn || !data) return;
+    if (!data) return;
     const p = prevRef.current;
     const cO = new Set((data.offline_devices || []).map(d => d.ip));
-    const cA = new Set((data.alerts || []).map(a => a.id));
-    const nO = [...cO].filter(ip => !p.offIPs.has(ip));
-    const nC = (data.alerts || []).filter(a => a.severity === "critical" && !p.altIDs.has(a.id));
-    if (p.offIPs.size > 0 || p.altIDs.size > 0) {
-      if (nO.length > 0) { beep(880, 0.2, 3); setAlarm({ t: "off", m: `NUOVO OFFLINE: ${data.offline_devices.filter(d => nO.includes(d.ip)).map(d => d.name).join(", ")}`, ts: Date.now() }); }
-      else if (nC.length > 0) { beep(660, 0.3, 2, "sawtooth"); setAlarm({ t: "crit", m: `NUOVO ALERT CRITICO: ${nC[0].device_name || nC[0].title}`, ts: Date.now() }); }
+    const cA = new Set((data.alerts || []).filter(a => a.severity === "critical").map(a => a.id));
+    // Primo giro: solo baseline, niente popup/suono (evita valanga all'apertura)
+    if (!p.primed) {
+      prevRef.current = { offIPs: cO, altIDs: cA, primed: true };
+      return;
     }
-    prevRef.current = { offIPs: cO, altIDs: cA };
-  }, [soundOn, beep]);
-  return { soundOn, init, check, alarm };
+    const newOff = (data.offline_devices || []).filter(d => !p.offIPs.has(d.ip));
+    const newCrit = (data.alerts || []).filter(a => a.severity === "critical" && !p.altIDs.has(a.id));
+    let any = false;
+    newCrit.forEach(a => { pushPopup("crit", a.client_name || "—", a.title || a.device_name || "Allarme critico"); any = true; });
+    newOff.forEach(d => { pushPopup("off", d.client_name || "—", `${d.name || d.ip} OFFLINE`); any = true; });
+    if (any && soundOn) {
+      // sirena: alterna due toni, ripetuta
+      beep(880, 0.28, 3, "sawtooth");
+      setTimeout(() => beep(620, 0.28, 3, "square"), 200);
+    }
+    prevRef.current = { offIPs: cO, altIDs: cA, primed: true };
+  }, [soundOn, beep, pushPopup]);
+  // Auto-dismiss dopo POPUP_TTL_MS
+  useEffect(() => {
+    if (popups.length === 0) return;
+    const t = setInterval(() => {
+      setPopups(prev => prev.filter(p => Date.now() - p.ts < POPUP_TTL_MS));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [popups.length]);
+  const testAlarm = useCallback(() => {
+    pushPopup("crit", "TEST · Cliente Demo", "PROBLEMA DI DORSALE: SWITCH01 → SWITCH02");
+    if (soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
+  }, [pushPopup, soundOn, beep]);
+  return { soundOn, init, check, popups, dismiss, testAlarm };
 }
 
 /* ---------- Client severity model ---------- */
@@ -65,7 +97,7 @@ export default function TvDashboardPage() {
   const [data, setData] = useState(null);
   const [clock, setClock] = useState(new Date());
   const [tickerX, setTickerX] = useState(0);
-  const { soundOn, init, check, alarm } = useAlarmSystem();
+  const { soundOn, init, check, popups, dismiss, testAlarm } = useAlarmSystem();
 
   useEffect(() => {
     load();
@@ -88,6 +120,10 @@ export default function TvDashboardPage() {
       .sort((a, b) => b._s.score - a._s.score);
   }, [data]);
 
+  const problemClients = useMemo(() => sortedClients.filter(c => c._s.level !== "ok"), [sortedClients]);
+  const okClients = useMemo(() => sortedClients.filter(c => c._s.level === "ok")
+    .sort((a, b) => a.name.localeCompare(b.name)), [sortedClients]);
+
   const alertsByClient = useMemo(() => {
     const m = {};
     (data?.alerts || []).forEach(a => { (m[a.client_id || ""] ||= []).push(a); });
@@ -103,8 +139,22 @@ export default function TvDashboardPage() {
 
   return (
     <div className={`tv tv-${globalLevel}`} data-testid="tv-dashboard" onClick={!soundOn ? init : undefined}>
-      {alarm && (Date.now() - alarm.ts < 20000) && (
-        <div className={`tv-alarm ${alarm.t === "off" ? "tv-alarm-red" : "tv-alarm-orange"}`} data-testid="tv-alarm-banner">{alarm.m}</div>
+      {/* ===== POPUP GRANDI CENTRALI — allarmi critici (auto 30s) ===== */}
+      {popups.length > 0 && (
+        <div className="tv-popups" data-testid="tv-critical-popups">
+          {popups.map(pp => (
+            <div key={pp.id} className={`tv-popup tv-popup-${pp.kind}`} data-testid="tv-critical-popup">
+              <button className="tv-popup-x" onClick={(e) => { e.stopPropagation(); dismiss(pp.id); }} data-testid="tv-popup-dismiss" aria-label="Chiudi">×</button>
+              <div className="tv-popup-badge">{pp.kind === "off" ? "DISPOSITIVO OFFLINE" : "ALLARME CRITICO"}</div>
+              <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
+              <div className="tv-popup-title" data-testid="tv-popup-title">{pp.title}</div>
+              <div className="tv-popup-foot">
+                <span className="tv-popup-pulse" />
+                {new Date(pp.ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* ===== TOP BAR ===== */}
@@ -134,6 +184,9 @@ export default function TvDashboardPage() {
           <button className={`tv-snd ${soundOn ? "tv-snd-on" : ""}`} onClick={init} data-testid="tv-sound-toggle">
             {soundOn ? "♪ ON" : "♪ OFF"}
           </button>
+          <button className="tv-snd tv-test" onClick={(e) => { e.stopPropagation(); if (!soundOn) init(); testAlarm(); }} data-testid="tv-test-alarm" title="Prova popup + suono allarme">
+            TEST
+          </button>
           <div className="tv-time" data-testid="tv-clock">
             <span className="tv-time-h">{clock.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span>
             <span className="tv-time-d">{clock.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "short" })}</span>
@@ -141,11 +194,41 @@ export default function TvDashboardPage() {
         </div>
       </header>
 
-      {/* ===== CLIENT GRID ===== */}
-      <main className="tv-grid" data-testid="tv-clients-grid">
-        {sortedClients.map(c => (
-          <ClientTile key={c.id} c={c} alerts={alertsByClient[c.id] || []} />
-        ))}
+      {/* ===== CLIENT AREA (triage: problemi in evidenza, operativi densi) ===== */}
+      <main className="tv-body" data-testid="tv-clients-grid">
+        {problemClients.length > 0 && (
+          <section className="tv-sec tv-sec-prob">
+            <div className="tv-sec-h tv-sec-h-prob">
+              <span className="tv-sec-dot tv-sec-dot-prob" /> DA GESTIRE <b>{problemClients.length}</b>
+              <span className="tv-sec-hint">clienti con anomalie · in ordine di gravità</span>
+            </div>
+            <div className="tv-prob-grid">
+              {problemClients.map(c => (
+                <ProblemCard key={c.id} c={c} alerts={alertsByClient[c.id] || []} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="tv-sec tv-sec-ok">
+          <div className="tv-sec-h tv-sec-h-ok">
+            <span className="tv-sec-dot tv-sec-dot-ok" /> OPERATIVI <b>{okClients.length}</b>
+          </div>
+          {okClients.length > 0 ? (
+            <div className="tv-ok-grid">
+              {okClients.map(c => (
+                <div key={c.id} className="tv-ok-chip" data-testid={`tv-client-${c.id}`}
+                     title={`${c.name} · ${c.online}/${c.total_devices} online`}>
+                  <span className="tv-ok-dot" />
+                  <span className="tv-ok-name">{c.name}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="tv-ok-none">Nessun cliente pienamente operativo</div>
+          )}
+        </section>
+
         {sortedClients.length === 0 && <div className="tv-empty">NESSUN CLIENTE CONFIGURATO</div>}
       </main>
 
@@ -181,58 +264,46 @@ function Kpi({ label, value, color = "#fff", pulse }) {
   );
 }
 
-/* ---------- Client tile (glanceable) ---------- */
-function ClientTile({ c, alerts }) {
+/* ---------- Problem card (compatta, triage-first) ---------- */
+function ProblemCard({ c, alerts }) {
   const s = c._s;
-  const hp = c.health_pct;
-  const ringColor = s.level === "crit" ? "#ff4136" : s.level === "warn" ? "#ffbf00" : "#2fd85f";
+  const color = s.level === "crit" ? "#ff4136" : "#ffbf00";
   const wanList = c.wan_targets || [];
   const wan = wanList.find(w => w.status === "offline") || wanList.find(w => w.status && w.status !== "online") || wanList[0];
   const topAlert = alerts.find(a => a.severity === "critical") || alerts.find(a => a.severity === "high");
 
   return (
-    <div className={`tv-tile tv-tile-${s.level} ${s.level === "crit" ? "tv-tile-flash" : ""}`} data-testid={`tv-client-${c.id}`}>
-      {/* header */}
-      <div className="tv-tile-head">
-        <h2 className="tv-tile-name" title={c.name}>{c.name}</h2>
-        <div className="tv-tile-badges">
-          {c.printer_count > 0 && <span className="tv-b tv-b-mute">{c.printer_count}🖨</span>}
-          <span className={`tv-b ${c.connector_online ? "tv-b-on" : "tv-b-off"}`}>{c.connector_online ? "SONDA" : "NO SONDA"}</span>
+    <div className={`tv-pcard tv-pcard-${s.level} ${s.level === "crit" ? "tv-pcard-flash" : ""}`}
+         data-testid={`tv-client-${c.id}`} style={{ "--pc": color }}>
+      <div className="tv-pcard-top">
+        <span className="tv-pcard-name" title={c.name}>{c.name}</span>
+        {!c.connector_online && <span className="tv-pcard-nosonda">NO SONDA</span>}
+      </div>
+
+      <div className="tv-pcard-mid">
+        <div className={`tv-pcard-headline tv-headline-${s.level}`} data-testid={`tv-headline-${c.id}`}>{s.headline}</div>
+        <div className="tv-pcard-counts">
+          <span><b style={{ color: "#2fd85f" }}>{c.online}</b> ON</span>
+          <span><b style={{ color: c.offline > 0 ? "#ff4136" : "#4a4a55" }}>{c.offline}</b> OFF</span>
+          <span><b style={{ color: c.alert_count > 0 ? "#ffbf00" : "#4a4a55" }}>{c.alert_count}</b> AL</span>
+          {c.critical_alerts > 0 && <span><b style={{ color: "#ff4136" }}>{c.critical_alerts}</b> CR</span>}
         </div>
       </div>
 
-      {/* body: ring + headline + counts */}
-      <div className="tv-tile-body">
-        <div className="tv-ring" style={{ "--rc": ringColor, "--pct": hp }}>
-          <span className="tv-ring-v" style={{ color: ringColor }}>{hp}<small>%</small></span>
-        </div>
-        <div className="tv-tile-main">
-          <div className={`tv-headline tv-headline-${s.level}`} data-testid={`tv-headline-${c.id}`}>{s.headline}</div>
-          <div className="tv-counts">
-            <span className="tv-count"><b style={{ color: "#2fd85f" }}>{c.online}</b> ON</span>
-            <span className="tv-count"><b style={{ color: c.offline > 0 ? "#ff4136" : "#555" }}>{c.offline}</b> OFF</span>
-            <span className="tv-count"><b style={{ color: c.alert_count > 0 ? "#ffbf00" : "#555" }}>{c.alert_count}</b> ALERT</span>
-          </div>
-        </div>
-      </div>
-
-      {/* WAN line */}
       {wan && (
-        <div className={`tv-wan tv-wan-${wan.status}`} data-testid={`tv-tile-wan-${c.id}`}>
+        <div className={`tv-pcard-wan tv-wan-${wan.status}`} data-testid={`tv-tile-wan-${c.id}`}>
           <span className={`tv-wan-dot tv-wan-dot-${wan.status}`} />
-          <span className="tv-wan-txt">WAN {wan.status === "offline" ? "DOWN" : (wan.status === "online" ? "OK" : wan.status?.toUpperCase())}</span>
-          {wan.public_ip && <span className="tv-wan-ip">{wan.public_ip}</span>}
+          <span className="tv-pcard-wan-txt">WAN {wan.status === "offline" ? "DOWN" : (wan.status === "online" ? "OK" : (wan.status || "").toUpperCase())}</span>
           {wan.latency_ms != null && (
-            <span className="tv-wan-lat" style={{ color: wan.latency_ms > 100 ? "#ff4136" : wan.latency_ms > 50 ? "#ffbf00" : "#2fd85f" }}>{wan.latency_ms}ms</span>
+            <span className="tv-pcard-lat" style={{ color: wan.latency_ms > 100 ? "#ff4136" : wan.latency_ms > 50 ? "#ffbf00" : "#2fd85f" }}>{wan.latency_ms}ms</span>
           )}
         </div>
       )}
 
-      {/* top problem line (one line only) */}
       {topAlert && (
-        <div className="tv-toppb" data-testid={`tv-tile-topalert-${c.id}`}>
+        <div className="tv-pcard-alert" data-testid={`tv-tile-topalert-${c.id}`}>
           <span className={`tv-toppb-sev tv-toppb-${topAlert.severity}`}>{topAlert.severity === "critical" ? "CRIT" : "HIGH"}</span>
-          <span className="tv-toppb-msg">{topAlert.title}</span>
+          <span className="tv-pcard-alert-msg">{topAlert.title}</span>
         </div>
       )}
     </div>

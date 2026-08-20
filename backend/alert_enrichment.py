@@ -43,6 +43,52 @@ async def _entity_id_for(db, client_id: str, ip: str) -> Optional[str]:
     return doc["entity_id"] if doc else None
 
 
+async def _backbone_diagnosis(db, client_id: Optional[str], switch_ip: Optional[str]) -> Optional[str]:
+    """v2026-06: quando uno switch va giu', verifica SUBITO la DORSALE (uplink
+    verso il parent): controlla la porta sul parent che affaccia verso questo
+    switch. Se e' LINK DOWN o passa traffico ZERO → probabile problema di
+    dorsale (cavo/SFP), non solo lo switch spento."""
+    if not client_id or not switch_ip:
+        return None
+    try:
+        from routes.topology_diagram import compute_switch_cascade
+        casc = await compute_switch_cascade(client_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("backbone diag cascade failed: %s", e)
+        return None
+    node = next((c for c in casc.get("cascade", []) if c.get("ip") == switch_ip), None)
+    if not node or not node.get("uplink"):
+        return None
+    up = node["uplink"]
+    parent_ip = up.get("to_ip")
+    parent_name = up.get("to_name") or parent_ip
+    remote_port = up.get("remote_port")  # porta sul parent verso questo switch
+    if not parent_ip or not remote_port:
+        return None
+    ports = await db.switch_ports.find(
+        {"client_id": client_id, "local_ip": parent_ip}, {"_id": 0}).to_list(2000)
+    rp = str(remote_port).strip().lower()
+    port = next((p for p in ports
+                 if str(p.get("name") or "").strip().lower() == rp
+                 or str(p.get("alias") or "").strip().lower() == rp), None)
+    if not port:
+        return None
+    oper = port.get("oper")
+    traffic_known = ("rx_bps" in port) or ("tx_bps" in port)
+    rx = int(port.get("rx_bps") or 0)
+    tx = int(port.get("tx_bps") or 0)
+    if oper != 1:
+        return (f"🔌 DORSALE: la porta {remote_port} su {parent_name} (verso questo switch) "
+                f"è LINK DOWN → probabile problema di DORSALE (cavo/SFP/uplink), non solo lo switch spento.")
+    if traffic_known and (rx + tx) == 0:
+        return (f"🔌 DORSALE: la porta {remote_port} su {parent_name} è UP ma con traffico a ZERO "
+                f"→ verificare la DORSALE/uplink (possibile guasto backbone).")
+    if traffic_known:
+        return (f"🔌 DORSALE: la porta {remote_port} su {parent_name} è attiva e passa traffico "
+                f"→ la dorsale funziona, il down riguarda il solo switch.")
+    return None
+
+
 async def enrich_alert(db, alert: Dict[str, Any]) -> Dict[str, Any]:
     """Aggiunge org + impatto all'alert (in-place) e ne arricchisce il messaggio."""
     cid = alert.get("client_id")
@@ -82,4 +128,14 @@ async def enrich_alert(db, alert: Dict[str, Any]) -> Dict[str, Any]:
         )
     elif prefix:
         alert["message"] = prefix + (alert.get("message") or "")
+
+    # v2026-06: diagnosi DORSALE per switch giu' (verifica uplink/backbone).
+    if st in ("corr_switch_down", "corr_switch_unreachable"):
+        try:
+            diag = await _backbone_diagnosis(db, cid, alert.get("device_ip"))
+            if diag:
+                alert["backbone_diag"] = diag
+                alert["message"] = (alert.get("message") or "") + "\n\n" + diag
+        except Exception as e:  # noqa: BLE001
+            logger.debug("backbone diagnosis failed: %s", e)
     return alert

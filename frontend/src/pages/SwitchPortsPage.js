@@ -251,9 +251,12 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
 
       {/* Uplink verso altro switch (preciso, da cascata LLDP+FDB) */}
       {p.uplink_to && (
-        <div className="rounded-md border border-indigo-500/40 bg-indigo-500/10 p-2 text-[11px]" data-testid={`port-uplink-detail-${p.idx}`}>
-          <div className="flex items-center gap-1.5 text-indigo-300 font-bold uppercase text-[9px] tracking-wider mb-1">
-            <Stack size={12} weight="fill" /> Uplink verso switch
+        <div className={`rounded-md border p-2 text-[11px] ${p.is_backbone ? "border-amber-500/50 bg-amber-500/10" : "border-indigo-500/40 bg-indigo-500/10"}`} data-testid={`port-uplink-detail-${p.idx}`}>
+          <div className={`flex items-center gap-1.5 font-bold uppercase text-[9px] tracking-wider mb-1 ${p.is_backbone ? "text-amber-300" : "text-indigo-300"}`}>
+            <Stack size={12} weight="fill" />
+            {p.is_backbone
+              ? <>Dorsale ↑ (uplink verso {p.uplink_to.peer_kind === "gateway" ? "gateway" : "switch a monte"})</>
+              : <>Collegamento ↓ verso switch a valle</>}
           </div>
           <p className="text-[var(--text-primary)]">
             <b>{p.uplink_to.peer_name}</b> <span className="font-mono text-[var(--text-muted)]">({p.uplink_to.peer_ip})</span>
@@ -875,8 +878,8 @@ export default function SwitchPortsPage() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-bold text-[var(--text-primary)] font-mono">Porta {p.idx} · {p.name}</span>
-                      <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${isGw ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-200"}`}>
-                        {isGw ? "GATEWAY/ROUTER" : "SWITCH"}
+                      <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${p.is_backbone ? "bg-amber-500/30 text-amber-200" : isGw ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-200"}`}>
+                        {p.is_backbone ? "DORSALE ↑" : isGw ? "GATEWAY/ROUTER" : "SWITCH ↓ (valle)"}
                       </span>
                     </div>
                     <div className="text-[10px] text-[var(--text-secondary)] mt-1 flex items-center gap-1">

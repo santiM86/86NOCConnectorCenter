@@ -34,7 +34,16 @@ import liveness_resolver as lr
 
 logger = logging.getLogger("alert_engine")
 
-CHECK_INTERVAL_SECONDS = 60
+CHECK_INTERVAL_SECONDS = 20  # v2026-06 SPEED: era 60. Rete di sicurezza; il down
+                             # dei device VITALI e' comunque event-driven (agent_ws).
+
+# v2026-06 SPEED — rilevazione RAPIDA dei device VITALI (switch/firewall/server).
+# Quando il poll DIRETTO (ICMP/SNMP) di un device vitale fallisce per >=2 cicli
+# consecutivi (~30s) ed e' FRESCO, l'evidenza L2 (FDB/ARP) del suo MAC — che
+# altrimenti lo terrebbe "healthy" fino a 15 min — viene IGNORATA e l'alert
+# scatta subito (bypassa il gate temporale vital_warn_minutes).
+VITAL_L2_FRESH_SECONDS = 120   # il poll diretto deve essere recente per fidarsi
+VITAL_FAST_FAILURES = 2        # 2 poll ICMP falliti consecutivi (~30s)
 
 SEVERITY_RANK_LOCAL = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -63,7 +72,53 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "telegram_enabled": True,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
+    # Soglia minima di severità per l'invio Telegram: "critical" (default) o "high"
+    "telegram_min_severity": "critical",
+    # Quiet hours: fuori orario gli alert NON "down" vengono accorpati in un
+    # riepilogo inviato al termine della finestra. I veri down restano istantanei.
+    "telegram_quiet_enabled": True,
+    "telegram_quiet_start": "22:00",
+    "telegram_quiet_end": "07:00",
 }
+
+
+_TG_SEV_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0, "info": 0}
+
+
+def _telegram_severity_ok(cfg: Dict[str, Any], severity: str) -> bool:
+    """True se la severità dell'alert raggiunge la soglia minima Telegram configurata."""
+    min_sev = (cfg.get("telegram_min_severity") or "critical").lower()
+    return _TG_SEV_RANK.get(str(severity).lower(), 0) >= _TG_SEV_RANK.get(min_sev, 3)
+
+
+# source_type che rappresentano un "vero down" → sempre istantanei anche in quiet hours
+_TG_INSTANT_KEYWORDS = ("down", "offline", "blackout", "power", "isolat",
+                        "situation", "reach", "liveness", "vital", "connector")
+
+
+def _is_instant_source(source_type: str) -> bool:
+    st = str(source_type or "").lower()
+    return any(k in st for k in _TG_INSTANT_KEYWORDS)
+
+
+def _in_quiet_hours(cfg: Dict[str, Any]) -> bool:
+    """True se l'ora corrente (Europe/Rome) è dentro la finestra quiet-hours."""
+    if not cfg.get("telegram_quiet_enabled"):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now = datetime.now()
+    def _p(s, d):
+        try:
+            h, m = str(s).split(":"); return int(h) * 60 + int(m)
+        except Exception:
+            return d
+    start = _p(cfg.get("telegram_quiet_start"), 22 * 60)
+    end = _p(cfg.get("telegram_quiet_end"), 7 * 60)
+    cur = now.hour * 60 + now.minute
+    return (start <= cur or cur < end) if start > end else (start <= cur < end)
 
 
 async def get_config(db) -> Dict[str, Any]:
@@ -126,21 +181,331 @@ async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, A
             await wp.notify_new_alert(db, alert_doc)
         except Exception as e:  # noqa: BLE001
             logger.debug("push dispatch failed: %s", e)
-    # Telegram — solo per alert rilevanti (high/critical) per evitare rumore
-    if "telegram" in channels and cfg.get("telegram_enabled") and \
-       (alert_doc.get("severity") in ("high", "critical")):
+    # Telegram — via percorso unificato (soglia severità + quiet hours + queue)
+    if "telegram" in channels and cfg.get("telegram_enabled"):
         try:
-            from telegram_notifier import send_alert_telegram
-            await send_alert_telegram(
-                db,
-                title=alert_doc.get("title", "Alert"),
-                message=alert_doc.get("message", ""),
-                severity=alert_doc.get("severity", "high"),
-                chat_id=cfg.get("telegram_chat_id") or None,
-                token=cfg.get("telegram_bot_token") or None,
-            )
+            await notify_alert_telegram(db, alert_doc)
         except Exception as e:  # noqa: BLE001
             logger.debug("telegram dispatch failed: %s", e)
+
+
+async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
+    """Invio Telegram riutilizzabile per alert generati FUORI dal motore
+    (C2, KEV, rogue, anomalie traffico, cambio IP). Rispetta la config globale:
+    canale 'telegram' abilitato + severità high/critical. Idempotente per doc."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return False
+    channels = cfg.get("channels") or ["push"]
+    if "telegram" not in channels or not cfg.get("telegram_enabled"):
+        return False
+    if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
+        return False
+    # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra
+    if _in_quiet_hours(cfg) and not _is_instant_source(alert_doc.get("source_type")):
+        try:
+            await db.telegram_quiet_queue.insert_one({
+                "id": str(uuid.uuid4()),
+                "title": alert_doc.get("title", "Alert"),
+                "message": alert_doc.get("message", ""),
+                "severity": alert_doc.get("severity", "critical"),
+                "client_name": alert_doc.get("client_name"),
+                "source_type": alert_doc.get("source_type"),
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+                "sent": False,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("quiet-queue insert failed: %s", e)
+        return "queued"
+    try:
+        from telegram_notifier import send_alert_telegram
+        await send_alert_telegram(
+            db,
+            title=alert_doc.get("title", "Alert"),
+            message=alert_doc.get("message", ""),
+            severity=alert_doc.get("severity", "high"),
+            chat_id=cfg.get("telegram_chat_id") or None,
+            token=cfg.get("telegram_bot_token") or None,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("notify_alert_telegram failed: %s", e)
+        return False
+
+
+async def telegram_quiet_digest_tick(db) -> dict:
+    """Al termine delle quiet hours invia UN riepilogo degli alert accodati e svuota la coda."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return {"sent": 0}
+    if _in_quiet_hours(cfg):
+        return {"sent": 0, "reason": "still_quiet"}
+    pending = await db.telegram_quiet_queue.find({"sent": False}, {"_id": 0}).to_list(500)
+    if not pending:
+        return {"sent": 0}
+    if "telegram" in (cfg.get("channels") or []) and cfg.get("telegram_enabled"):
+        _LABELS = {
+            "kev_exposure": "KEV", "osint_c2": "C2", "traffic_anomaly": "anomalia traffico",
+            "traffic": "anomalia traffico", "rogue": "dispositivo rogue",
+            "new_devices_detected": "dispositivo rogue", "wan_public_ip_change": "cambio IP",
+            "predictive_raid": "guasto imminente", "predictive_ups": "guasto imminente",
+            "predictive_temp": "guasto imminente", "datto_sync_stale": "sync Datto",
+        }
+        def _label(st):
+            st = str(st or "")
+            if st in _LABELS:
+                return _LABELS[st]
+            if st.startswith("predictive"):
+                return "guasto imminente"
+            return st.replace("_", " ") or "alert"
+        # raggruppa per cliente → {categoria: conteggio}
+        by_client, by_sev = {}, {"critical": 0, "high": 0}
+        for p in pending:
+            by_sev[p.get("severity", "critical")] = by_sev.get(p.get("severity", "critical"), 0) + 1
+            cli = p.get("client_name") or "—"
+            cats = by_client.setdefault(cli, {})
+            lbl = _label(p.get("source_type"))
+            cats[lbl] = cats.get(lbl, 0) + 1
+        lines = []
+        for cli in sorted(by_client, key=lambda c: -sum(by_client[c].values()))[:60]:
+            parts = ", ".join(f"{n} {lbl}" for lbl, n in sorted(by_client[cli].items(), key=lambda x: -x[1]))
+            lines.append(f"• <b>{cli}</b>: {parts}")
+        body = (f"🌙 <b>Riepilogo notturno ARGUS</b> — {len(pending)} alert accodati\n"
+                f"({by_sev.get('critical', 0)} critici, {by_sev.get('high', 0)} alti) · {len(by_client)} clienti\n\n"
+                + "\n".join(lines))
+        try:
+            from telegram_notifier import send_telegram_text
+            await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
+                                     token=cfg.get("telegram_bot_token") or None)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("quiet digest send failed: %s", e)
+    ids = [p["id"] for p in pending]
+    await db.telegram_quiet_queue.update_many({"id": {"$in": ids}}, {"$set": {"sent": True}})
+    logger.info(f"[telegram] quiet digest sent: {len(pending)} alerts")
+    return {"sent": len(pending)}
+
+
+async def hyperv_vm_state_tick(db) -> dict:
+    """Host Hyper-V raggiungibile ma una VM che DOVREBBE essere accesa risulta spenta.
+    'Dovrebbe essere accesa' = VM con toggle hyperv_alert_on_off attivo in CMDB.
+    Confronto stato atteso (running) vs reale riportato dall'host."""
+    def _running(vm):
+        st = str(vm.get("state") or vm.get("status") or vm.get("vm_state") or "").strip().lower()
+        return st in ("running", "on", "started", "2", "acceso")
+    emitted = 0
+    resolved = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async for st in db.backup_status.find(
+        {"hyperv_connected": True, "hyperv_vms.0": {"$exists": True}},
+        {"_id": 0, "client_id": 1, "hyperv_vms": 1},
+    ):
+        cid = st.get("client_id")
+        vms = st.get("hyperv_vms") or []
+        off_names = {v.get("name") for v in vms if v.get("name") and not _running(v)}
+        running_names = {v.get("name") for v in vms if v.get("name") and _running(v)}
+        # VM "monitorate" (devono girare) = device con hyperv_alert_on_off attivo
+        monitored = await db.managed_devices.find(
+            {"client_id": cid, "hyperv_alert_on_off": True},
+            {"_id": 0, "name": 1, "hyperv_vm_name": 1, "ip": 1},
+        ).to_list(500)
+        if not monitored:
+            continue
+        client = await db.clients.find_one({"id": cid}, {"_id": 0, "name": 1})
+        cname = (client or {}).get("name") or cid
+        for md in monitored:
+            vm_name = md.get("hyperv_vm_name") or md.get("name")
+            if not vm_name:
+                continue
+            dev_key = f"hypervvm:{cid}:{vm_name}"
+            # AUTO-RESOLVE: la VM è tornata accesa → risolvi l'alert attivo
+            if vm_name in running_names:
+                r = await db.alerts.update_many(
+                    {"client_id": cid, "source_type": "hyperv_vm_down",
+                     "device_id": dev_key, "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}},
+                )
+                resolved += r.modified_count
+                continue
+            if vm_name not in off_names:
+                continue
+            exists = await db.alerts.find_one(
+                {"client_id": cid, "source_type": "hyperv_vm_down", "device_id": dev_key, "status": "active"},
+                {"_id": 0, "id": 1},
+            )
+            if exists:
+                continue
+            alert_doc = {
+                "id": str(uuid.uuid4()), "client_id": cid, "client_name": cname,
+                "device_id": dev_key, "device_ip": "",
+                "device_name": vm_name, "severity": "critical", "source_type": "hyperv_vm_down",
+                "title": f"VM Hyper-V spenta: {vm_name}",
+                "message": (f"L'host Hyper-V del cliente {cname} è raggiungibile ma la VM «{vm_name}», "
+                            f"che dovrebbe essere accesa, risulta SPENTA. Verificare/avviare la VM."),
+                "status": "active", "created_at": now_iso,
+            }
+            try:
+                if await insert_alert_if_emit(db, alert_doc):
+                    await notify_alert_telegram(db, alert_doc)
+                    emitted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[hyperv-vm] emit failed {cid}/{vm_name}: {e}")
+    if emitted or resolved:
+        logger.info(f"[hyperv-vm] emitted {emitted} VM-off alerts, resolved {resolved}")
+    return {"emitted": emitted, "resolved": resolved}
+
+
+async def run_backbone_watchdog(db, cfg_global: Dict[str, Any]) -> dict:
+    """v2026-06: alert DEDICATO 'PROBLEMA DI DORSALE'. Quando uno switch è giù,
+    controlla la porta DORSALE sul parent (verso quello switch): se è LINK DOWN
+    o passa traffico ZERO → emette un alert SEPARATO dal down del singolo switch
+    (source_type=corr_backbone_down). Auto-resolve quando la dorsale torna ok o
+    lo switch torna su. Dedup per (client, switch)."""
+    from routes.topology_diagram import compute_switch_cascade
+    emitted = 0
+    resolved = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    for client in clients:
+        cid = client.get("id")
+        cname = client.get("name") or cid
+        try:
+            casc = await compute_switch_cascade(cid)
+        except Exception:
+            continue
+        cascade = casc.get("cascade", []) or []
+        if not cascade:
+            continue
+        for node in cascade:
+            up = node.get("uplink")
+            sw_ip = node.get("ip")
+            if not up or not sw_ip:
+                continue
+            dev_key = f"backbone:{cid}:{sw_ip}"
+            md = await db.managed_devices.find_one(
+                {"client_id": cid, "ip": sw_ip},
+                {"_id": 0, "status": 1, "consecutive_ping_failures": 1, "name": 1})
+            is_down = bool(md) and (
+                md.get("status") == "offline"
+                or int(md.get("consecutive_ping_failures") or 0) >= 2)
+            parent_ip = up.get("to_ip")
+            remote_port = up.get("remote_port")
+            parent_name = up.get("to_name") or parent_ip
+            sw_name = node.get("name") or (md or {}).get("name") or sw_ip
+
+            async def _resolve():
+                r = await db.alerts.update_many(
+                    {"client_id": cid, "source_type": "corr_backbone_down",
+                     "device_id": dev_key, "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}})
+                return r.modified_count
+
+            if not is_down or not parent_ip or not remote_port:
+                resolved += await _resolve()
+                continue
+            ports = await db.switch_ports.find(
+                {"client_id": cid, "local_ip": parent_ip}, {"_id": 0}).to_list(2000)
+            rp = str(remote_port).strip().lower()
+            port = next((p for p in ports
+                         if str(p.get("name") or "").strip().lower() == rp
+                         or str(p.get("alias") or "").strip().lower() == rp), None)
+            if not port:
+                resolved += await _resolve()
+                continue
+            oper = port.get("oper")
+            tk = ("rx_bps" in port) or ("tx_bps" in port)
+            rx = int(port.get("rx_bps") or 0)
+            tx = int(port.get("tx_bps") or 0)
+            if oper != 1:
+                reason = f"la porta dorsale {remote_port} su {parent_name} è LINK DOWN"
+            elif tk and (rx + tx) == 0:
+                reason = f"la porta dorsale {remote_port} su {parent_name} è UP ma con traffico a ZERO"
+            else:
+                resolved += await _resolve()  # dorsale ok → è solo lo switch giù
+                continue
+            exists = await db.alerts.find_one(
+                {"client_id": cid, "source_type": "corr_backbone_down",
+                 "device_id": dev_key, "status": "active"}, {"_id": 0, "id": 1})
+            if exists:
+                continue
+            alert_doc = {
+                "id": str(uuid.uuid4()), "client_id": cid, "client_name": cname,
+                "device_id": dev_key, "device_ip": sw_ip, "device_name": sw_name,
+                "severity": "critical", "source_type": "corr_backbone_down",
+                "title": f"PROBLEMA DI DORSALE: {parent_name} → {sw_name}",
+                "message": (f"Cliente {cname}: lo switch «{sw_name}» risulta giù e {reason} "
+                            f"→ probabile guasto della DORSALE (cavo/SFP/uplink), non del solo switch. "
+                            f"Verificare il link fisico verso {parent_name}."),
+                "status": "active", "created_at": now_iso,
+            }
+            try:
+                if await insert_alert_if_emit(db, alert_doc):
+                    await notify_alert_telegram(db, alert_doc)
+                    emitted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[backbone] emit failed {cid}/{sw_ip}: {e}")
+    if emitted or resolved:
+        logger.info(f"[backbone] emitted {emitted} backbone alerts, resolved {resolved}")
+    return {"emitted": emitted, "resolved": resolved}
+
+
+
+
+async def morning_status_digest(db) -> dict:
+    """Riepilogo mattutino (07:00): stato di TUTTI i clienti, mostrando SOLO
+    alert critici e dispositivi down (nient'altro). In aggiunta al digest notturno."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return {"sent": 0}
+    if "telegram" not in (cfg.get("channels") or []) or not cfg.get("telegram_enabled"):
+        return {"sent": 0, "reason": "telegram_off"}
+    # Solo alert ATTIVI e CRITICI
+    active = await db.alerts.find(
+        {"status": "active", "severity": "critical"},
+        {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1},
+    ).to_list(2000)
+    cids = list({a.get("client_id") for a in active if a.get("client_id")})
+    cmap = {}
+    if cids:
+        for c in await db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000):
+            cmap[c["id"]] = c["name"]
+    by_client = {}
+    for a in active:
+        cli = cmap.get(a.get("client_id")) or a.get("client_name") or a.get("client_id") or "—"
+        d = by_client.setdefault(cli, {"down": 0, "crit": 0})
+        if _is_instant_source(a.get("source_type")):
+            d["down"] += 1
+        else:
+            d["crit"] += 1
+    tot = len(active)
+    if not by_client:
+        body = "☀️ <b>Buongiorno — ARGUS</b> (07:00)\nNessun problema critico attivo. Tutti i clienti operativi. ✅"
+    else:
+        lines = []
+        for cli in sorted(by_client, key=lambda c: -(by_client[c]["down"] * 10 + by_client[c]["crit"]))[:60]:
+            d = by_client[cli]
+            parts = []
+            if d["down"]:
+                parts.append(f"{d['down']} down")
+            if d["crit"]:
+                parts.append(f"{d['crit']} critici")
+            lines.append(f"• <b>{cli}</b>: {', '.join(parts)}")
+        body = (f"☀️ <b>Buongiorno — Stato clienti ARGUS</b> (07:00)\n"
+                f"{len(by_client)} clienti con criticità · {tot} alert critici totali\n\n"
+                + "\n".join(lines))
+    try:
+        from telegram_notifier import send_telegram_text
+        await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
+                                 token=cfg.get("telegram_bot_token") or None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning digest send failed: %s", e)
+        return {"sent": 0, "error": str(e)[:120]}
+    logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {tot} critical alerts")
+    return {"sent": 1, "clients": len(by_client), "alerts": tot}
+
+
 
 
 def _mk_alert(client_id: str, client_name: str, device_name: str, device_ip: str,
@@ -199,6 +564,24 @@ async def _best_poll_record(records: list) -> Optional[dict]:
     return sorted(records, key=key, reverse=True)[0]
 
 
+def _vital_direct_down(md: Dict[str, Any], pd: Optional[Dict[str, Any]], now: datetime) -> bool:
+    """True se un device VITALE risulta giu' dal suo poll DIRETTO (ICMP/SNMP)
+    in modo sostenuto e FRESCO: >= VITAL_FAST_FAILURES fallimenti consecutivi
+    e ultimo poll entro VITAL_L2_FRESH_SECONDS. In tal caso l'evidenza L2
+    (FDB/ARP stantia del suo MAC) NON deve piu' tenerlo 'healthy'."""
+    if not pd or pd.get("reachable"):
+        return False
+    last = pd.get("last_ping_at") or pd.get("last_poll")
+    lp = _parse_dt(last)
+    if not lp or (now - lp).total_seconds() > VITAL_L2_FRESH_SECONDS:
+        return False  # poll non fresco → non forziamo (evita falsi da dati vecchi)
+    try:
+        consec = int(md.get("consecutive_ping_failures") or 0)
+    except (TypeError, ValueError):
+        consec = 0
+    return consec >= VITAL_FAST_FAILURES
+
+
 async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     """Correlation-based watchdog: incrocia PING+DATTO+L2+WAN+iLO per dedurre
     la causa reale ed evitare falsi positivi. Con soppressione topologica
@@ -211,7 +594,8 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}, {"hyperv_alert_on_off": True}]},
         {"_id": 0, "client_id": 1, "ip": 1, "ip_address": 1, "name": 1, "device_name": 1,
          "device_type": 1, "mac": 1, "mac_address": 1, "hostname": 1, "serial": 1,
-         "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1},
+         "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1,
+         "consecutive_ping_failures": 1},
     ).to_list(10000)
     if not targets:
         return 0
@@ -241,6 +625,13 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             continue
         fam = ce.device_family(md)
         s = ce.gather_signals(md, poll_by_ip.get(ip), ctx)
+        # v2026-06 SPEED: per i device VITALI/infrastruttura con down DIRETTO
+        # confermato (>=2 poll falliti, fresco) ignoriamo l'evidenza L2 stantia
+        # e marchiamo la conferma rapida → l'alert bypassa il gate temporale.
+        if fam in ("switch", "firewall", "server") or md.get("is_vital"):
+            if _vital_direct_down(md, poll_by_ip.get(ip), now):
+                s["l2_alive"] = False
+                s["_fast_confirmed"] = True
         if fam == "server":
             v = ce.verdict_server(s, None)
             # iLO probe SOLO se down + Datto offline + credenziali iLO presenti
@@ -428,7 +819,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                      "alert_id": None, "severity": None}
         first_off = _parse_dt(state.get("first_offline_at")) or now
         elapsed_min = (now - first_off).total_seconds() / 60.0
-        should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min
+        should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min or bool(s.get("_fast_confirmed"))
         if not should_fire:
             continue
 
@@ -1049,6 +1440,14 @@ class AlertEngine:
             await run_new_device_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("new-device watchdog error: %s", e, exc_info=True)
+        try:
+            await hyperv_vm_state_tick(self.db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("hyperv-vm watchdog error: %s", e, exc_info=True)
+        try:
+            await run_backbone_watchdog(self.db, cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backbone watchdog error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,

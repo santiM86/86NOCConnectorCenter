@@ -1262,6 +1262,11 @@ async def _detect_wan_ip_change(client_id: str, expected_ips: set):
         }
         try:
             await insert_alert_if_emit(db, _alert)
+            try:
+                from alert_engine import notify_alert_telegram
+                await notify_alert_telegram(db, _alert)
+            except Exception:
+                pass
         except Exception:
             pass
 

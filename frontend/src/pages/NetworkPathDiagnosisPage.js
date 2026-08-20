@@ -146,7 +146,7 @@ export default function NetworkPathDiagnosisPage() {
             <Input value={probeLabel} onChange={(e) => setProbeLabel(e.target.value)} className="mt-1 h-9 text-xs" data-testid="probe-label-input" />
           </div>
           <Button onClick={genProbeToken} disabled={genBusy} size="sm" className="h-9" data-testid="probe-create-token-btn">
-            <KeyRound size={14} className="mr-1" /> {genBusy ? "Creo…" : "Crea token agent-sonda"}
+            <KeyRound size={14} className="mr-1" /> {genBusy ? "Creo…" : "Genera comando installazione"}
           </Button>
         </div>
       </div>
@@ -254,43 +254,37 @@ export default function NetworkPathDiagnosisPage() {
         <DialogContent className="max-w-2xl" data-testid="probe-token-dialog">
           <DialogHeader>
             <DialogTitle className="text-sm flex items-center gap-2">
-              <KeyRound size={16} className="text-amber-400" /> Token agent-sonda creato
+              <KeyRound size={16} className="text-amber-400" /> Comando installazione agent-sonda
             </DialogTitle>
           </DialogHeader>
-          {genToken && (
-            <div className="space-y-3 text-xs">
-              <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-2 text-amber-200 text-[11px]">
-                ⚠️ Copia il token ora: identifica la sonda ed è mostrato solo qui. Installa su UNA
-                macchina della tua sede (Windows o Linux con <b>mtr</b>/<b>traceroute</b>).
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wider">Token</Label>
-                <div className="flex items-center gap-2 mt-1">
-                  <code className="flex-1 bg-black/30 rounded px-2 py-1.5 font-mono break-all" data-testid="probe-token-value">{genToken.token}</code>
-                  <Button size="sm" variant="outline" className="h-8" onClick={() => copyText(genToken.token)}><Copy size={13} /></Button>
+          {genToken && (() => {
+            const raw = "https://raw.githubusercontent.com/santiM86/86NOCConnectorCenter/main/noc-agent/build/install-noc-agent.ps1";
+            const wsBase = (window.location.origin || "https://argus.86bit.it").replace(/^http/, "ws");
+            const backendUrl = genToken.backend_url || `${wsBase}/api/agent/ws`;
+            const installCmd = `powershell -ExecutionPolicy Bypass -Command "iwr -useb ${raw} -OutFile $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1 -Token '${genToken.token}' -ClientId '${genToken.client_id}' -BackendUrl '${backendUrl}' -Role master"`;
+            return (
+              <div className="space-y-3 text-xs">
+                <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-2 text-amber-200 text-[11px]">
+                  ⚠️ Esegui in <b>PowerShell come Amministratore</b> su UNA macchina Windows della tua sede/NOC.
+                  Il token è valido solo per questa sonda. Non condividerlo.
                 </div>
-              </div>
-              <div>
-                <Label className="text-[10px] uppercase tracking-wider">WS URL (backend)</Label>
-                <div className="flex items-center gap-2 mt-1">
-                  <code className="flex-1 bg-black/30 rounded px-2 py-1.5 font-mono break-all" data-testid="probe-backend-url">{genToken.backend_url}</code>
-                  <Button size="sm" variant="outline" className="h-8" onClick={() => copyText(genToken.backend_url)}><Copy size={13} /></Button>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label className="text-[10px] uppercase tracking-wider flex items-center gap-1"><Download size={12} /> Installazione (PowerShell)</Label>
+                    <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => copyText(installCmd)} data-testid="probe-install-copy-btn">
+                      <Copy size={12} className="mr-1" /> Copia
+                    </Button>
+                  </div>
+                  <code className="block bg-black/40 rounded px-3 py-2.5 font-mono break-all text-[11px] leading-relaxed text-emerald-200 border border-[var(--bg-border)]" data-testid="probe-install-cmd">
+                    {installCmd}
+                  </code>
                 </div>
-              </div>
-              <div className="rounded-lg bg-black/20 border border-[var(--bg-border)] p-2.5">
-                <p className="text-[11px] font-semibold text-[var(--text-primary)] mb-1 flex items-center gap-1"><Download size={12} /> Come installare la sonda</p>
-                <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
-                  Installa l'agent con il tuo <b>installer standard</b> (<span className="font-mono">install-noc-agent.ps1</span> su Windows,
-                  oppure il pacchetto Linux) usando <b>questo token</b> e il <b>WS URL</b> qui sopra, esattamente come per gli agent dei clienti.
-                  <br />⚠️ Sulla macchina-sonda Linux installa prima <span className="font-mono">mtr</span> o <span className="font-mono">traceroute</span>;
-                  su Windows è già presente <span className="font-mono">tracert</span>. Serve una build dell'agent che includa il comando <span className="font-mono">net_trace</span>.
+                <p className="text-[10px] text-[var(--text-secondary)]">
+                  Stessa installazione degli agent dei clienti. Dopo l'esecuzione la sonda apparirà tra gli agent connessi e potrai selezionarla qui sopra per lanciare i trace.
                 </p>
               </div>
-              <p className="text-[10px] text-[var(--text-secondary)]">
-                Dopo l'installazione la sonda apparirà tra gli agent connessi e potrai selezionarla qui sopra per lanciare i trace.
-              </p>
-            </div>
-          )}
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>
