@@ -37,6 +37,49 @@ export default function AgentsPage() {
   const [ipHistory, setIpHistory] = useState(null);   // {agent, changes} | null
   const [ipHistoryLoading, setIpHistoryLoading] = useState(false);
 
+  const [showInstall, setShowInstall] = useState(false);
+  const [instClient, setInstClient] = useState("");
+  const [instRole, setInstRole] = useState("master");
+  const [instLabel, setInstLabel] = useState("");
+  const [instVersion, setInstVersion] = useState("v4.25.1");
+  const [instBusy, setInstBusy] = useState(false);
+  const [instResult, setInstResult] = useState(null);
+
+  const generateInstall = async () => {
+    setInstBusy(true);
+    setInstResult(null);
+    try {
+      const res = await axios.get(`${API}/clients/${instClient}`);
+      const clientData = res.data;
+      if (!clientData || !clientData.api_key) {
+        toast.error("Errore: cliente non trovato o api_key mancante");
+        return;
+      }
+      const wsBase = (window.location.origin || "https://argus.86bit.it").replace(/^http/, "ws");
+      const raw = "https://raw.githubusercontent.com/santiM86/86NOCConnectorCenter/main/noc-agent/build/install-noc-agent.ps1";
+      let cmd = `powershell -ExecutionPolicy Bypass -Command "iwr -useb ${raw} -OutFile $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1 -Token '${clientData.api_key}' -ClientId '${instClient}' -BackendUrl '${wsBase}/api/agent/ws' -Role '${instRole}'`;
+      if (instLabel) {
+        cmd += ` -Label '${instLabel}'`;
+      }
+      if (instVersion !== "latest") {
+        cmd += ` -Version '${instVersion}'`;
+      }
+      cmd += `"`;
+      setInstResult({ cmd });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore recupero dati cliente");
+    } finally {
+      setInstBusy(false);
+    }
+  };
+
+  const copyInstall = () => {
+    if (instResult?.cmd) {
+      navigator.clipboard.writeText(instResult.cmd);
+      toast.success("Comando copiato negli appunti");
+    }
+  };
+
   const runTcpProbe = async (a) => {
     if (!a.public_ip) return;
     setProbing((p) => ({ ...p, [a.agent_id]: true }));
@@ -185,7 +228,7 @@ export default function AgentsPage() {
   });
   const outdatedLive = outdated.filter((a) => a.live);
 
-  const updateOne = async (a) => {
+  const updateOne = async (a, force = false) => {
     if (!a.live) {
       toast.error("L'agent non è connesso (LIVE). Aspetta che torni online e ritenta.");
       return;
@@ -194,15 +237,21 @@ export default function AgentsPage() {
       toast.error("Versione target non risolvibile: il Center non riesce a leggere l'ultima release da GitHub. Imposta AGENT_GITHUB_TOKEN nel .env del backend o forza con AGENT_LATEST_VERSION.");
       return;
     }
-    if (!confirm(`Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest}?`)) return;
+    // force = re-deploy dell'asset pubblicato corrente anche a parità di
+    // versione (es. build full installata al posto della minimal).
+    const targetV = force ? (a.agent_version || latest) : latest;
+    const msg = force
+      ? `FORZA RE-DEPLOY su ${a.hostname || a.agent_id.slice(0, 8)}?\n\nReinstalla l'asset pubblicato corrente (v${targetV}) anche se la versione installata è identica. Usalo se la build installata è quella sbagliata (es. full invece di minimal). L'agent si riavvierà.`
+      : `Aggiornare ${a.hostname || a.agent_id.slice(0, 8)} a ${latest}?`;
+    if (!confirm(msg)) return;
     setBusyIds((s) => new Set([...s, a.agent_id]));
     try {
       const r = await axios.post(`${API}/agents/bulk-update`, {
         agent_ids: [a.agent_id],
-        version: latest,
+        version: targetV,
       });
       if (r.data.sent_count > 0) {
-        toast.success(`Comando inviato a ${a.hostname || a.agent_id.slice(0, 8)}`);
+        toast.success(`${force ? "Re-deploy" : "Comando"} inviato a ${a.hostname || a.agent_id.slice(0, 8)}`);
       } else {
         toast.error(`Failed: ${(r.data.failed?.[0]?.reason) || "agent non risponde"}`);
       }
@@ -212,6 +261,32 @@ export default function AgentsPage() {
       toast.error(err.response?.data?.detail || "Errore update");
     } finally {
       setBusyIds((s) => { const x = new Set(s); x.delete(a.agent_id); return x; });
+    }
+  };
+
+  const forceRedeployFleet = async () => {
+    const liveAll = dedupedAgents.filter((a) => a.live);
+    if (liveAll.length === 0) {
+      toast.error("Nessun connector è attualmente LIVE.");
+      return;
+    }
+    if (!latest || latest === "latest") {
+      toast.error("Versione target non risolvibile dal Center (GitHub API). Imposta AGENT_GITHUB_TOKEN nel backend.");
+      return;
+    }
+    if (!confirm(`FORZA RE-DEPLOY su TUTTA la flotta: ${liveAll.length} connector LIVE.\n\nReinstalla l'asset pubblicato corrente (v${latest}) su TUTTI, anche quelli già "aggiornati" — utile per uniformare la build (es. full → minimal). Gli agent si riavvieranno.`)) return;
+    setBulkBusy(true);
+    try {
+      const r = await axios.post(`${API}/agents/bulk-update`, {
+        agent_ids: liveAll.map((a) => a.agent_id),
+        version: latest,
+      });
+      toast.success(`Re-deploy inviato a ${r.data.sent_count} connector. Failed: ${r.data.failed_count}`);
+      setTimeout(fetchAll, 5000);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Errore force re-deploy flotta");
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -388,11 +463,84 @@ export default function AgentsPage() {
             Gestione centralizzata: aggiornamenti remoti, stato live, diagnostica
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={fetchAll}
-          className="rounded-md text-xs h-8" data-testid="agents-refresh">
-          <ArrowClockwise size={14} className="mr-1.5" /> Aggiorna
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => { setShowInstall(true); setInstResult(null); }}
+            className="rounded-md text-xs h-8 bg-indigo-500/90 hover:bg-indigo-500 text-white font-bold" data-testid="open-install-modal-btn">
+            <PlugsConnected size={14} className="mr-1.5" /> Installa connector
+          </Button>
+          <Button variant="outline" size="sm" onClick={fetchAll}
+            className="rounded-md text-xs h-8" data-testid="agents-refresh">
+            <ArrowClockwise size={14} className="mr-1.5" /> Aggiorna
+          </Button>
+        </div>
       </div>
+
+      {/* Modale: genera comando d'installazione per un nuovo connector */}
+      {showInstall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" data-testid="install-modal"
+          onClick={() => setShowInstall(false)}>
+          <div className="noc-panel w-full max-w-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h2 className="font-heading text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <PlugsConnected size={18} /> Installa nuovo connector
+              </h2>
+              <button onClick={() => { setShowInstall(false); setInstResult(null); }} className="p-1.5 rounded hover:bg-white/5" data-testid="install-modal-close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Cliente</span>
+                <select value={instClient} onChange={(e) => { setInstClient(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-client-select">
+                  <option value="">— seleziona —</option>
+                  {Object.entries(clients).map(([cid, name]) => (
+                    <option key={cid} value={cid}>{name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Ruolo</span>
+                <select value={instRole} onChange={(e) => { setInstRole(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-role-select">
+                  <option value="master">master</option>
+                  <option value="scanner">scanner</option>
+                </select>
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Etichetta (opzionale)</span>
+                <input value={instLabel} onChange={(e) => setInstLabel(e.target.value)} placeholder="es. SRV principale"
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-label-input" />
+              </label>
+              <label className="text-xs text-[var(--text-secondary)] space-y-1">
+                <span>Versione</span>
+                <select value={instVersion} onChange={(e) => { setInstVersion(e.target.value); setInstResult(null); }}
+                  className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-[var(--text-primary)]" data-testid="install-version-select">
+                  <option value="v4.25.1">v4.25.1 (consigliata)</option>
+                  <option value="latest">latest</option>
+                </select>
+              </label>
+            </div>
+            <Button size="sm" onClick={generateInstall} disabled={instBusy || !instClient}
+              className="rounded-md h-8 text-xs bg-indigo-500/90 hover:bg-indigo-500 text-white font-bold" data-testid="install-generate-btn">
+              {instBusy ? "Genero…" : "Genera comando (emette token)"}
+            </Button>
+            {instResult && (
+              <div className="space-y-2" data-testid="install-result">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-[var(--text-muted)]">Esegui in PowerShell come Amministratore sul PC del cliente:</span>
+                  <button onClick={copyInstall} className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25" data-testid="install-copy-btn">
+                    Copia
+                  </button>
+                </div>
+                <pre className="text-[10px] bg-black/40 border border-white/10 rounded p-2.5 overflow-x-auto whitespace-pre-wrap break-all text-emerald-200 font-mono" data-testid="install-command-text">{instResult.cmd}</pre>
+                <p className="text-[10px] text-amber-300/70">⚠️ Il token è valido per questo cliente. Non condividerlo. Layout uniforme: solo tray, nessuna GUI legacy.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* KPI Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -449,6 +597,31 @@ export default function AgentsPage() {
           </Button>
         </div>
       )}
+
+      {/* Force re-deploy fleet: uniforma la build su TUTTI i connector live */}
+      {liveCount > 0 && (
+        <div className="noc-panel p-3 border-sky-500/30 bg-sky-500/5 flex items-center justify-between"
+          data-testid="fleet-redeploy-banner">
+          <div className="flex items-center gap-2.5">
+            <ArrowCircleUp size={18} weight="fill" className="text-sky-400" />
+            <div>
+              <p className="text-xs text-sky-200 font-semibold">
+                Uniforma la flotta — Forza re-deploy
+              </p>
+              <p className="text-[10px] text-sky-300/70">
+                Reinstalla l'asset pubblicato corrente su tutti i {liveCount} connector LIVE, anche se già "aggiornati" (utile per allineare la build, es. full → minimal)
+              </p>
+            </div>
+          </div>
+          <Button size="sm" onClick={forceRedeployFleet} disabled={bulkBusy || liveCount === 0 || !latest || latest === "latest"}
+            className="rounded-md h-8 text-xs bg-sky-500/90 hover:bg-sky-500 text-sky-950 font-bold"
+            data-testid="fleet-redeploy-btn">
+            <ArrowCircleUp size={13} className="mr-1.5" />
+            {bulkBusy ? "Invio…" : `Forza re-deploy su ${liveCount} connector`}
+          </Button>
+        </div>
+      )}
+
 
       {/* Filters */}
       <div className="noc-panel p-3 flex flex-wrap gap-2 items-center">
@@ -813,15 +986,27 @@ export default function AgentsPage() {
                           </div>
                         ) : (
                           <>
-                            <button
-                              onClick={() => updateOne(a)}
-                              disabled={!a.live || !isOutdated || busyIds.has(a.agent_id)}
-                              className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                              title={!a.live ? "Agent offline" : !isOutdated ? "Già aggiornato" : "Aggiorna"}
-                              data-testid={`agent-update-${a.agent_id}`}>
-                              <ArrowCircleUp size={10} className="inline mr-0.5" />
-                              {busyIds.has(a.agent_id) ? "…" : "Update"}
-                            </button>
+                            {isOutdated ? (
+                              <button
+                                onClick={() => updateOne(a)}
+                                disabled={!a.live || busyIds.has(a.agent_id)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border border-amber-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={!a.live ? "Agent offline" : "Aggiorna"}
+                                data-testid={`agent-update-${a.agent_id}`}>
+                                <ArrowCircleUp size={10} className="inline mr-0.5" />
+                                {busyIds.has(a.agent_id) ? "…" : "Update"}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => updateOne(a, true)}
+                                disabled={!a.live || busyIds.has(a.agent_id)}
+                                className="text-[10px] px-2 py-0.5 rounded bg-zinc-500/10 text-zinc-300 hover:bg-amber-500/20 hover:text-amber-300 border border-zinc-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={!a.live ? "Agent offline" : "Forza re-deploy: reinstalla l'asset pubblicato corrente anche se la versione è identica (utile se la build installata è quella sbagliata, es. full vs minimal)"}
+                                data-testid={`agent-force-redeploy-${a.agent_id}`}>
+                                <ArrowCircleUp size={10} className="inline mr-0.5" />
+                                {busyIds.has(a.agent_id) ? "…" : "Forza re-deploy"}
+                              </button>
+                            )}
                             <button
                               onClick={() => runDiagnostics(a)}
                               disabled={!a.live || busyIds.has(a.agent_id)}
