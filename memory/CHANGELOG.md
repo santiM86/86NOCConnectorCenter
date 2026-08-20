@@ -6000,3 +6000,13 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Verificato live: GET /radar/annotations/outages (globale + filtrato asn/location) → success:True.
 - La correlazione outage (isp_outage.py) ora usa 3 fonti: IODA + RIPEstat + Cloudflare Radar.
 - ⚠️ PRODUZIONE: impostare la stessa variabile CLOUDFLARE_RADAR_TOKEN nell'ambiente di deploy (i secret .env non vanno su GitHub).
+
+## 2026-06 (quater) — Early-warning OUTAGE OPERATORE proattivo
+- **NEW** `run_isp_outage_watch()` in external_monitor.py: task periodico (300s, via coordinator.schedule) che:
+  1. raggruppa i clienti per ASN operatore (geo dell'IP pubblico dei wan_targets abilitati),
+  2. per ogni ASN chiama `check_isp_outage` (IODA/RIPEstat/Cloudflare),
+  3. se outage DIFFUSO nuovo → crea alert (source_type=isp_outage_watch, client_id=None, affected_clients[]) + Telegram proattivo via notify_alert_telegram ("le linee potrebbero cadere a breve"),
+  4. idempotente per ASN via db.isp_outage_state, con AUTO-RECOVERY (resolve alert + telegram rientro).
+- Severità: critical se bgp_withdrawn/national, altrimenti high.
+- Testato: rami nuovo-outage / idempotenza / recovery verificati con simulazione (patch check_isp_outage); ciclo live confermato ("2 operatori controllati, 0 outage attivi"). Telegram rispetta config globale (no-op se disabilitato).
+- Nessuna modifica frontend: gli alert compaiono nel feed Alert + Telegram.

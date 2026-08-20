@@ -826,7 +826,136 @@ async def start_probe_scheduler():
     """Avvia il ciclo di probe ogni 30 secondi con lock distribuito."""
     from middleware.task_coordinator import coordinator
     coordinator.schedule("wan_probe", run_probe_cycle, 30)
-    logger.info("External WAN probe scheduler registered (interval: 30s)")
+    # Early-warning: sorveglia gli outage DIFFUSI degli operatori dei clienti
+    # (IODA/RIPEstat/Cloudflare) ogni 5 minuti e avvisa PRIMA che cada la linea.
+    coordinator.schedule("isp_outage_watch", run_isp_outage_watch, 300)
+    logger.info("External WAN probe scheduler registered (interval: 30s) + ISP outage watch (300s)")
+
+
+_isp_watch_running = False
+
+
+async def run_isp_outage_watch():
+    """Rileva outage DIFFUSI sugli operatori (ASN) che servono i clienti e invia
+    un alert Telegram PROATTIVO prima che la singola linea cada. Idempotente per
+    ASN (stato in db.isp_outage_state) con auto-recovery."""
+    global _isp_watch_running
+    if _isp_watch_running:
+        return
+    _isp_watch_running = True
+    try:
+        from isp_outage import check_isp_outage, _asn_num
+        targets = await db.wan_targets.find({"enabled": True}, {"_id": 0}).to_list(500)
+        if not targets:
+            return
+        # 1) Raggruppa i clienti per ASN dell'operatore (via geo dell'IP pubblico)
+        carriers: dict = {}
+        for t in targets:
+            ip = t.get("public_ip")
+            cid = t.get("client_id")
+            if not ip or not cid:
+                continue
+            try:
+                geo = await _geoip_cached(ip)
+            except Exception:
+                geo = None
+            asn = (geo or {}).get("asn")
+            if not asn or _asn_num(asn) is None:
+                continue
+            key = f"AS{_asn_num(asn)}"
+            entry = carriers.setdefault(key, {
+                "asn": key, "isp_name": (geo or {}).get("asn_name") or (geo or {}).get("isp"),
+                "country": (geo or {}).get("country_code"), "clients": {},
+            })
+            if cid not in entry["clients"]:
+                c = await db.clients.find_one({"id": cid}, {"_id": 0, "name": 1})
+                entry["clients"][cid] = {
+                    "client_id": cid, "name": (c or {}).get("name") or cid,
+                    "public_ip": ip, "label": t.get("label"),
+                }
+        if not carriers:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # 2) Per ogni ASN: correla outage esterno + gestisci stato/alert/recovery
+        for key, entry in carriers.items():
+            try:
+                ext = await check_isp_outage(asn=key, isp_name=entry["isp_name"],
+                                             country_code=entry["country"])
+            except Exception as e:  # noqa: BLE001
+                logger.debug("isp_outage_watch check failed %s: %s", key, e)
+                continue
+            state = await db.isp_outage_state.find_one({"asn": key}, {"_id": 0})
+            active = bool(state and state.get("active"))
+            clients = list(entry["clients"].values())
+            names = ", ".join(c["name"] for c in clients)
+            if ext.get("widespread") and not active:
+                # NUOVO outage diffuso → alert proattivo
+                alert_id = str(uuid.uuid4())
+                sev = "critical" if ext.get("bgp_withdrawn") or ext.get("national") else "high"
+                title = f"OUTAGE OPERATORE {entry['isp_name'] or key} ({key})"
+                msg = (f"⚠️ Guasto DIFFUSO rilevato sull'operatore {entry['isp_name'] or key} ({key}).\n"
+                       f"{ext.get('summary', '')}\n"
+                       f"Clienti potenzialmente impattati ({len(clients)}): {names}.\n"
+                       f"➡️ Le linee di questi clienti potrebbero cadere a breve.")
+                if ext.get("signals"):
+                    msg += "\n\nSegnali: " + " | ".join(ext["signals"])
+                dd = next((l["url"] for l in ext.get("external_links", []) if "downdetector" in l["url"].lower()), None)
+                if dd:
+                    msg += f"\nDowndetector: {dd}"
+                alert_doc = {
+                    "id": alert_id, "client_id": None, "severity": sev,
+                    "source_type": "isp_outage_watch",
+                    "title": title, "message": msg, "status": "active",
+                    "created_at": now_iso, "isp_outage": ext,
+                    "affected_clients": clients,
+                }
+                await insert_alert_if_emit(db, alert_doc)
+                try:
+                    from alert_engine import notify_alert_telegram
+                    tg_doc = dict(alert_doc)
+                    tg_doc["client_name"] = f"{entry['isp_name'] or key} — {len(clients)} clienti"
+                    await notify_alert_telegram(db, tg_doc)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("isp_outage_watch telegram failed %s: %s", key, e)
+                await db.isp_outage_state.update_one(
+                    {"asn": key},
+                    {"$set": {"asn": key, "isp_name": entry["isp_name"], "country": entry["country"],
+                              "active": True, "alert_id": alert_id, "sources": ext.get("sources"),
+                              "clients": clients, "first_seen": now_iso, "last_seen": now_iso}},
+                    upsert=True)
+                logger.warning("[isp-outage] NUOVO outage diffuso %s (%s) — %d clienti",
+                               key, entry["isp_name"], len(clients))
+            elif ext.get("widespread") and active:
+                await db.isp_outage_state.update_one({"asn": key}, {"$set": {"last_seen": now_iso}})
+            elif not ext.get("widespread") and active:
+                # RECOVERY: outage rientrato
+                await db.alerts.update_many(
+                    {"source_type": "isp_outage_watch", "status": "active",
+                     "isp_outage.asn": key},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}})
+                await db.isp_outage_state.update_one(
+                    {"asn": key}, {"$set": {"active": False, "resolved_at": now_iso}})
+                try:
+                    from alert_engine import notify_alert_telegram
+                    await notify_alert_telegram(db, {
+                        "id": str(uuid.uuid4()), "client_id": None, "severity": "low",
+                        "source_type": "isp_outage_watch",
+                        "title": f"RIENTRO OUTAGE {entry['isp_name'] or key} ({key})",
+                        "message": (f"✅ L'outage diffuso sull'operatore {entry['isp_name'] or key} ({key}) "
+                                    f"risulta RIENTRATO dalle fonti esterne."),
+                        "client_name": f"{entry['isp_name'] or key}",
+                        "created_at": now_iso,
+                    })
+                except Exception:
+                    pass
+                logger.info("[isp-outage] outage %s rientrato", key)
+        active_cnt = await db.isp_outage_state.count_documents({"active": True})
+        logger.info("[isp-outage] watch completato: %d operatori controllati, %d outage diffusi attivi",
+                    len(carriers), active_cnt)
+    except Exception as e:  # noqa: BLE001
+        logger.error("isp_outage_watch cycle error: %s", e)
+    finally:
+        _isp_watch_running = False
 
 
 # ==================== API ENDPOINTS ====================
