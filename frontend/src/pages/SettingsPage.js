@@ -261,6 +261,20 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
               <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">Correlazione Outage ISP (IODA / RIPEstat / Cloudflare Radar)</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Stabilisce se un disservizio è un guasto DIFFUSO dell'operatore o ISOLATO alla sede. Alimenta "⚖️ Diagnosi colpa" (WAN) e gli alert Telegram proattivi. Verifica stato fonti e token Cloudflare.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/outage-sources")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-outage-sources-btn">
+                Gestisci
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
                 <p className="text-[var(--text-primary)] text-xs font-medium">Cifratura &amp; Master Key</p>
                 <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
                   AES-256-GCM, salt random per deployment, 600k iter PBKDF2. Migrazione legacy + rotazione master key.

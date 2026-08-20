@@ -6010,3 +6010,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Severità: critical se bgp_withdrawn/national, altrimenti high.
 - Testato: rami nuovo-outage / idempotenza / recovery verificati con simulazione (patch check_isp_outage); ciclo live confermato ("2 operatori controllati, 0 outage attivi"). Telegram rispetta config globale (no-op se disabilitato).
 - Nessuna modifica frontend: gli alert compaiono nel feed Alert + Telegram.
+
+## 2026-06 (quinquies) — Pagina visibile "Correlazione Outage ISP" (Impostazioni)
+- **NEW** endpoint `GET /api/external-monitor/outage-sources/status?test=true` (stato+ping live IODA/RIPEstat/Cloudflare, active_outages, watch_interval) e `POST /api/external-monitor/outage-sources/test?asn=` (verdetto correlazione dal vivo).
+- **NEW** pagina `frontend/src/pages/OutageSourcesSettingsPage.jsx` (route `/settings/outage-sources`) + card in SettingsPage.js "Correlazione Outage ISP (IODA/RIPEstat/Cloudflare Radar)".
+- Mostra stato di ogni fonte (badge ATTIVA + ok verde/rosso + nota), stato token Cloudflare, contatore outage attivi, test correlazione per ASN, sezione "come funziona".
+- Testato con auth reale (login+2FA via curl): status → Cloudflare "Token valido — API raggiungibile"; test AS3269 → ISOLATO. Screenshot UI OK (3 fonti verdi).
+- Così l'utente VEDE l'integrazione Cloudflare in Impostazioni (prima era solo in .env / nel verdetto WAN).
