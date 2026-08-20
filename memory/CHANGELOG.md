@@ -1,3 +1,41 @@
+# 2026-06 — FIX TV: tutti i clienti mostravano "NO SONDA" (fonte heartbeat sbagliata)
+
+## Problema segnalato
+Sulla TV di produzione TUTTI i clienti apparivano "NO SONDA" (e quindi "tutto
+offline"), pur arrivando dati reali (WAN OK, latenze, poll, alert).
+
+## Root cause
+`routes/tv_dashboard.py` calcolava `connector_online` leggendo la collezione
+LEGACY `connector_status`. Gli agent v4 però scrivono l'heartbeat in
+`managed_agents` (`last_heartbeat_at` / `connected`), NON in `connector_status`
+(aggiornata solo dai vecchi connector v3). Risultato: `connector_status` vuota/
+stantia → `connector_online=False` per ogni cliente → "NO SONDA" ovunque.
+
+## Fix
+`tv_dashboard`: `connector_online` ora deriva PRIMARIAMENTE da `managed_agents` —
+sonda ONLINE se il cliente ha almeno un agent `connected=True` o con
+`last_heartbeat_at`/`last_seen_at` < 5 min. Fallback legacy su `connector_status`
+mantenuto per i connector v3. Anche `connector_version` presa da `agent_version`.
+
+## Testing
+- curl locale: impostando un heartbeat recente in `managed_agents`, l'endpoint
+  restituisce `connector_online=True` (prima False) + versione 4.30.1. Endpoint
+  200, nessun errore. Stato di test ripristinato.
+
+## Note per l'utente
+- Lo screenshot era della PRODUZIONE (clienti Galvan/CGE/… non presenti in preview,
+  che ha solo dati di test vecchi): impossibile riprodurre 1:1 qui, fix fatto sul
+  codice + verificato via curl.
+- I conteggi OFFLINE per-dispositivo derivano dai poll reali (`device_poll_status.
+  reachable`). Dopo il redeploy, se qualche cliente mostra ancora offline errati a
+  sonda ONLINE, servono esempi specifici (cliente + dispositivo) per indagare.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy backend.
+
+---
+
+
+
 # 2026-06 — TV wallboard: popup GRANDI centrali per allarmi critici + suono
 
 ## Richiesta utente
