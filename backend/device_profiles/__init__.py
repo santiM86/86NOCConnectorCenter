@@ -782,7 +782,6 @@ PROFILES: list[dict[str, Any]] = [
     # =====================================================================
     # MULTI-VENDOR PRINTER PROFILES — RFC 3805 Printer-MIB compliant
     # =====================================================================
-    # Tutti i profili stampante usano la Printer-MIB standard (RFC 3805) per
     # garantire compatibilita' cross-vendor: hrPrinterStatus per stato,
     # prtMarkerLifeCount per contatori pagine, prtMarkerSuppliesLevel /
     # prtMarkerSuppliesMaxCapacity per livelli consumabili. Gli enterprise OID
@@ -990,8 +989,6 @@ PROFILES: list[dict[str, Any]] = [
 
     # ---------------- Generic SNMP fallback ----------------
     {
-        "key": "generic_snmp",
-        "vendor": "Generic",
         "family": "generic",
         "label": "Device SNMP generico (fallback)",
         "description": "Fallback per device senza fingerprint specifico. Usa solo OID standard MIB-II.",
