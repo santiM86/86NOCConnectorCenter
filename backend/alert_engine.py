@@ -34,7 +34,16 @@ import liveness_resolver as lr
 
 logger = logging.getLogger("alert_engine")
 
-CHECK_INTERVAL_SECONDS = 60
+CHECK_INTERVAL_SECONDS = 20  # v2026-06 SPEED: era 60. Rete di sicurezza; il down
+                             # dei device VITALI e' comunque event-driven (agent_ws).
+
+# v2026-06 SPEED — rilevazione RAPIDA dei device VITALI (switch/firewall/server).
+# Quando il poll DIRETTO (ICMP/SNMP) di un device vitale fallisce per >=2 cicli
+# consecutivi (~30s) ed e' FRESCO, l'evidenza L2 (FDB/ARP) del suo MAC — che
+# altrimenti lo terrebbe "healthy" fino a 15 min — viene IGNORATA e l'alert
+# scatta subito (bypassa il gate temporale vital_warn_minutes).
+VITAL_L2_FRESH_SECONDS = 120   # il poll diretto deve essere recente per fidarsi
+VITAL_FAST_FAILURES = 2        # 2 poll ICMP falliti consecutivi (~30s)
 
 SEVERITY_RANK_LOCAL = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -460,6 +469,24 @@ async def _best_poll_record(records: list) -> Optional[dict]:
     return sorted(records, key=key, reverse=True)[0]
 
 
+def _vital_direct_down(md: Dict[str, Any], pd: Optional[Dict[str, Any]], now: datetime) -> bool:
+    """True se un device VITALE risulta giu' dal suo poll DIRETTO (ICMP/SNMP)
+    in modo sostenuto e FRESCO: >= VITAL_FAST_FAILURES fallimenti consecutivi
+    e ultimo poll entro VITAL_L2_FRESH_SECONDS. In tal caso l'evidenza L2
+    (FDB/ARP stantia del suo MAC) NON deve piu' tenerlo 'healthy'."""
+    if not pd or pd.get("reachable"):
+        return False
+    last = pd.get("last_ping_at") or pd.get("last_poll")
+    lp = _parse_dt(last)
+    if not lp or (now - lp).total_seconds() > VITAL_L2_FRESH_SECONDS:
+        return False  # poll non fresco → non forziamo (evita falsi da dati vecchi)
+    try:
+        consec = int(md.get("consecutive_ping_failures") or 0)
+    except (TypeError, ValueError):
+        consec = 0
+    return consec >= VITAL_FAST_FAILURES
+
+
 async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     """Correlation-based watchdog: incrocia PING+DATTO+L2+WAN+iLO per dedurre
     la causa reale ed evitare falsi positivi. Con soppressione topologica
@@ -472,7 +499,8 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         {"$or": [{"is_vital": True}, {"device_type": {"$in": families}}, {"hyperv_alert_on_off": True}]},
         {"_id": 0, "client_id": 1, "ip": 1, "ip_address": 1, "name": 1, "device_name": 1,
          "device_type": 1, "mac": 1, "mac_address": 1, "hostname": 1, "serial": 1,
-         "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1},
+         "datto_uid": 1, "source": 1, "is_vital": 1, "hyperv_alert_on_off": 1,
+         "consecutive_ping_failures": 1},
     ).to_list(10000)
     if not targets:
         return 0
@@ -502,6 +530,13 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             continue
         fam = ce.device_family(md)
         s = ce.gather_signals(md, poll_by_ip.get(ip), ctx)
+        # v2026-06 SPEED: per i device VITALI/infrastruttura con down DIRETTO
+        # confermato (>=2 poll falliti, fresco) ignoriamo l'evidenza L2 stantia
+        # e marchiamo la conferma rapida → l'alert bypassa il gate temporale.
+        if fam in ("switch", "firewall", "server") or md.get("is_vital"):
+            if _vital_direct_down(md, poll_by_ip.get(ip), now):
+                s["l2_alive"] = False
+                s["_fast_confirmed"] = True
         if fam == "server":
             v = ce.verdict_server(s, None)
             # iLO probe SOLO se down + Datto offline + credenziali iLO presenti
@@ -689,7 +724,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                      "alert_id": None, "severity": None}
         first_off = _parse_dt(state.get("first_offline_at")) or now
         elapsed_min = (now - first_off).total_seconds() / 60.0
-        should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min
+        should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min or bool(s.get("_fast_confirmed"))
         if not should_fire:
             continue
 

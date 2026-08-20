@@ -1,3 +1,46 @@
+# 2026-06 — Allerta "switch/device VITALE giù" QUASI-ISTANTANEA (fix ritardo)
+
+## Incident utente
+Due switch di un cliente hanno perso corrente al mattino ma l'allarme è arrivato
+tardi. Richiesta: rilevazione praticamente immediata.
+
+## Root cause (3 ritardi sommati)
+1. **Finestra evidenza L2 = 15 min**: uno switch spento resta nelle tabelle FDB/ARP
+   → `l2_alive=True` → verdetto "healthy" → NESSUN alert fino a ~15 min.
+2. **Tick motore alert = 60s**.
+3. Nessun trigger event-driven per il down del singolo device vitale (solo per il
+   blackout WAN). In più il gate temporale `vital_warn_minutes` (3 min) ritardava
+   ancora gli alert a bassa confidenza (switch_unreachable conf 75).
+
+## Fix (scelte utente: event-driven ON, conferma ~30s/2 poll, tick 20s)
+- `alert_engine.py`:
+  - `CHECK_INTERVAL_SECONDS` 60→**20** (rete di sicurezza).
+  - Nuovi `VITAL_FAST_FAILURES=2`, `VITAL_L2_FRESH_SECONDS=120` + helper
+    `_vital_direct_down(md, pd, now)`: per device VITALI/infra con poll DIRETTO
+    (ICMP) fallito ≥2 volte consecutive ed entro 120s, in `run_vital_watchdog`
+    si IGNORA l'evidenza L2 stantia (`s["l2_alive"]=False`) e si marca
+    `s["_fast_confirmed"]` → l'alert **bypassa il gate `vital_warn_minutes`** e
+    scatta subito. Proiezione arricchita con `consecutive_ping_failures`.
+- `routes/agent_ws.py`: `_trigger_vital_watchdog_soon()` (throttle 8s) + hook in
+  `_bridge_ping_poll`: quando un device VITALE/infra raggiunge il 2° fail ICMP
+  consecutivo, esegue SUBITO `run_vital_watchdog` in background (event-driven),
+  senza attendere il tick.
+- Il debounce di DISPLAY (`managed_devices.status`, soglia 5) resta invariato per
+  non far lampeggiare le card; cambia solo il percorso di ALLERTA.
+
+## Testing (python -c, 3/3 PASS)
+- Switch 2 fail + evidenza L2 stantia → alert immediato (prima restava healthy 15 min).
+- Switch 1 fail → nessun alert ancora (conferma 30s non raggiunta).
+- Switch 2 fail senza L2 → alert (baseline). Backend sano, motore "interval=20s".
+
+⚠️ Sub-secondo impossibile (rilevazione a polling ~15s). Tempo tipico ora: ~30s
+(2 poll) + trigger event-driven. Attivo in PROD dopo Save to GitHub + redeploy backend
+(nessun rebuild agent Go). Vale SOLO per device vitali/infrastruttura (no stampanti).
+
+---
+
+
+
 # 2026-06 — Alert VM Hyper-V attesa accesa ma SPENTA (host raggiungibile)
 
 ## Richiesta utente

@@ -571,6 +571,34 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
             logger.warning("auto-enrichment skip client=%s err=%s", conn.client_id, _e)
 
 
+_last_vital_trigger_mono: float = 0.0
+_VITAL_TRIGGER_THROTTLE_S = 8.0
+
+
+async def _trigger_vital_watchdog_soon() -> None:
+    """v2026-06 SPEED: esegue SUBITO il watchdog dei vitali (in background) quando
+    un device vitale passa a irraggiungibile, senza attendere il tick del motore.
+    Throttle per non fare stampede quando piu' device cadono insieme (un solo run
+    copre tutti). Il watchdog fa dedup/soppressione/auto-recovery da solo."""
+    global _last_vital_trigger_mono
+    import time as _t
+    nowm = _t.monotonic()
+    if nowm - _last_vital_trigger_mono < _VITAL_TRIGGER_THROTTLE_S:
+        return
+    _last_vital_trigger_mono = nowm
+
+    async def _run():
+        try:
+            import alert_engine as _ae
+            cfg = await _ae.get_config(db)
+            await _ae.run_vital_watchdog(db, cfg)
+            logger.info("[event-driven] vital watchdog triggered (device vitale down)")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("event-driven vital watchdog failed: %s", e)
+
+    asyncio.create_task(_run())
+
+
 async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     """Bridge a PingPollResult into managed_devices.status.
 
@@ -652,11 +680,12 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
     # v4.15.x ANTI-FLAP: alzata da 3 a 5 per ridurre falsi offline su
     # reti con packet loss occasionale (WiFi, link congestionati).
     # 5 cycle a 60s = 5 minuti di fail consecutivi reali.
+    vital_just_down = False
     try:
         cursor = db.managed_devices.find(
             {"client_id": conn.client_id, "ip": target},
             {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1,
-             "last_seen_at": 1},
+             "last_seen_at": 1, "is_vital": 1, "device_type": 1},
         )
         failure_threshold = 5
         async for dev in cursor:
@@ -718,6 +747,15 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                     else:
                         update["status"] = prev_status or "online"
                         update["degraded"] = True
+                    # v2026-06 SPEED: device VITALE/infrastruttura che ha appena
+                    # raggiunto la soglia di conferma rapida (2 poll ICMP falliti
+                    # ~30s) → sveglia SUBITO il watchdog (event-driven).
+                    dtype = (dev.get("device_type") or "").lower()
+                    is_infra = bool(dev.get("is_vital")) or any(
+                        k in dtype for k in ("switch", "firewall", "router",
+                                             "gateway", "server", "nas", "hypervisor"))
+                    if is_infra and new_failures == 2:
+                        vital_just_down = True
             # Use the unique `id` if present, otherwise match by (client_id, ip)
             # so devices indexed only by _id (no `id` field) are still handled.
             dev_id = dev.get("id")
@@ -730,6 +768,13 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 logger.warning("ping_poll: managed_devices update failed ip=%s err=%s", target, e)
     except Exception as e:
         logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
+    # v2026-06 SPEED: trigger event-driven del watchdog vitali (fuori dal try
+    # del reconcile, throttled) quando un device vitale ha appena confermato il down.
+    if vital_just_down:
+        try:
+            await _trigger_vital_watchdog_soon()
+        except Exception:
+            pass
     # v4.18.x DIAGNOSTIC
     _bridge_stat_tick(conn.agent_id, "ping_poll", target=target, reachable=reachable)
     try:
