@@ -6017,3 +6017,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Mostra stato di ogni fonte (badge ATTIVA + ok verde/rosso + nota), stato token Cloudflare, contatore outage attivi, test correlazione per ASN, sezione "come funziona".
 - Testato con auth reale (login+2FA via curl): status → Cloudflare "Token valido — API raggiungibile"; test AS3269 → ISOLATO. Screenshot UI OK (3 fonti verdi).
 - Così l'utente VEDE l'integrazione Cloudflare in Impostazioni (prima era solo in .env / nel verdetto WAN).
+
+## 2026-06 (sexies) — Token Cloudflare inseribile da UI (cifrato in DB)
+- **NEW** endpoint `PUT /api/external-monitor/outage-sources/cloudflare-token` (admin): verifica il token contro Cloudflare e lo salva cifrato (AES-256-GCM, security_manager) in db.settings key `cloudflare_radar_token`. `DELETE` per rimuoverlo.
+- `isp_outage._get_cf_token()`: legge il token da DB (cifrato) con fallback a env `CLOUDFLARE_RADAR_TOKEN`.
+- Status endpoint mostra `configured/source(db|env)/masked`.
+- UI `OutageSourcesSettingsPage.jsx`: card "Token Cloudflare Radar" con input password, "Salva e verifica", "Rimuovi", badge CONFIGURATO(UI/env)+masked, link a dash.cloudflare API tokens.
+- Rimosso CLOUDFLARE_RADAR_TOKEN da .env → unica fonte gestita da UI/DB. Testato end-to-end (PUT→db, status source=db ok, screenshot UI).

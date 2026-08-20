@@ -1738,7 +1738,20 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
     Con test=true esegue una verifica live rapida di ciascuna fonte."""
     import os as _os
     import aiohttp
-    cf_token = bool(_os.environ.get("CLOUDFLARE_RADAR_TOKEN"))
+    from isp_outage import _get_cf_token
+    cf_tok = await _get_cf_token()
+    cf_token = bool(cf_tok)
+    cf_from_db = False
+    try:
+        _d = await db.settings.find_one({"key": "cloudflare_radar_token"}, {"_id": 0, "value": 1})
+        cf_from_db = bool(_d and _d.get("value"))
+    except Exception:
+        cf_from_db = False
+    cf_masked = ("…" + cf_tok[-4:]) if cf_tok and len(cf_tok) >= 4 else None
+    if cf_token:
+        cf_note = f"Token configurato ({'UI/DB' if cf_from_db else 'env'})" + (f" · {cf_masked}" if cf_masked else "")
+    else:
+        cf_note = "Token non configurato — inseriscilo qui sotto"
     sources = {
         "ioda": {"name": "IODA (Georgia Tech)", "kind": "BGP + active probing + darknet",
                  "requires_key": False, "enabled": True, "ok": None, "note": None},
@@ -1746,7 +1759,8 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                      "requires_key": False, "enabled": True, "ok": None, "note": None},
         "cloudflare": {"name": "Cloudflare Radar", "kind": "Annotazioni outage per ASN/Paese",
                        "requires_key": True, "enabled": cf_token, "ok": None,
-                       "note": "Token configurato" if cf_token else "Token non configurato (CLOUDFLARE_RADAR_TOKEN)"},
+                       "configured": cf_token, "source": ("db" if cf_from_db else ("env" if cf_token else None)),
+                       "masked": cf_masked, "note": cf_note},
     }
     if test:
         import time as _t
@@ -1776,7 +1790,7 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                 if cf_token:
                     try:
                         async with s.get("https://api.cloudflare.com/client/v4/radar/annotations/outages?limit=1&dateRange=7d&format=json",
-                                         headers={"Authorization": f"Bearer {_os.environ['CLOUDFLARE_RADAR_TOKEN']}"}) as r:
+                                         headers={"Authorization": f"Bearer {cf_tok}"}) as r:
                             j = await r.json(content_type=None)
                             ok = bool(j.get("success"))
                             sources["cloudflare"]["ok"] = ok
@@ -1807,6 +1821,51 @@ async def outage_sources_test(asn: str = "AS3269", current_user: dict = Depends(
         country = "IT"
     res = await check_isp_outage(asn=asn, isp_name=None, country_code=country)
     return res
+
+
+class CloudflareTokenRequest(BaseModel):
+    token: str
+
+
+@router.put("/outage-sources/cloudflare-token")
+async def set_cloudflare_token(req: CloudflareTokenRequest, current_user: dict = Depends(get_current_user)):
+    """Salva (cifrato AES-256-GCM) il token Cloudflare Radar in db.settings."""
+    require_admin(current_user)
+    from security import security_manager
+    tok = (req.token or "").strip()
+    if len(tok) < 20:
+        raise HTTPException(status_code=400, detail="Token non valido (troppo corto)")
+    # test rapido di validità prima di salvare
+    import aiohttp
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get("https://api.cloudflare.com/client/v4/radar/annotations/outages?limit=1&dateRange=7d&format=json",
+                             headers={"Authorization": f"Bearer {tok}"}) as r:
+                j = await r.json(content_type=None)
+                if not j.get("success"):
+                    raise HTTPException(status_code=400,
+                                        detail="Token rifiutato da Cloudflare (verifica permesso Account > Radar > Read)")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Impossibile verificare il token: {e}")
+    encrypted = security_manager.encrypt_credential(tok)
+    await db.settings.update_one(
+        {"key": "cloudflare_radar_token"},
+        {"$set": {"key": "cloudflare_radar_token", "value": encrypted,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "masked": "…" + tok[-4:]}
+
+
+@router.delete("/outage-sources/cloudflare-token")
+async def delete_cloudflare_token(current_user: dict = Depends(get_current_user)):
+    """Rimuove il token Cloudflare Radar dal DB (resta l'eventuale env)."""
+    require_admin(current_user)
+    await db.settings.delete_one({"key": "cloudflare_radar_token"})
+    return {"ok": True}
 
 
 async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:

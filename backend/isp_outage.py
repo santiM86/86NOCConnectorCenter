@@ -85,8 +85,24 @@ async def _ripe_announced(session, asn: int) -> Optional[bool]:
         return None
 
 
+async def _get_cf_token() -> Optional[str]:
+    """Token Cloudflare Radar: prima da DB (cifrato), poi da env."""
+    try:
+        from database import db
+        from security import security_manager
+        doc = await db.settings.find_one({"key": "cloudflare_radar_token"}, {"_id": 0, "value": 1})
+        if doc and doc.get("value"):
+            try:
+                return security_manager.decrypt_credential(doc["value"])
+            except Exception as e:  # noqa: BLE001
+                logger.debug("cloudflare token decrypt failed: %s", e)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("cloudflare token DB lookup failed: %s", e)
+    return os.environ.get("CLOUDFLARE_RADAR_TOKEN")
+
+
 async def _cf_outages(session, asn: Optional[int], country_code: Optional[str]) -> list:
-    token = os.environ.get("CLOUDFLARE_RADAR_TOKEN")
+    token = await _get_cf_token()
     if not token:
         return []
     params = "dateRange=1d&limit=20"

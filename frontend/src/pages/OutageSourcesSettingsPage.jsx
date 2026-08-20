@@ -45,6 +45,8 @@ export default function OutageSourcesSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [asn, setAsn] = useState("AS3269");
+  const [cfToken, setCfToken] = useState("");
+  const [savingToken, setSavingToken] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -60,6 +62,30 @@ export default function OutageSourcesSettingsPage() {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  const saveToken = async () => {
+    if (!cfToken || cfToken.trim().length < 20) { toast.error("Token non valido (troppo corto)"); return; }
+    setSavingToken(true);
+    try {
+      await axios.put(`${API}/api/external-monitor/outage-sources/cloudflare-token`, { token: cfToken.trim() }, { headers });
+      toast.success("Token Cloudflare salvato e verificato (cifrato)");
+      setCfToken("");
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore salvataggio token");
+    } finally { setSavingToken(false); }
+  };
+
+  const deleteToken = async () => {
+    if (!window.confirm("Rimuovere il token Cloudflare Radar? La correlazione userà solo IODA + RIPEstat.")) return;
+    try {
+      await axios.delete(`${API}/api/external-monitor/outage-sources/cloudflare-token`, { headers });
+      toast.success("Token rimosso");
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore rimozione");
+    }
+  };
 
   const runTest = async () => {
     setTesting(true); setTestResult(null);
@@ -120,14 +146,43 @@ export default function OutageSourcesSettingsPage() {
           )}
         </div>
 
-        {/* Nota Cloudflare token */}
-        {!loading && status?.sources?.cloudflare && !status.sources.cloudflare.enabled && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-            <p className="text-xs font-semibold text-amber-300 mb-1">Cloudflare Radar non attivo</p>
-            <p className="text-[11px] text-[var(--text-secondary)]">
-              Manca il token. È opzionale (IODA + RIPEstat funzionano già). Per attivarlo, imposta la variabile
-              d'ambiente <code className="font-mono text-amber-200">CLOUDFLARE_RADAR_TOKEN</code> sul server (account Cloudflare gratuito, permesso Account &gt; Radar &gt; Read).
+        {/* Gestione token Cloudflare Radar */}
+        {!loading && status?.sources?.cloudflare && (
+          <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-card)] p-4" data-testid="cloudflare-token-card">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold flex items-center gap-2">
+                Token Cloudflare Radar
+                {status.sources.cloudflare.configured
+                  ? <span className="text-[9px] px-1.5 rounded-full bg-emerald-500/15 text-emerald-300">CONFIGURATO ({status.sources.cloudflare.source === "db" ? "UI" : "env"})</span>
+                  : <span className="text-[9px] px-1.5 rounded-full bg-amber-500/15 text-amber-300">NON CONFIGURATO</span>}
+              </p>
+              {status.sources.cloudflare.masked &&
+                <code className="text-[10px] font-mono text-[var(--text-muted)]">{status.sources.cloudflare.masked}</code>}
+            </div>
+            <p className="text-[10px] text-[var(--text-muted)] mb-2">
+              Opzionale (IODA + RIPEstat funzionano già). Crea un token gratuito su Cloudflare con permesso
+              <strong> Account → Radar → Read</strong> e incollalo qui. Viene salvato cifrato (AES-256-GCM) e verificato subito.
             </p>
+            <div className="flex gap-2">
+              <Input type="password" autoComplete="off" value={cfToken} onChange={(e) => setCfToken(e.target.value)}
+                placeholder="Incolla qui il token Cloudflare Radar…"
+                className="flex-1 h-8 text-xs font-mono bg-[var(--bg-input)]" data-testid="cloudflare-token-input" />
+              <Button onClick={saveToken} disabled={savingToken || !cfToken} size="sm"
+                className="gap-1 bg-orange-600 hover:bg-orange-700 h-8" data-testid="cloudflare-token-save">
+                {savingToken ? <ArrowsClockwise size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                {savingToken ? "…" : "Salva e verifica"}
+              </Button>
+              {status.sources.cloudflare.source === "db" && (
+                <Button onClick={deleteToken} size="sm" variant="outline"
+                  className="gap-1 h-8 border-red-500/40 text-red-300 hover:bg-red-500/10" data-testid="cloudflare-token-delete">
+                  <XCircle size={14} /> Rimuovi
+                </Button>
+              )}
+            </div>
+            <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer"
+              className="text-[10px] text-sky-400 hover:underline mt-1.5 inline-block">
+              Apri la pagina API Tokens di Cloudflare ↗
+            </a>
           </div>
         )}
 
