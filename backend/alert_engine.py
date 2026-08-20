@@ -278,6 +278,76 @@ async def telegram_quiet_digest_tick(db) -> dict:
     return {"sent": len(pending)}
 
 
+async def hyperv_vm_state_tick(db) -> dict:
+    """Host Hyper-V raggiungibile ma una VM che DOVREBBE essere accesa risulta spenta.
+    'Dovrebbe essere accesa' = VM con toggle hyperv_alert_on_off attivo in CMDB.
+    Confronto stato atteso (running) vs reale riportato dall'host."""
+    def _running(vm):
+        st = str(vm.get("state") or vm.get("status") or vm.get("vm_state") or "").strip().lower()
+        return st in ("running", "on", "started", "2", "acceso")
+    emitted = 0
+    resolved = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async for st in db.backup_status.find(
+        {"hyperv_connected": True, "hyperv_vms.0": {"$exists": True}},
+        {"_id": 0, "client_id": 1, "hyperv_vms": 1},
+    ):
+        cid = st.get("client_id")
+        vms = st.get("hyperv_vms") or []
+        off_names = {v.get("name") for v in vms if v.get("name") and not _running(v)}
+        running_names = {v.get("name") for v in vms if v.get("name") and _running(v)}
+        # VM "monitorate" (devono girare) = device con hyperv_alert_on_off attivo
+        monitored = await db.managed_devices.find(
+            {"client_id": cid, "hyperv_alert_on_off": True},
+            {"_id": 0, "name": 1, "hyperv_vm_name": 1, "ip": 1},
+        ).to_list(500)
+        if not monitored:
+            continue
+        client = await db.clients.find_one({"id": cid}, {"_id": 0, "name": 1})
+        cname = (client or {}).get("name") or cid
+        for md in monitored:
+            vm_name = md.get("hyperv_vm_name") or md.get("name")
+            if not vm_name:
+                continue
+            dev_key = f"hypervvm:{cid}:{vm_name}"
+            # AUTO-RESOLVE: la VM è tornata accesa → risolvi l'alert attivo
+            if vm_name in running_names:
+                r = await db.alerts.update_many(
+                    {"client_id": cid, "source_type": "hyperv_vm_down",
+                     "device_id": dev_key, "status": "active"},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso}},
+                )
+                resolved += r.modified_count
+                continue
+            if vm_name not in off_names:
+                continue
+            exists = await db.alerts.find_one(
+                {"client_id": cid, "source_type": "hyperv_vm_down", "device_id": dev_key, "status": "active"},
+                {"_id": 0, "id": 1},
+            )
+            if exists:
+                continue
+            alert_doc = {
+                "id": str(uuid.uuid4()), "client_id": cid, "client_name": cname,
+                "device_id": dev_key, "device_ip": "",
+                "device_name": vm_name, "severity": "critical", "source_type": "hyperv_vm_down",
+                "title": f"VM Hyper-V spenta: {vm_name}",
+                "message": (f"L'host Hyper-V del cliente {cname} è raggiungibile ma la VM «{vm_name}», "
+                            f"che dovrebbe essere accesa, risulta SPENTA. Verificare/avviare la VM."),
+                "status": "active", "created_at": now_iso,
+            }
+            try:
+                if await insert_alert_if_emit(db, alert_doc):
+                    await notify_alert_telegram(db, alert_doc)
+                    emitted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[hyperv-vm] emit failed {cid}/{vm_name}: {e}")
+    if emitted or resolved:
+        logger.info(f"[hyperv-vm] emitted {emitted} VM-off alerts, resolved {resolved}")
+    return {"emitted": emitted, "resolved": resolved}
+
+
+
 async def morning_status_digest(db) -> dict:
     """Riepilogo mattutino (07:00): stato di TUTTI i clienti, mostrando SOLO
     alert critici e dispositivi down (nient'altro). In aggiunta al digest notturno."""
@@ -1240,6 +1310,10 @@ class AlertEngine:
             await run_new_device_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("new-device watchdog error: %s", e, exc_info=True)
+        try:
+            await hyperv_vm_state_tick(self.db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("hyperv-vm watchdog error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,

@@ -1,3 +1,37 @@
+# 2026-06 — Alert VM Hyper-V attesa accesa ma SPENTA (host raggiungibile)
+
+## Richiesta utente
+Distinguere lo spegnimento VOLONTARIO di una VM (nessun allarme) da un crash
+inatteso su un host Hyper-V SANO/raggiungibile. Se una VM che DEVE restare accesa
+(toggle `hyperv_alert_on_off` in CMDB) risulta spenta mentre l'host è online →
+alert CRITICO.
+
+## Implementazione (solo backend)
+- `alert_engine.py::hyperv_vm_state_tick(db)`: itera `db.backup_status` con
+  `hyperv_connected=True` e `hyperv_vms`. Per ogni VM `state` != running/on/started
+  incrocia i `managed_devices` del cliente con `hyperv_alert_on_off=True`
+  (match su `hyperv_vm_name` o `name`). Emette alert `critical`
+  `source_type="hyperv_vm_down"`, `device_id=hypervvm:<cid>:<vm>` via
+  `insert_alert_if_emit` + `notify_alert_telegram` (pipeline unificata: rispetta
+  quiet hours/severità). Dedup su alert attivo per device_key.
+- AUTO-RESOLVE: quando la VM torna `Running` l'alert attivo viene risolto
+  (`status=resolved`, `resolved_at`).
+- Agganciato a `AlertEngine.run_once()` (gira nel ciclo esistente del motore).
+
+## Testing (python -c, 4/4 PASS)
+1. VM off + monitorata → 1 alert critical emesso.
+2. Re-run → dedup, nessun duplicato.
+3. VM torna Running → auto-resolve (0 attivi).
+4. VM off ma NON monitorata (`hyperv_alert_on_off=False`) → nessun alert.
+Backend sano (health 200) dopo le modifiche.
+
+⚠️ In PROD attivo dopo Save to GitHub + redeploy backend. Nessun rebuild agent Go.
+La consegna Telegram usa la config globale già attiva (chat_id 6212726125).
+
+---
+
+
+
 # 2026-08-19 — Digest mattutino 07:00 (stato clienti, solo critici+down)
 
 ## Richiesta utente
