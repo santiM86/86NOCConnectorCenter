@@ -325,6 +325,21 @@ export default function AlertEngineSettingsPage() {
                 placeholder="-1001234567890" className="h-9 text-sm font-mono bg-[var(--bg-panel)] border-[var(--bg-border)] mt-1" data-testid="tg-chat" />
             </div>
           </div>
+          <div>
+            <Label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Invia su Telegram</Label>
+            <select
+              value={cfg.telegram_min_severity || "critical"}
+              onChange={(e) => set("telegram_min_severity", e.target.value)}
+              className="h-9 w-full sm:w-64 text-sm bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded-md px-2 mt-1 text-[var(--text-primary)]"
+              data-testid="tg-min-severity"
+            >
+              <option value="critical">Solo CRITICI (consigliato — meno rumore)</option>
+              <option value="high">Alti e Critici (più notifiche)</option>
+            </select>
+            <p className="text-[9px] text-[var(--text-muted)] mt-1">
+              Con "Solo critici" ricevi solo gli eventi gravi (es. server/sito down, blackout, C2, ransomware KEV) ed eviti decine di messaggi non urgenti.
+            </p>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={detectChats} disabled={busy === "detect"} className="h-8 gap-1 text-xs" data-testid="detect-chats-btn">
               <ArrowsClockwise size={12} /> {busy === "detect" ? "Rilevo…" : "Rileva chat"}

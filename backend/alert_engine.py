@@ -63,7 +63,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "telegram_enabled": True,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
+    # Soglia minima di severità per l'invio Telegram: "critical" (default) o "high"
+    "telegram_min_severity": "critical",
 }
+
+
+_TG_SEV_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0, "info": 0}
+
+
+def _telegram_severity_ok(cfg: Dict[str, Any], severity: str) -> bool:
+    """True se la severità dell'alert raggiunge la soglia minima Telegram configurata."""
+    min_sev = (cfg.get("telegram_min_severity") or "critical").lower()
+    return _TG_SEV_RANK.get(str(severity).lower(), 0) >= _TG_SEV_RANK.get(min_sev, 3)
 
 
 async def get_config(db) -> Dict[str, Any]:
@@ -128,7 +139,7 @@ async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, A
             logger.debug("push dispatch failed: %s", e)
     # Telegram — solo per alert rilevanti (high/critical) per evitare rumore
     if "telegram" in channels and cfg.get("telegram_enabled") and \
-       (alert_doc.get("severity") in ("high", "critical")):
+       _telegram_severity_ok(cfg, alert_doc.get("severity")):
         try:
             from telegram_notifier import send_alert_telegram
             await send_alert_telegram(
@@ -154,7 +165,7 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
     channels = cfg.get("channels") or ["push"]
     if "telegram" not in channels or not cfg.get("telegram_enabled"):
         return False
-    if alert_doc.get("severity") not in ("high", "critical"):
+    if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
         return False
     try:
         from telegram_notifier import send_alert_telegram

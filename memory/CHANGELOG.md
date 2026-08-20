@@ -1,3 +1,19 @@
+# 2026-08-19 — Telegram: soglia severità (solo CRITICAL di default)
+
+## Richiesta utente
+Inviare su Telegram solo gli alert di livello critical, per evitare decine/centinaia di messaggi non urgenti.
+
+## Implementazione
+- `alert_engine.py`: nuovo campo config `telegram_min_severity` (default **"critical"**) + helper `_telegram_severity_ok(cfg, severity)` con ranking severità.
+- Applicato ai DUE punti di invio: `_dispatch_notification` (motore) e `notify_alert_telegram` (C2/KEV/rogue/traffico/IP change). Ora inviano solo se severità ≥ soglia.
+- Frontend `AlertEngineSettingsPage.jsx`: selettore "Invia su Telegram" → "Solo CRITICI" (default) / "Alti e Critici".
+
+## Verifica
+`telegram_min_severity=critical` → high bloccato (False), critical inviato (True). Frontend compila pulito. Nessun doppio invio.
+
+---
+
+
 # 2026-08-19 — Notifiche Telegram unificate (tutti gli alert high/critical)
 
 ## Richiesta utente (opzione A)
