@@ -143,9 +143,30 @@ async def tv_dashboard_data():
     clients_raw = await db.clients.find({}, {"_id": 0, "api_key": 0}).to_list(100)
     client_name_map = {c["id"]: c["name"] for c in clients_raw}
 
-    # 2. All connector statuses
+    # 2. All connector statuses (LEGACY connector_status + agent v4 managed_agents)
     connectors = await db.connector_status.find({}, {"_id": 0}).to_list(100)
     connector_map = {c.get("client_id"): c for c in connectors}
+    # v2026-06 FIX: gli agent v4 scrivono l'heartbeat in `managed_agents`, non in
+    # `connector_status` (legacy). Senza questo, ogni cliente risultava "NO SONDA".
+    # Una sonda è ONLINE se il cliente ha almeno un agent connesso o con heartbeat
+    # recente (< 5 min) in managed_agents.
+    online_sonda_clients = set()
+    agent_version_by_client = {}
+    agents_all = await db.managed_agents.find(
+        {}, {"_id": 0, "client_id": 1, "connected": 1, "last_heartbeat_at": 1,
+             "last_seen_at": 1, "agent_version": 1, "version": 1}).to_list(5000)
+    for a in agents_all:
+        acid = a.get("client_id")
+        if not acid:
+            continue
+        hb = a.get("last_heartbeat_at") or ""
+        ls = a.get("last_seen_at") or ""
+        alive = bool(a.get("connected")) or (hb and hb > five_min_ago) or (ls and ls > five_min_ago)
+        if alive:
+            online_sonda_clients.add(acid)
+            ver = a.get("agent_version") or a.get("version")
+            if ver and acid not in agent_version_by_client:
+                agent_version_by_client[acid] = ver
 
     # 3. All device poll statuses
     all_devices = await db.device_poll_status.find({}, {"_id": 0}).to_list(2000)
@@ -234,14 +255,16 @@ async def tv_dashboard_data():
         high_count = sum(1 for a in client_alerts if a.get("severity") == "high")
 
         connector = connector_map.get(cid)
-        connector_online = False
-        connector_version = ""
+        connector_online = cid in online_sonda_clients  # v2026-06: fonte primaria managed_agents
+        connector_version = agent_version_by_client.get(cid, "")
         last_heartbeat = ""
         if connector:
             last_seen = connector.get("last_seen", "")
-            if last_seen and last_seen > five_min_ago:
+            # fallback legacy: se non risulta online da managed_agents, prova connector_status
+            if not connector_online and last_seen and last_seen > five_min_ago:
                 connector_online = True
-            connector_version = connector.get("connector_version", "")
+            if not connector_version:
+                connector_version = connector.get("connector_version", "")
             last_heartbeat = _time_ago(last_seen) if last_seen else "mai"
 
         # Offline devices with enriched data

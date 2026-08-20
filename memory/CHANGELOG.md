@@ -1,3 +1,82 @@
+# 2026-06 — FIX "unknown command net_trace": binario agent senza net_trace (VERSION non bumpata)
+
+## Problema segnalato
+Sonda installata ma: (1) non compare nel menu AGENT-SONDA, (2) la Diagnosi Percorso
+fallisce con `unknown command "net_trace"` (anche su agent già connessi, es. SRVDCGAL).
+
+## Root cause (PROVATA)
+- Release GitHub **v4.30.3 pubblicata il 2026-08-17 12:15Z**.
+- Comando **net_trace committato il 2026-08-18 11:36Z** (giorno DOPO la release).
+- `noc-agent/VERSION` è rimasto **4.30.3** → l'`auto-release-agent.yml` (trigger su
+  cambio VERSION) SALTA perché il tag v4.30.3 esiste già → **nessun nuovo binario**.
+- Quindi il binario pubblicato/installato NON contiene net_trace, mentre il sorgente
+  (main.go registra `registerNetTraceCommand`) sì. → ogni agent risponde
+  `unknown command "net_trace"`.
+
+## Fix applicato
+- `noc-agent/VERSION`: 4.30.3 → **4.30.4**.
+- `noc-agent/cmd/agent/main.go`: `Version = "4.30.4"`.
+Al prossimo push su main (Save to GitHub), `auto-release-agent.yml` builda dal main
+CORRENTE (con net_trace) e pubblica la Release **v4.30.4**. `install-noc-agent.ps1`
+scarica `releases/latest` = 4.30.4 → net_trace disponibile.
+
+## Azioni richieste all'utente (non eseguibili da qui)
+1. **Save to GitHub** (push su main) → attendere i workflow "Auto-release agent" +
+   "Release Argus Agent" → verificare che compaia la Release **v4.30.4**.
+2. **Aggiornare gli agent**: reinstallare la sonda (il comando PowerShell prende
+   latest = 4.30.4) OPPURE usare "Aggiorna connector" per il rollout remoto.
+3. Dopo l'update la Diagnosi Percorso funziona. Se la **sonda globale** ancora non
+   compare nel menu dopo la riconnessione, segnalarlo: il backend NON valida
+   `__global__` in `register_agent` (token ok) e `/api/agents` elenca tutti gli
+   agent live, quindi dovrebbe apparire; da verificare il path WS `__global__`.
+
+## Note
+- Go non è installabile nel pod → la build la fa la CI (Go 1.23). Il codice net_trace
+  è committato con test (`internal/nettrace/nettrace_test.go`). Se la CI fallisse il
+  build, correggere e ribumpare.
+
+---
+
+
+
+# 2026-06 — FIX TV: tutti i clienti mostravano "NO SONDA" (fonte heartbeat sbagliata)
+
+## Problema segnalato
+Sulla TV di produzione TUTTI i clienti apparivano "NO SONDA" (e quindi "tutto
+offline"), pur arrivando dati reali (WAN OK, latenze, poll, alert).
+
+## Root cause
+`routes/tv_dashboard.py` calcolava `connector_online` leggendo la collezione
+LEGACY `connector_status`. Gli agent v4 però scrivono l'heartbeat in
+`managed_agents` (`last_heartbeat_at` / `connected`), NON in `connector_status`
+(aggiornata solo dai vecchi connector v3). Risultato: `connector_status` vuota/
+stantia → `connector_online=False` per ogni cliente → "NO SONDA" ovunque.
+
+## Fix
+`tv_dashboard`: `connector_online` ora deriva PRIMARIAMENTE da `managed_agents` —
+sonda ONLINE se il cliente ha almeno un agent `connected=True` o con
+`last_heartbeat_at`/`last_seen_at` < 5 min. Fallback legacy su `connector_status`
+mantenuto per i connector v3. Anche `connector_version` presa da `agent_version`.
+
+## Testing
+- curl locale: impostando un heartbeat recente in `managed_agents`, l'endpoint
+  restituisce `connector_online=True` (prima False) + versione 4.30.1. Endpoint
+  200, nessun errore. Stato di test ripristinato.
+
+## Note per l'utente
+- Lo screenshot era della PRODUZIONE (clienti Galvan/CGE/… non presenti in preview,
+  che ha solo dati di test vecchi): impossibile riprodurre 1:1 qui, fix fatto sul
+  codice + verificato via curl.
+- I conteggi OFFLINE per-dispositivo derivano dai poll reali (`device_poll_status.
+  reachable`). Dopo il redeploy, se qualche cliente mostra ancora offline errati a
+  sonda ONLINE, servono esempi specifici (cliente + dispositivo) per indagare.
+
+⚠️ Attivo in PROD dopo Save to GitHub + redeploy backend.
+
+---
+
+
+
 # 2026-06 — TV wallboard: popup GRANDI centrali per allarmi critici + suono
 
 ## Richiesta utente
