@@ -5994,3 +5994,9 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Integrato in `POST /api/external-monitor/fault-diagnose` → `combined.external_outage`, e in `_auto_trace_on_wan_down` (verdetto + summary Telegram).
 - UI `WanClientTab.jsx`: sezione "Correlazione outage esterno" con badge DIFFUSO/ISOLATO, segnali e link cliccabili (`wan-fault-external-outage`, `wan-outage-badge`, `wan-outage-link-*`).
 - Testato modulo con chiamate reali IODA+RIPEstat (AS3269 TIM → correttamente "ISOLATO/nessun outage diffuso"). Live end-to-end via sonda non testabile in preview.
+
+## 2026-06 (ter) — Cloudflare Radar attivo
+- Token `CLOUDFLARE_RADAR_TOKEN` aggiunto a backend/.env (permesso Account>Radar>Read).
+- Verificato live: GET /radar/annotations/outages (globale + filtrato asn/location) → success:True.
+- La correlazione outage (isp_outage.py) ora usa 3 fonti: IODA + RIPEstat + Cloudflare Radar.
+- ⚠️ PRODUZIONE: impostare la stessa variabile CLOUDFLARE_RADAR_TOKEN nell'ambiente di deploy (i secret .env non vanno su GitHub).
