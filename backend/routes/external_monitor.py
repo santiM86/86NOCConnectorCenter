@@ -51,14 +51,30 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
         lines.append(f"Ultimo hop che risponde: {last_ok}")
     if first_break is not None and not reached:
         lines.append(f"Interruzione dall'hop {first_break} in poi → guasto a monte di quel punto")
+    # Confronto con la BASELINE (trace "buono" di riferimento) per questa WAN
+    baseline_diff = None
+    try:
+        bl = await db.wan_trace_baseline.find_one(
+            {"client_id": client_id, "public_ip": public_ip}, {"_id": 0})
+        if bl and bl.get("hops"):
+            baseline_diff = _baseline_diff(bl.get("hops") or [], hops)
+            if baseline_diff and baseline_diff.get("text"):
+                lines.append("\U0001F4CD " + baseline_diff["text"]
+                             + f" (baseline del {(bl.get('captured_at') or '')[:10]})")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("baseline diff failed: %s", e)
     summary = "\n".join(lines)
     try:
         await db.alerts.update_one(
             {"id": alert_id},
             [{"$set": {
                 "net_trace": {
+
+
+
                     "target": public_ip, "tool": tool, "reached": reached, "hops": hops,
                     "probe_agent_id": res.get("_probe_agent_id"),
+                    "baseline_diff": baseline_diff,
                     "ran_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "message": {"$concat": [{"$ifNull": ["$message", ""]}, "\n\n", summary]},
@@ -68,6 +84,78 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
                     alert_id, tool, len(hops), reached)
     except Exception as e:  # noqa: BLE001
         logger.warning("auto-trace: update alert failed: %s", e)
+
+def _hop_ip(h: dict) -> Optional[str]:
+    if not h or h.get("timeout") or (h.get("loss_pct") or 0) >= 100:
+        return None
+    return h.get("ip") or h.get("host") or None
+
+
+def _baseline_diff(baseline_hops: list, current_hops: list) -> Optional[dict]:
+    """Confronta il trace corrente con la baseline e individua il PRIMO hop in cui
+    il percorso è cambiato/interrotto. Ritorna {hop, kind, text, baseline_ip,
+    current_ip} o None se identici."""
+    bmap = {h.get("hop"): h for h in baseline_hops if h.get("hop") is not None}
+    cmap = {h.get("hop"): h for h in current_hops if h.get("hop") is not None}
+    max_hop = max([*bmap.keys(), *cmap.keys()], default=0)
+    for n in range(1, max_hop + 1):
+        b_ip = _hop_ip(bmap.get(n))
+        c_ip = _hop_ip(cmap.get(n))
+        if b_ip and not c_ip:
+            return {"hop": n, "kind": "break", "baseline_ip": b_ip, "current_ip": None,
+                    "text": f"Percorso INTERROTTO all'hop {n}: nel riferimento rispondeva {b_ip}, ora nessuna risposta → guasto tra l'hop {n-1} e l'hop {n}"}
+        if b_ip and c_ip and b_ip != c_ip:
+            return {"hop": n, "kind": "changed", "baseline_ip": b_ip, "current_ip": c_ip,
+                    "text": f"Percorso CAMBIATO dall'hop {n}: era {b_ip} → ora {c_ip} (possibile reroute/failover a monte)"}
+    return None
+
+
+_baseline_last_capture_mono = 0.0
+_BASELINE_MIN_GAP_S = 25.0          # al massimo una cattura ogni ~25s (globale)
+_BASELINE_REFRESH_HOURS = 24        # rinnova la baseline se più vecchia di 24h
+
+
+async def _maybe_capture_baseline(target_id: str, client_id: str, public_ip: str) -> None:
+    """Cattura/rinnova la baseline (trace 'buono') quando la WAN è ONLINE, se manca
+    o è più vecchia di 24h. Throttle globale per non sovraccaricare la sonda."""
+    global _baseline_last_capture_mono
+    if not public_ip:
+        return
+    import time as _t
+    existing = await db.wan_trace_baseline.find_one(
+        {"client_id": client_id, "public_ip": public_ip}, {"_id": 0, "captured_at": 1})
+    if existing:
+        cap = existing.get("captured_at") or ""
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(cap)
+            if age < timedelta(hours=_BASELINE_REFRESH_HOURS):
+                return
+        except Exception:
+            pass
+    now_mono = _t.monotonic()
+    if now_mono - _baseline_last_capture_mono < _BASELINE_MIN_GAP_S:
+        return
+    _baseline_last_capture_mono = now_mono
+    try:
+        from routes.agent_ws import run_net_trace_via_probe
+        res = await run_net_trace_via_probe(public_ip, client_id=client_id, mode="icmp")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("baseline capture run failed for %s: %s", public_ip, e)
+        return
+    if not res or not (res.get("hops")):
+        return
+    await db.wan_trace_baseline.update_one(
+        {"client_id": client_id, "public_ip": public_ip},
+        {"$set": {
+            "client_id": client_id, "target_id": target_id, "public_ip": public_ip,
+            "tool": res.get("tool"), "reached": bool(res.get("reached")),
+            "hops": res.get("hops"), "captured_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    logger.info("[baseline] trace di riferimento salvato per %s (%d hop)",
+                public_ip, len(res.get("hops") or []))
+
 
 router = APIRouter(prefix="/api/external-monitor", tags=["external-monitor"])
 
@@ -556,6 +644,9 @@ async def run_probe_cycle():
             prev = await db.wan_probe_results.find_one({"target_id": tid}, {"_id": 0, "status": 1, "line_state": 1})
             prev_status = prev["status"] if prev else None
             prev_line_state = prev.get("line_state") if prev else None
+            # v2026-06: cattura/rinnova la BASELINE (trace di riferimento) a WAN sana
+            if r["status"] == "online" and r.get("public_ip"):
+                asyncio.create_task(_maybe_capture_baseline(tid, cid, r.get("public_ip")))
 
             # Store current result
             await db.wan_probe_results.update_one(
