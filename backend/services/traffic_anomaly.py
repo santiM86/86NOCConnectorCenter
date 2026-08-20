@@ -178,6 +178,11 @@ async def _emit_anomaly(cid: str, port: dict, direction: str, cur: float, base: 
         await _wp.notify_new_alert(db, alert_doc)
     except Exception:
         pass
+    try:
+        from alert_engine import notify_alert_telegram
+        await notify_alert_telegram(db, alert_doc)
+    except Exception:
+        pass
     return True
 
 

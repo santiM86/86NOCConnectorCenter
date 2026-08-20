@@ -143,6 +143,36 @@ async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, A
             logger.debug("telegram dispatch failed: %s", e)
 
 
+async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
+    """Invio Telegram riutilizzabile per alert generati FUORI dal motore
+    (C2, KEV, rogue, anomalie traffico, cambio IP). Rispetta la config globale:
+    canale 'telegram' abilitato + severità high/critical. Idempotente per doc."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return False
+    channels = cfg.get("channels") or ["push"]
+    if "telegram" not in channels or not cfg.get("telegram_enabled"):
+        return False
+    if alert_doc.get("severity") not in ("high", "critical"):
+        return False
+    try:
+        from telegram_notifier import send_alert_telegram
+        await send_alert_telegram(
+            db,
+            title=alert_doc.get("title", "Alert"),
+            message=alert_doc.get("message", ""),
+            severity=alert_doc.get("severity", "high"),
+            chat_id=cfg.get("telegram_chat_id") or None,
+            token=cfg.get("telegram_bot_token") or None,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("notify_alert_telegram failed: %s", e)
+        return False
+
+
+
 def _mk_alert(client_id: str, client_name: str, device_name: str, device_ip: str,
               device_type: str, severity: str, source_type: str,
               title: str, message: str) -> Dict[str, Any]:

@@ -63,10 +63,15 @@ async def kev_asset_alert_tick() -> dict:
         earliest = due_dates[0] if due_dates else None
         cve_ids = [m.get("cve_id") for m in cves]
         dev_key = re.sub(r"[^a-z0-9]+", "-", str(a.get("name") or a.get("model") or "asset").lower())
+        dev_id = f"kev:{cid}:{dev_key}"
+        existing = await db.alerts.find_one(
+            {"client_id": cid, "source_type": "kev_exposure", "device_id": dev_id, "status": "active"},
+            {"_id": 0, "id": 1},
+        )
         alert_doc = {
             "id": str(uuid.uuid4()),
             "client_id": cid,
-            "device_id": f"kev:{cid}:{dev_key}",
+            "device_id": dev_id,
             "device_name": a.get("name") or a.get("model"),
             "severity": "critical" if ransom else "high",
             "source_type": "kev_exposure",
@@ -84,8 +89,17 @@ async def kev_asset_alert_tick() -> dict:
             "raw_data": ",".join(cve_ids[:20]),
         }
         try:
-            await insert_alert_if_emit(db, alert_doc)
-            emitted += 1
+            if existing:
+                await db.alerts.update_one({"id": existing["id"]},
+                    {"$set": {"message": alert_doc["message"], "severity": alert_doc["severity"], "last_seen_at": now_iso}})
+            else:
+                await insert_alert_if_emit(db, alert_doc)
+                try:
+                    from alert_engine import notify_alert_telegram
+                    await notify_alert_telegram(db, alert_doc)
+                except Exception:
+                    pass
+                emitted += 1
         except Exception as e:
             logger.debug(f"[kev-alert] emit failed {cid}: {e}")
     if emitted:
@@ -451,3 +465,9 @@ async def _notify_c2_alert(alert_doc: dict) -> None:
         )
     except Exception as e:
         logger.warning(f"[osint-c2] notification_service failed: {e}")
+    # 4) Telegram (high/critical, se abilitato)
+    try:
+        from alert_engine import notify_alert_telegram
+        await notify_alert_telegram(db, alert_doc)
+    except Exception as e:
+        logger.debug(f"[osint-c2] telegram failed: {e}")

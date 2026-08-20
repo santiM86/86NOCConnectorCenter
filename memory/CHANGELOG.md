@@ -1,3 +1,22 @@
+# 2026-08-19 — Notifiche Telegram unificate (tutti gli alert high/critical)
+
+## Richiesta utente (opzione A)
+Far arrivare su Telegram TUTTI gli alert high/critical, inclusi C2, KEV, rogue, anomalie traffico, cambio IP pubblico (non solo quelli del motore).
+
+## Implementazione
+- Nuovo helper riutilizzabile `notify_alert_telegram(db, alert_doc)` in `alert_engine.py`: legge la config globale, invia Telegram solo se canale abilitato + severità high/critical.
+- Collegato a tutti gli emitter che prima saltavano Telegram:
+  - `services/osint_poller.py`: C2 (`_notify_c2_alert`) + KEV (`kev_asset_alert_tick`, con dedup cross-run aggiunto).
+  - `services/rogue_detection.py`, `services/traffic_anomaly.py`.
+  - `routes/external_monitor.py`: cambio IP pubblico reale.
+- Gli alert del motore continuano ad usare `_dispatch_notification` (nessun doppio invio: gli emitter esterni usano solo il nuovo helper).
+
+## STATO CONFIGURAZIONE (IMPORTANTE)
+- Il codice è pronto e verificato (backend 200, sintassi OK). MA la config Telegram nel DB NON è valida: `alert_engine_config global` ha `telegram_chat_id` VUOTO e un `telegram_bot_token` INVALIDO (getMe → 401, 35 char = non è un token reale). Quindi al momento NESSUN messaggio viene recapitato. L'utente deve incollare un token @BotFather valido + salvare il chat_id.
+
+---
+
+
 # 2026-08-19 — Console mobile (iPhone/Android) per il tecnico
 
 ## Richiesta utente
