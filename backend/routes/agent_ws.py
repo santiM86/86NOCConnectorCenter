@@ -702,6 +702,16 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 update["consecutive_ping_failures"] = 0
                 update["last_seen_at"] = now_iso
                 update["degraded"] = False
+                # v2026-06 SPEED: RIENTRO ONLINE rapido. Se il device VITALE/infra
+                # era in stato di fallimento (>=2 poll persi) ed ora risponde,
+                # sveglia SUBITO il watchdog per emettere il recovery all'istante.
+                if prev_failures >= 2:
+                    dtype = (dev.get("device_type") or "").lower()
+                    is_infra = bool(dev.get("is_vital")) or any(
+                        k in dtype for k in ("switch", "firewall", "router",
+                                             "gateway", "server", "nas", "hypervisor"))
+                    if is_infra:
+                        vital_just_down = True  # riusa il trigger (il watchdog gestisce anche il recovery)
             else:
                 # v4.15.x MULTI-CONNECTOR PROTECTION: prima di degradare a
                 # offline, verifica se un ALTRO agent ha pingato OK lo

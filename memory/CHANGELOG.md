@@ -1,3 +1,49 @@
+# 2026-06 — Dorsale switch: porta uplink evidenziata + diagnosi backbone + recovery rapido
+
+## Richieste utente
+1. Con più switch, mostrare SEMPRE la porta che fa da DORSALE (uplink verso il
+   "sopra": gateway/switch a monte), distinta dalla porta verso lo switch a valle.
+2. Quando uno switch va offline, verificare SUBITO se l'uplink/dorsale passa
+   traffico: se è tutto a ZERO (o link down) → possibile problema di DORSALE.
+3. Rendere il RIENTRO ONLINE dello switch veloce quanto il down (event-driven).
+
+## Implementazione
+**#1 Direzione dorsale** (`routes/topology.py::get_switch_ports`): usando la
+cascata (rank/level per switch), ogni porta uplink ora ha `uplink_direction`
+("upstream"=dorsale / "downstream"=verso valle) e `is_backbone`. La dorsale =
+porta verso gateway o switch di livello inferiore.
+- Frontend `PortCableView.js`: banner in cima ("DORSALE ↑ verso …" ambra /
+  "Collegamento ↓ verso switch a valle" indaco) + preferisce il nome switch
+  RISOLTO dalla cascata (`uplink_to.peer_name`) invece del generico "HPE" LLDP.
+- Frontend `SwitchPortsPage.js`: badge "DORSALE ↑" / "SWITCH ↓ (valle)" nel
+  dettaglio porta e nel riepilogo uplink.
+
+**#2 Diagnosi dorsale** (`alert_enrichment.py::_backbone_diagnosis`): per gli
+alert `corr_switch_down`/`corr_switch_unreachable`, trova la porta sul parent
+(dorsale) verso lo switch giù e aggiunge al messaggio:
+- LINK DOWN → "probabile problema di DORSALE (cavo/SFP/uplink)".
+- UP ma traffico ZERO → "verificare la DORSALE/uplink (possibile guasto backbone)".
+- UP con traffico → "la dorsale funziona, il down riguarda il solo switch".
+
+**#3 Recovery rapido** (`routes/agent_ws.py::_bridge_ping_poll`): al RIENTRO
+online di un device VITALE/infra che era in fallimento (≥2 poll persi), sveglia
+SUBITO `run_vital_watchdog` (stesso trigger event-driven del down) → il recovery
+Telegram/push parte all'istante, non al tick.
+
+## Testing
+- `_backbone_diagnosis` (python -c, 3/3 PASS): link-down / zero-traffic / traffic-ok.
+- Import backend OK; frontend compila (solo warning exhaustive-deps preesistente).
+- Recovery: riusa il trigger event-driven già validato (fix down rapido).
+
+⚠️ Traffico dorsale disponibile solo se l'agent invia i contatori rx_bps/tx_bps
+per porta; se assenti, non si dichiara "zero" (evita falsi). La risoluzione del
+peer dorsale dipende da LLDP+FDB (cascata). Attivo in PROD dopo Save to GitHub +
+redeploy (backend+frontend), nessun rebuild agent Go.
+
+---
+
+
+
 # 2026-06 — Allerta "switch/device VITALE giù" QUASI-ISTANTANEA (fix ritardo)
 
 ## Incident utente

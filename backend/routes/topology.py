@@ -539,6 +539,15 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                     "peer_kind": "gateway" if peer in gateway_ips else "switch",
                 }
         if uplinks:
+            # v2026-06: individua la PORTA DORSALE (uplink verso il "sopra":
+            # gateway o switch di rango inferiore). Le altre porte switch↔switch
+            # sono DOWNLINK (verso switch a valle). Direzione dedotta dalla cascata.
+            level_by_ip = {c["ip"]: c.get("level", 0) for c in casc.get("cascade", [])}
+            my_node = next((c for c in casc.get("cascade", []) if c["ip"] == device_ip), None)
+            my_level = level_by_ip.get(device_ip, 0)
+            dorsale_local = ""
+            if my_node and my_node.get("uplink") and my_node["uplink"].get("local_port"):
+                dorsale_local = str(my_node["uplink"]["local_port"]).strip().lower()
             for o in out:
                 nm = str(o.get("name") or "").strip().lower()
                 al = str(o.get("alias") or "").strip().lower()
@@ -548,6 +557,20 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                     o["uplink_to"] = up
                     if o.get("oper") == 1:
                         o["port_type"] = "switch"
+                    # direzione: dorsale (verso l'alto) vs downlink (verso il basso)
+                    peer_lvl = level_by_ip.get(up.get("peer_ip"))
+                    if up.get("peer_kind") == "gateway":
+                        direction = "upstream"
+                    elif dorsale_local and nm == dorsale_local:
+                        direction = "upstream"
+                    elif peer_lvl is not None and peer_lvl < my_level:
+                        direction = "upstream"
+                    elif peer_lvl is not None and peer_lvl > my_level:
+                        direction = "downstream"
+                    else:
+                        direction = "upstream" if (dorsale_local and nm == dorsale_local) else "downstream"
+                    o["uplink_direction"] = direction
+                    o["is_backbone"] = direction == "upstream"
     except Exception as _ce:
         pass
 
