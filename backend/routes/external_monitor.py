@@ -1732,6 +1732,83 @@ async def fault_diagnose(req: FaultDiagnoseRequest, current_user: dict = Depends
     }
 
 
+@router.get("/outage-sources/status")
+async def outage_sources_status(test: bool = True, current_user: dict = Depends(get_current_user)):
+    """Stato delle fonti di correlazione OUTAGE ISP (IODA / RIPEstat / Cloudflare Radar).
+    Con test=true esegue una verifica live rapida di ciascuna fonte."""
+    import os as _os
+    import aiohttp
+    cf_token = bool(_os.environ.get("CLOUDFLARE_RADAR_TOKEN"))
+    sources = {
+        "ioda": {"name": "IODA (Georgia Tech)", "kind": "BGP + active probing + darknet",
+                 "requires_key": False, "enabled": True, "ok": None, "note": None},
+        "ripestat": {"name": "RIPEstat (RIPE NCC)", "kind": "Stato annunci BGP dell'ASN",
+                     "requires_key": False, "enabled": True, "ok": None, "note": None},
+        "cloudflare": {"name": "Cloudflare Radar", "kind": "Annotazioni outage per ASN/Paese",
+                       "requires_key": True, "enabled": cf_token, "ok": None,
+                       "note": "Token configurato" if cf_token else "Token non configurato (CLOUDFLARE_RADAR_TOKEN)"},
+    }
+    if test:
+        import time as _t
+        now = int(_t.time())
+        timeout = aiohttp.ClientTimeout(total=8)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                # IODA
+                try:
+                    async with s.get(f"https://api.ioda.inetintel.cc.gatech.edu/v2/outages/summary"
+                                     f"?from={now-3600}&until={now}&entityType=asn&entityCode=3269") as r:
+                        j = await r.json(content_type=None)
+                        sources["ioda"]["ok"] = j.get("error") is None
+                        sources["ioda"]["note"] = "Raggiungibile" if j.get("error") is None else str(j.get("error"))
+                except Exception as e:  # noqa: BLE001
+                    sources["ioda"]["ok"] = False; sources["ioda"]["note"] = str(e)
+                # RIPEstat
+                try:
+                    async with s.get("https://stat.ripe.net/data/as-overview/data.json?resource=AS3269") as r:
+                        j = await r.json(content_type=None)
+                        ok = bool(j.get("data"))
+                        sources["ripestat"]["ok"] = ok
+                        sources["ripestat"]["note"] = "Raggiungibile" if ok else "Risposta inattesa"
+                except Exception as e:  # noqa: BLE001
+                    sources["ripestat"]["ok"] = False; sources["ripestat"]["note"] = str(e)
+                # Cloudflare (solo se token presente)
+                if cf_token:
+                    try:
+                        async with s.get("https://api.cloudflare.com/client/v4/radar/annotations/outages?limit=1&dateRange=7d&format=json",
+                                         headers={"Authorization": f"Bearer {_os.environ['CLOUDFLARE_RADAR_TOKEN']}"}) as r:
+                            j = await r.json(content_type=None)
+                            ok = bool(j.get("success"))
+                            sources["cloudflare"]["ok"] = ok
+                            sources["cloudflare"]["note"] = "Token valido — API raggiungibile" if ok else (str(j.get("errors")) or "Token non valido")
+                    except Exception as e:  # noqa: BLE001
+                        sources["cloudflare"]["ok"] = False; sources["cloudflare"]["note"] = str(e)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("outage-sources status test failed: %s", e)
+
+    active = await db.isp_outage_state.count_documents({"active": True})
+    last = await db.isp_outage_state.find_one({}, {"_id": 0, "last_seen": 1}, sort=[("last_seen", -1)])
+    return {
+        "sources": sources,
+        "active_outages": active,
+        "last_checked": (last or {}).get("last_seen"),
+        "watch_interval_sec": 300,
+    }
+
+
+@router.post("/outage-sources/test")
+async def outage_sources_test(asn: str = "AS3269", current_user: dict = Depends(get_current_user)):
+    """Esegue una correlazione outage di prova su un ASN (default AS3269 Telecom
+    Italia) per dimostrare dal vivo l'output combinato delle fonti."""
+    from isp_outage import check_isp_outage
+    country = None
+    if asn and asn.upper().startswith("AS"):
+        # geo dell'ASN non disponibile qui; lascia country a IODA/CF senza filtro Paese
+        country = "IT"
+    res = await check_isp_outage(asn=asn, isp_name=None, country_code=country)
+    return res
+
+
 async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:
     """Esegue una query DNS A verso `server` per `hostname`. Misura latenza."""
     import struct as _struct

@@ -28,7 +28,7 @@ import DiagnosisCatalogPage from "@/pages/DiagnosisCatalogPage";
 import EntityInventoryPage from "@/pages/EntityInventoryPage";
 import AlertEngineSettingsPage from "@/pages/AlertEngineSettingsPage";
 import FingerbankSettingsPage from "@/pages/FingerbankSettingsPage";
-import EncryptionPage from "@/pages/EncryptionPage";
+import OutageSourcesSettingsPage from "@/pages/OutageSourcesSettingsPage";import EncryptionPage from "@/pages/EncryptionPage";
 import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
 import TwoFactorSetupPage from "@/pages/TwoFactorSetupPage";
@@ -260,6 +260,7 @@ function App() {
               <Route path="tools/path-trace" element={<NetworkPathDiagnosisPage />} />
               <Route path="settings/alert-engine" element={<AlertEngineSettingsPage />} />
               <Route path="settings/fingerbank" element={<FingerbankSettingsPage />} />
+              <Route path="settings/outage-sources" element={<OutageSourcesSettingsPage />} />
               <Route path="settings/encryption" element={<EncryptionPage />} />
               <Route path="settings/audit" element={<AuditPage />} />
               <Route path="oncall" element={<OnCallPage />} />
