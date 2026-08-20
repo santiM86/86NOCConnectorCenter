@@ -133,6 +133,72 @@ class _Registry:
 REGISTRY = _Registry()
 
 
+async def run_net_trace_via_probe(target: str, client_id: Optional[str] = None,
+                                  mode: str = "tcp", port: int = 443,
+                                  timeout: float = 110.0) -> Optional[dict]:
+    """Esegue un net_trace verso `target` usando una sonda LIVE.
+    Preferenza: sonda globale (__global__) → agent del cliente → qualsiasi agent
+    connesso. Ritorna il Result net_trace già "unwrappato" da AgentReply, o None
+    se nessuna sonda è disponibile / errore."""
+    conns = REGISTRY.list()
+    if not conns:
+        return None
+    pick = (next((c for c in conns if c.client_id == "__global__"), None)
+            or (next((c for c in conns if client_id and c.client_id == client_id), None))
+            or conns[0])
+    args = {"target": target, "mode": mode, "port": int(port), "max_hops": 30, "count": 10}
+    try:
+        reply = await pick.send_command("net_trace", args, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auto net_trace via probe failed target=%s: %s", target, e)
+        return None
+    if not isinstance(reply, dict):
+        return None
+    res = reply.get("result") or reply.get("Result") or reply
+    if isinstance(res, dict):
+        res["_probe_agent_id"] = pick.agent_id
+        res["_probe_client_id"] = pick.client_id
+    return res
+
+
+# v4.18.x DIAGNOSTIC: contatori in-memory per le ultime attivita' dei
+# bridge SNMP/ping/discovery/sysmetrics per agent_id. Esposti via
+# l'endpoint admin GET /api/agents/diagnostics per debug rapido in
+# produzione (rispondere alla domanda "perche' i device sono obsoleti?").
+BRIDGE_STATS: Dict[str, Dict[str, Any]] = {}
+_BRIDGE_STATS_MAX_AGENTS = 500  # LRU cap per evitare leak su agent_id rotation
+
+
+def _bridge_stat_tick(agent_id: str, kind: str, target: Optional[str] = None,
+                      reachable: Optional[bool] = None, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Update in-memory bridge activity stats for an agent. LRU-capped."""
+    if not agent_id:
+        return
+    now_iso = _now().isoformat()
+    bucket = BRIDGE_STATS.get(agent_id)
+    if bucket is None:
+        # LRU cap: se siamo al limite, drop l'entry piu' vecchia per
+        # last_event_at (evita memory leak in caso di rotazione agent_id).
+        if len(BRIDGE_STATS) >= _BRIDGE_STATS_MAX_AGENTS:
+            try:
+                oldest = min(BRIDGE_STATS.items(),
+                             key=lambda kv: kv[1].get("last_event_at") or "")
+                BRIDGE_STATS.pop(oldest[0], None)
+            except ValueError:
+                pass
+        bucket = BRIDGE_STATS.setdefault(agent_id, {})
+    counters = bucket.setdefault("counters", {})
+    counters[kind] = int(counters.get(kind, 0)) + 1
+    bucket["last_event_at"] = now_iso
+    bucket[f"last_{kind}_at"] = now_iso
+    if target:
+        bucket[f"last_{kind}_target"] = target
+    if reachable is not None:
+        bucket[f"last_{kind}_reachable"] = bool(reachable)
+    if extra:
+        bucket.setdefault("extra", {}).update(extra)
+
+
 # ---- Auth: registration tokens ----------------------------------------------
 #
 # The legacy connector uses HMAC + obfuscated paths. For v4 we keep it

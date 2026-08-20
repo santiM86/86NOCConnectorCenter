@@ -1,3 +1,71 @@
+# 2026-06 — Baseline trace WAN + confronto nell'alert (da quale hop è cambiato)
+
+## Richiesta utente
+Salvare un trace "buono" di riferimento per ogni WAN ed evidenziare nell'alert da
+quale hop il percorso è cambiato rispetto alla baseline.
+
+## Implementazione (`routes/external_monitor.py`)
+- Collezione `wan_trace_baseline` `{client_id, target_id, public_ip, tool, hops,
+  captured_at}`.
+- `_maybe_capture_baseline(...)`: quando la WAN è ONLINE nel ciclo di probe, se
+  manca la baseline o è più vecchia di 24h, esegue un net_trace (via sonda live,
+  in background) e la salva. Throttle globale (≥25s tra catture) per non
+  sovraccaricare la sonda. Agganciato nel loop dei target su `status==online`.
+- `_baseline_diff(baseline_hops, current_hops)`: trova il PRIMO hop divergente →
+  "INTERROTTO all'hop N (nel riferimento rispondeva X)" oppure "CAMBIATO dall'hop N:
+  era X → ora Y".
+- `_auto_trace_on_wan_down`: dopo il trace su WAN down, carica la baseline e
+  aggiunge al messaggio "📍 …" + salva `net_trace.baseline_diff`.
+
+## Testing (python -c, PASS)
+- `_baseline_diff`: break (hop 3), reroute (hop 3), identico (None).
+- Integrazione: baseline salvata + trace su down → alert con riga
+  "📍 Percorso INTERROTTO all'hop 3 … (baseline del …)" e `net_trace.baseline_diff.hop=3`.
+- Import OK, backend 200.
+
+⚠️ E2E reale richiede sonda LIVE in prod (per popolare le baseline serve qualche
+ciclo a WAN online). Attivo dopo Save to GitHub + redeploy backend.
+
+---
+
+
+
+# 2026-06 — Trace AUTOMATICO su WAN down, allegato all'alert
+
+## Richiesta utente
+Quando la WAN di un cliente va giù, lanciare in automatico un net_trace verso il
+suo IP pubblico e allegare il risultato all'alert.
+
+## Implementazione
+- `routes/agent_ws.py::run_net_trace_via_probe(target, client_id, mode, port)`:
+  esegue net_trace su una sonda LIVE, preferendo la sonda globale (`__global__`)
+  → agent del cliente → qualsiasi agent connesso. Unwrap del risultato da
+  `AgentReply.result`. Args: target/mode/port/max_hops/count.
+- `routes/external_monitor.py::_auto_trace_on_wan_down(...)`: alla transizione
+  WAN→offline (source_type=external_monitor) lancia in BACKGROUND
+  (`asyncio.create_task`, non blocca il ciclo di probe) un trace ICMP verso l'IP
+  pubblico. Aggiorna l'alert con pipeline update: campo `net_trace`
+  {target,tool,reached,hops,probe_agent_id,ran_at} + append al `message` di un
+  riepilogo (ultimo hop che risponde + primo punto di interruzione).
+  Solo sulla TRANSIZIONE (non ad ogni ciclo) per non spammare trace.
+
+## Testing (python -c, PASS)
+- Con sonda simulata: l'alert riceve `net_trace` (4 hop) e il messaggio con
+  "🧭 Trace automatico … / Ultimo hop che risponde: 2 / Interruzione dall'hop 3".
+- Nessuna sonda live → log "nessuna sonda", nessun crash.
+- Nomi arg verificati vs Go `nettrace.Args` (target/mode/port/max_hops/count).
+- Import OK, backend 200.
+
+## Note
+- Il riepilogo è già visibile nel messaggio (UI + Telegram). Il campo `net_trace`
+  con gli hop resta agganciato all'alert per un'eventuale tabella dedicata in UI.
+- ⚠️ E2E reale richiede una sonda LIVE in prod. Attivo dopo Save to GitHub +
+  redeploy backend.
+
+---
+
+
+
 # 2026-06 — FIX Diagnosi Percorso: "Trace completato (undefined, 0 hop) · NON RAGGIUNTA"
 
 ## Problema
