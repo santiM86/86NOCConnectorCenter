@@ -1,3 +1,22 @@
+# 2026-08-19 — Telegram Quiet Hours (riepilogo notturno)
+
+## Richiesta utente
+Fascia oraria (default 22:00–07:00) in cui i critici NON-down vengono accorpati in un riepilogo di fine finestra, mentre i veri down restano istantanei.
+
+## Implementazione (alert_engine.py)
+- Config: `telegram_quiet_enabled` (default True), `telegram_quiet_start` "22:00", `telegram_quiet_end` "07:00".
+- Helper `_in_quiet_hours` (fuso Europe/Rome), `_is_instant_source` (keyword: down/offline/blackout/power/isolat/situation/reach/liveness/vital/connector).
+- `notify_alert_telegram`: durante quiet, alert non-istantanei → accodati in `telegram_quiet_queue`; istantanei → inviati subito.
+- `_dispatch_notification` (motore) ora passa dal percorso unificato `notify_alert_telegram` → soglia+quiet valgono anche per il motore.
+- Nuovo `telegram_quiet_digest_tick(db)`: al termine della finestra invia UN riepilogo (send_telegram_text) e marca la coda come inviata. Schedulato ogni 5 min in server.py.
+- UI (AlertEngineSettingsPage): switch quiet-hours + orari inizio/fine.
+
+## Verifica
+in_quiet OK; site_down=istantaneo (inviato), C2/KEV=accodati; digest non parte durante quiet, parte a fine finestra (1 alert flushato). Frontend compila pulito.
+
+---
+
+
 # 2026-08-19 — Telegram: soglia severità (solo CRITICAL di default)
 
 ## Richiesta utente

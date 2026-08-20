@@ -65,6 +65,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "telegram_chat_id": "",
     # Soglia minima di severità per l'invio Telegram: "critical" (default) o "high"
     "telegram_min_severity": "critical",
+    # Quiet hours: fuori orario gli alert NON "down" vengono accorpati in un
+    # riepilogo inviato al termine della finestra. I veri down restano istantanei.
+    "telegram_quiet_enabled": True,
+    "telegram_quiet_start": "22:00",
+    "telegram_quiet_end": "07:00",
 }
 
 
@@ -75,6 +80,36 @@ def _telegram_severity_ok(cfg: Dict[str, Any], severity: str) -> bool:
     """True se la severità dell'alert raggiunge la soglia minima Telegram configurata."""
     min_sev = (cfg.get("telegram_min_severity") or "critical").lower()
     return _TG_SEV_RANK.get(str(severity).lower(), 0) >= _TG_SEV_RANK.get(min_sev, 3)
+
+
+# source_type che rappresentano un "vero down" → sempre istantanei anche in quiet hours
+_TG_INSTANT_KEYWORDS = ("down", "offline", "blackout", "power", "isolat",
+                        "situation", "reach", "liveness", "vital", "connector")
+
+
+def _is_instant_source(source_type: str) -> bool:
+    st = str(source_type or "").lower()
+    return any(k in st for k in _TG_INSTANT_KEYWORDS)
+
+
+def _in_quiet_hours(cfg: Dict[str, Any]) -> bool:
+    """True se l'ora corrente (Europe/Rome) è dentro la finestra quiet-hours."""
+    if not cfg.get("telegram_quiet_enabled"):
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now = datetime.now()
+    def _p(s, d):
+        try:
+            h, m = str(s).split(":"); return int(h) * 60 + int(m)
+        except Exception:
+            return d
+    start = _p(cfg.get("telegram_quiet_start"), 22 * 60)
+    end = _p(cfg.get("telegram_quiet_end"), 7 * 60)
+    cur = now.hour * 60 + now.minute
+    return (start <= cur or cur < end) if start > end else (start <= cur < end)
 
 
 async def get_config(db) -> Dict[str, Any]:
@@ -137,19 +172,10 @@ async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, A
             await wp.notify_new_alert(db, alert_doc)
         except Exception as e:  # noqa: BLE001
             logger.debug("push dispatch failed: %s", e)
-    # Telegram — solo per alert rilevanti (high/critical) per evitare rumore
-    if "telegram" in channels and cfg.get("telegram_enabled") and \
-       _telegram_severity_ok(cfg, alert_doc.get("severity")):
+    # Telegram — via percorso unificato (soglia severità + quiet hours + queue)
+    if "telegram" in channels and cfg.get("telegram_enabled"):
         try:
-            from telegram_notifier import send_alert_telegram
-            await send_alert_telegram(
-                db,
-                title=alert_doc.get("title", "Alert"),
-                message=alert_doc.get("message", ""),
-                severity=alert_doc.get("severity", "high"),
-                chat_id=cfg.get("telegram_chat_id") or None,
-                token=cfg.get("telegram_bot_token") or None,
-            )
+            await notify_alert_telegram(db, alert_doc)
         except Exception as e:  # noqa: BLE001
             logger.debug("telegram dispatch failed: %s", e)
 
@@ -167,6 +193,22 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
         return False
     if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
         return False
+    # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra
+    if _in_quiet_hours(cfg) and not _is_instant_source(alert_doc.get("source_type")):
+        try:
+            await db.telegram_quiet_queue.insert_one({
+                "id": str(uuid.uuid4()),
+                "title": alert_doc.get("title", "Alert"),
+                "message": alert_doc.get("message", ""),
+                "severity": alert_doc.get("severity", "critical"),
+                "client_name": alert_doc.get("client_name"),
+                "source_type": alert_doc.get("source_type"),
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+                "sent": False,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("quiet-queue insert failed: %s", e)
+        return "queued"
     try:
         from telegram_notifier import send_alert_telegram
         await send_alert_telegram(
@@ -181,6 +223,39 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.debug("notify_alert_telegram failed: %s", e)
         return False
+
+
+async def telegram_quiet_digest_tick(db) -> dict:
+    """Al termine delle quiet hours invia UN riepilogo degli alert accodati e svuota la coda."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return {"sent": 0}
+    if _in_quiet_hours(cfg):
+        return {"sent": 0, "reason": "still_quiet"}
+    pending = await db.telegram_quiet_queue.find({"sent": False}, {"_id": 0}).to_list(500)
+    if not pending:
+        return {"sent": 0}
+    if "telegram" in (cfg.get("channels") or []) and cfg.get("telegram_enabled"):
+        by_sev = {"critical": 0, "high": 0}
+        lines = []
+        for p in pending[:40]:
+            by_sev[p.get("severity", "critical")] = by_sev.get(p.get("severity", "critical"), 0) + 1
+            lines.append(f"• [{p.get('client_name') or '—'}] {p.get('title')}")
+        extra = len(pending) - 40
+        body = (f"🌙 Riepilogo notturno ARGUS — {len(pending)} alert accodati\n"
+                f"({by_sev.get('critical',0)} critici, {by_sev.get('high',0)} alti)\n\n"
+                + "\n".join(lines) + (f"\n… e altri {extra}." if extra > 0 else ""))
+        try:
+            from telegram_notifier import send_telegram_text
+            await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
+                                     token=cfg.get("telegram_bot_token") or None)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("quiet digest send failed: %s", e)
+    ids = [p["id"] for p in pending]
+    await db.telegram_quiet_queue.update_many({"id": {"$in": ids}}, {"$set": {"sent": True}})
+    logger.info(f"[telegram] quiet digest sent: {len(pending)} alerts")
+    return {"sent": len(pending)}
 
 
 

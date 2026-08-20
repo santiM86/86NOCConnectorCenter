@@ -340,6 +340,27 @@ export default function AlertEngineSettingsPage() {
               Con "Solo critici" ricevi solo gli eventi gravi (es. server/sito down, blackout, C2, ransomware KEV) ed eviti decine di messaggi non urgenti.
             </p>
           </div>
+          <div className="rounded-md border border-[var(--bg-border)] p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Switch checked={!!cfg.telegram_quiet_enabled} onCheckedChange={(v) => set("telegram_quiet_enabled", v)} data-testid="tg-quiet-switch" />
+              <Label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Orari silenziosi (quiet hours)</Label>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-[var(--text-muted)]">Dalle</span>
+                <Input type="time" value={cfg.telegram_quiet_start || "22:00"} onChange={(e) => set("telegram_quiet_start", e.target.value)}
+                  className="h-8 w-28 text-sm bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="tg-quiet-start" disabled={!cfg.telegram_quiet_enabled} />
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-[var(--text-muted)]">alle</span>
+                <Input type="time" value={cfg.telegram_quiet_end || "07:00"} onChange={(e) => set("telegram_quiet_end", e.target.value)}
+                  className="h-8 w-28 text-sm bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="tg-quiet-end" disabled={!cfg.telegram_quiet_enabled} />
+              </div>
+            </div>
+            <p className="text-[9px] text-[var(--text-muted)]">
+              Durante questa fascia gli alert NON di down (es. C2, KEV, anomalie) vengono accorpati in un unico riepilogo inviato al termine. I veri down (server/sito/blackout) restano istantanei.
+            </p>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={detectChats} disabled={busy === "detect"} className="h-8 gap-1 text-xs" data-testid="detect-chats-btn">
               <ArrowsClockwise size={12} /> {busy === "detect" ? "Rilevo…" : "Rileva chat"}
