@@ -132,6 +132,35 @@ class _Registry:
 
 REGISTRY = _Registry()
 
+
+async def run_net_trace_via_probe(target: str, client_id: Optional[str] = None,
+                                  mode: str = "tcp", port: int = 443,
+                                  timeout: float = 110.0) -> Optional[dict]:
+    """Esegue un net_trace verso `target` usando una sonda LIVE.
+    Preferenza: sonda globale (__global__) → agent del cliente → qualsiasi agent
+    connesso. Ritorna il Result net_trace già "unwrappato" da AgentReply, o None
+    se nessuna sonda è disponibile / errore."""
+    conns = REGISTRY.list()
+    if not conns:
+        return None
+    pick = (next((c for c in conns if c.client_id == "__global__"), None)
+            or (next((c for c in conns if client_id and c.client_id == client_id), None))
+            or conns[0])
+    args = {"target": target, "mode": mode, "port": int(port), "max_hops": 30, "count": 10}
+    try:
+        reply = await pick.send_command("net_trace", args, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auto net_trace via probe failed target=%s: %s", target, e)
+        return None
+    if not isinstance(reply, dict):
+        return None
+    res = reply.get("result") or reply.get("Result") or reply
+    if isinstance(res, dict):
+        res["_probe_agent_id"] = pick.agent_id
+        res["_probe_client_id"] = pick.client_id
+    return res
+
+
 # v4.18.x DIAGNOSTIC: contatori in-memory per le ultime attivita' dei
 # bridge SNMP/ping/discovery/sysmetrics per agent_id. Esposti via
 # l'endpoint admin GET /api/agents/diagnostics per debug rapido in

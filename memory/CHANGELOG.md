@@ -1,3 +1,39 @@
+# 2026-06 — Trace AUTOMATICO su WAN down, allegato all'alert
+
+## Richiesta utente
+Quando la WAN di un cliente va giù, lanciare in automatico un net_trace verso il
+suo IP pubblico e allegare il risultato all'alert.
+
+## Implementazione
+- `routes/agent_ws.py::run_net_trace_via_probe(target, client_id, mode, port)`:
+  esegue net_trace su una sonda LIVE, preferendo la sonda globale (`__global__`)
+  → agent del cliente → qualsiasi agent connesso. Unwrap del risultato da
+  `AgentReply.result`. Args: target/mode/port/max_hops/count.
+- `routes/external_monitor.py::_auto_trace_on_wan_down(...)`: alla transizione
+  WAN→offline (source_type=external_monitor) lancia in BACKGROUND
+  (`asyncio.create_task`, non blocca il ciclo di probe) un trace ICMP verso l'IP
+  pubblico. Aggiorna l'alert con pipeline update: campo `net_trace`
+  {target,tool,reached,hops,probe_agent_id,ran_at} + append al `message` di un
+  riepilogo (ultimo hop che risponde + primo punto di interruzione).
+  Solo sulla TRANSIZIONE (non ad ogni ciclo) per non spammare trace.
+
+## Testing (python -c, PASS)
+- Con sonda simulata: l'alert riceve `net_trace` (4 hop) e il messaggio con
+  "🧭 Trace automatico … / Ultimo hop che risponde: 2 / Interruzione dall'hop 3".
+- Nessuna sonda live → log "nessuna sonda", nessun crash.
+- Nomi arg verificati vs Go `nettrace.Args` (target/mode/port/max_hops/count).
+- Import OK, backend 200.
+
+## Note
+- Il riepilogo è già visibile nel messaggio (UI + Telegram). Il campo `net_trace`
+  con gli hop resta agganciato all'alert per un'eventuale tabella dedicata in UI.
+- ⚠️ E2E reale richiede una sonda LIVE in prod. Attivo dopo Save to GitHub +
+  redeploy backend.
+
+---
+
+
+
 # 2026-06 — FIX Diagnosi Percorso: "Trace completato (undefined, 0 hop) · NON RAGGIUNTA"
 
 ## Problema

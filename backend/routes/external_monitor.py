@@ -19,6 +19,56 @@ from alert_filter import insert_alert_if_emit
 import uuid
 
 logger = logging.getLogger("external_monitor")
+
+
+async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str, label: str) -> None:
+    """v2026-06: alla caduta della WAN esegue un net_trace automatico verso l'IP
+    pubblico del cliente (via sonda live) e lo ALLEGA all'alert (campo net_trace +
+    riepilogo nel messaggio). Non blocca il ciclo di probe (gira in background)."""
+    if not public_ip:
+        return
+    try:
+        from routes.agent_ws import run_net_trace_via_probe
+        res = await run_net_trace_via_probe(public_ip, client_id=client_id, mode="icmp")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("auto-trace run failed for %s: %s", label, e)
+        return
+    if not res:
+        logger.info("[auto-trace] nessuna sonda live disponibile per %s (%s)", label, public_ip)
+        return
+    hops = res.get("hops") or []
+    reached = bool(res.get("reached"))
+    tool = res.get("tool") or "?"
+    last_ok, first_break = None, None
+    for h in hops:
+        if h.get("timeout") or (h.get("loss_pct") or 0) >= 100:
+            if first_break is None:
+                first_break = h.get("hop")
+        else:
+            last_ok = f"{h.get('hop')}. {h.get('ip') or h.get('host') or '?'}"
+    lines = [f"🧭 Trace automatico ({tool}, {len(hops)} hop, {'raggiunta' if reached else 'NON raggiunta'})"]
+    if last_ok:
+        lines.append(f"Ultimo hop che risponde: {last_ok}")
+    if first_break is not None and not reached:
+        lines.append(f"Interruzione dall'hop {first_break} in poi → guasto a monte di quel punto")
+    summary = "\n".join(lines)
+    try:
+        await db.alerts.update_one(
+            {"id": alert_id},
+            [{"$set": {
+                "net_trace": {
+                    "target": public_ip, "tool": tool, "reached": reached, "hops": hops,
+                    "probe_agent_id": res.get("_probe_agent_id"),
+                    "ran_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "message": {"$concat": [{"$ifNull": ["$message", ""]}, "\n\n", summary]},
+            }}],
+        )
+        logger.info("[auto-trace] allegato all'alert %s (%s, %d hop, reached=%s)",
+                    alert_id, tool, len(hops), reached)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auto-trace: update alert failed: %s", e)
+
 router = APIRouter(prefix="/api/external-monitor", tags=["external-monitor"])
 
 # ==================== MODELS ====================
@@ -554,6 +604,10 @@ async def run_probe_cycle():
                         "created_at": now_iso,
                     }
                     await insert_alert_if_emit(db, _ext_alert)
+                    # v2026-06: trace automatico verso l'IP pubblico, allegato all'alert
+                    if r["status"] == "offline" and prev_status in ("online", "degraded", "filtered"):
+                        asyncio.create_task(_auto_trace_on_wan_down(
+                            _ext_alert["id"], cid, r.get("public_ip"), r.get("label") or "WAN"))
                     try:
                         import webpush as _wp
                         await _wp.notify_new_alert(db, _ext_alert)
