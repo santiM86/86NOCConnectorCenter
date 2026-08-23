@@ -1094,17 +1094,17 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
             max_instances=1, coalesce=True,
         )
-        from apscheduler.triggers.cron import CronTrigger as _CronTrig
-        from alert_engine import morning_status_digest as _morning_digest
+        from alert_engine import morning_digest_tick as _morning_tick
         async def _morning_digest_job():
             from database import db as _db
-            await _morning_digest(_db)
+            await _morning_tick(_db)
         osint_scheduler.add_job(
-            _morning_digest_job, trigger=_CronTrig(hour=7, minute=0, timezone="Europe/Rome"),
+            _morning_digest_job, trigger=_OsTrig(minutes=1),
             id="morning_status_digest", max_instances=1, coalesce=True,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
         )
         osint_scheduler.start()
-        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, kev-alert: 6h, tg-digest: 5m, morning: 07:00)")
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, kev-alert: 6h, tg-digest: 5m, morning: tick 1m @ configurabile)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
 

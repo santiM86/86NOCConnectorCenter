@@ -6039,3 +6039,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Sezione separata "🌐 Guasti operatori" (isp_outage_watch) con clienti impattati e orario.
 - Filtro down: keyword down/offline/blackout/power/isolat/vital/liveness/reach/situation/external_monitor/isp_outage/connector/wan; esclude backup/kev/cve/vuln/datto_sync/patch/cert/disk/license.
 - Testato su DB reale: messaggio "Cosa è DOWN adesso" con 3 elementi + orari corretti, nomi risolti.
+
+## 2026-06 (nonies) — Digest mattutino: orario configurabile + "Rientrati nella notte"
+- Config `morning_digest_enabled` (bool) + `morning_digest_time` ("HH:MM", Europe/Rome) in DEFAULT_CONFIG → salvabili via PUT /api/alert-engine/config.
+- server.py: sostituito il cron fisso 07:00 con `morning_digest_tick` ogni 1 min → invia UNA volta/giorno all'orario configurato (finestra 90 min, dedup via _id morning_digest_marker, robusto a riavvii). Titolo digest usa l'orario configurato.
+- morning_status_digest: aggiunta sezione "✅ Rientrati nella notte: N" con i down-type risolti nelle ultime 12h (cliente · elemento · risolto HH:MM), cap 15 + "e altri N".
+- UI AlertEngineSettingsPage.jsx: card "Digest mattutino Cosa è DOWN" con Switch + input time (data-testid morning-digest-switch / morning-digest-time).
+- Testato: PUT config (06:45→07:00), digest con titolo orario dinamico, sezione Rientrati (alert risolto simulato), tick dedup/out_of_window; screenshot UI OK.

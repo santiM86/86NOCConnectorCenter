@@ -79,6 +79,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "telegram_quiet_enabled": True,
     "telegram_quiet_start": "22:00",
     "telegram_quiet_end": "07:00",
+    # Digest mattutino "Cosa è DOWN" (orario configurabile, Europe/Rome)
+    "morning_digest_enabled": True,
+    "morning_digest_time": "07:00",
 }
 
 
@@ -472,6 +475,7 @@ async def morning_status_digest(db) -> dict:
         return {"sent": 0}
     if "telegram" not in (cfg.get("channels") or []) or not cfg.get("telegram_enabled"):
         return {"sent": 0, "reason": "telegram_off"}
+    time_lbl = cfg.get("morning_digest_time") or "07:00"
 
     from zoneinfo import ZoneInfo
     _TZ = ZoneInfo("Europe/Rome")
@@ -523,8 +527,18 @@ async def morning_status_digest(db) -> dict:
     operator_outages = [a for a in down if "isp_outage" in (a.get("source_type") or "").lower()]
     device_downs = [a for a in down if a not in operator_outages]
 
-    # risolvi nomi clienti (fix UUID)
-    cids = list({a.get("client_id") for a in device_downs if a.get("client_id")})
+    # RIENTRATI nella notte: down-type risolti nelle ultime 12h
+    from datetime import timedelta as _td
+    rec_cutoff = (datetime.now(timezone.utc) - _td(hours=12)).isoformat()
+    resolved = await db.alerts.find(
+        {"status": "resolved", "resolved_at": {"$gte": rec_cutoff}},
+        {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1, "title": 1,
+         "device_name": 1, "device_ip": 1, "resolved_at": 1},
+    ).to_list(2000)
+    recovered = [a for a in resolved if _is_down_alert(a)]
+
+    # risolvi nomi clienti (fix UUID) — include anche i rientrati
+    cids = list({a.get("client_id") for a in (device_downs + recovered) if a.get("client_id")})
     cmap = {}
     if cids:
         for c in await db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}).to_list(2000):
@@ -555,10 +569,10 @@ async def morning_status_digest(db) -> dict:
 
     total_down = len(device_downs)
     if not device_downs and not operator_outages:
-        body = ("☀️ <b>Buongiorno — ARGUS</b> (07:00)\n"
+        body = ("☀️ <b>Buongiorno — ARGUS</b> (" + time_lbl + ")\n"
                 "Nessun elemento DOWN. Tutti i dispositivi vitali, siti e linee operativi. ✅")
     else:
-        lines = [f"☀️ <b>Buongiorno — Cosa è DOWN adesso</b> (07:00)",
+        lines = [f"☀️ <b>Buongiorno — Cosa è DOWN adesso</b> ({time_lbl})",
                  f"{total_down} elementi giù su {len(by_client)} clienti\n"]
         # ordina i clienti per numero di down desc
         for cli in sorted(by_client, key=lambda c: -len(by_client[c]))[:80]:
@@ -578,6 +592,17 @@ async def morning_status_digest(db) -> dict:
                 lines.append(f"   ◦ {who}{since}" + (f" · clienti: {names}" if names else ""))
         body = "\n".join(lines)
 
+    # Sezione: RIENTRATI nella notte (cosa era down ma è tornato su)
+    if recovered:
+        rec_lines = [f"\n✅ <b>Rientrati nella notte: {len(recovered)}</b>"]
+        for a in sorted(recovered, key=lambda x: str(x.get("resolved_at") or ""), reverse=True)[:15]:
+            when, _ = _down_since(a.get("resolved_at"))
+            t = f" (risolto {when})" if when else ""
+            rec_lines.append(f"   ◦ {_client_label(a)} · {_item_label(a)}{t}")
+        if len(recovered) > 15:
+            rec_lines.append(f"   … e altri {len(recovered) - 15}")
+        body = body + "\n" + "\n".join(rec_lines)
+
     try:
         from telegram_notifier import send_telegram_text
         await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
@@ -587,6 +612,44 @@ async def morning_status_digest(db) -> dict:
         return {"sent": 0, "error": str(e)[:120]}
     logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {total_down} down, {len(operator_outages)} operator outages")
     return {"sent": 1, "clients": len(by_client), "down": total_down, "operator_outages": len(operator_outages)}
+
+
+async def morning_digest_tick(db) -> dict:
+    """Tick ogni minuto: invia il digest mattutino UNA volta al giorno all'orario
+    configurato (morning_digest_time, Europe/Rome). Robusto a riavvii e a cambi
+    d'orario. Finestra di consegna: da orario a orario+90min."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return {"sent": 0}
+    if not cfg.get("morning_digest_enabled", True):
+        return {"sent": 0, "reason": "disabled"}
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/Rome")
+    now = datetime.now(tz)
+    try:
+        hh, mm = str(cfg.get("morning_digest_time") or "07:00").split(":")
+        hh, mm = int(hh), int(mm)
+    except Exception:
+        hh, mm = 7, 0
+    scheduled = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if now < scheduled:
+        return {"sent": 0, "reason": "before_time"}
+    today = now.date().isoformat()
+    marker = await db.alert_engine_config.find_one({"_id": "morning_digest_marker"})
+    if marker and marker.get("last_sent_date") == today:
+        return {"sent": 0, "reason": "already_sent"}
+    # oltre la finestra (riavvio a metà giornata): segna come fatto, non inviare
+    if (now - scheduled).total_seconds() > 90 * 60:
+        await db.alert_engine_config.update_one(
+            {"_id": "morning_digest_marker"},
+            {"$set": {"last_sent_date": today, "skipped": True, "at": now.isoformat()}}, upsert=True)
+        return {"sent": 0, "reason": "out_of_window"}
+    res = await morning_status_digest(db)
+    await db.alert_engine_config.update_one(
+        {"_id": "morning_digest_marker"},
+        {"$set": {"last_sent_date": today, "skipped": False, "at": now.isoformat()}}, upsert=True)
+    return res
 
 
 
