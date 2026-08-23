@@ -428,6 +428,57 @@ async def check_tcp_port(ip: str, port: int, timeout: int = 8) -> dict:
     }
 
 
+async def auto_link_wan_targets_nebula(client_id: Optional[str] = None) -> dict:
+    """Collega automaticamente i target WAN non ancora linkati al firewall Nebula
+    corrispondente. Match: 1) per IP pubblico (firewall.public_ip / wan_interfaces),
+    2) fallback: unico firewall Nebula del cliente per un target di tipo firewall."""
+    q = {"$or": [{"linked_nebula_dev_id": {"$in": [None, ""]}}, {"linked_nebula_dev_id": {"$exists": False}}]}
+    if client_id:
+        q = {"$and": [q, {"client_id": client_id}]}
+    targets = await db.wan_targets.find(q, {"_id": 0}).to_list(5000)
+    linked, details = 0, []
+    fw_cache: dict = {}
+    for t in targets:
+        cid = t.get("client_id")
+        pip = (t.get("public_ip") or "").strip()
+        if cid not in fw_cache:
+            fw_cache[cid] = await db.zyxel_devices.find(
+                {"client_id": cid, "device_type": "firewall"},
+                {"_id": 0, "dev_id": 1, "site_id": 1, "public_ip": 1, "wan_interfaces": 1, "name": 1},
+            ).to_list(100)
+        fws = fw_cache[cid]
+        match, method = None, None
+        for d in fws:
+            ips = set()
+            if d.get("public_ip"):
+                ips.add(str(d["public_ip"]).strip())
+            for w in (d.get("wan_interfaces") or []):
+                if w.get("public_ip"):
+                    ips.add(str(w["public_ip"]).strip())
+            if pip and pip in ips:
+                match, method = d, "public_ip"
+                break
+        if not match and t.get("device_type") == "firewall" and len(fws) == 1:
+            match, method = fws[0], "unico_firewall_cliente"
+        if match:
+            await db.wan_targets.update_one(
+                {"id": t["id"]},
+                {"$set": {"linked_nebula_dev_id": match["dev_id"],
+                          "linked_nebula_site_id": match.get("site_id")}},
+            )
+            linked += 1
+            details.append({"target": t.get("label"), "public_ip": pip,
+                            "firewall": match.get("name"), "dev_id": match["dev_id"], "method": method})
+    return {"linked": linked, "scanned": len(targets), "details": details}
+
+
+@router.post("/auto-link-nebula")
+async def auto_link_nebula_endpoint(current_user: dict = Depends(get_current_user)):
+    """Collega in automatico tutti i target WAN ai firewall Nebula corrispondenti."""
+    require_admin(current_user)
+    return await auto_link_wan_targets_nebula()
+
+
 async def probe_target(target: dict) -> dict:
     """Esegue tutti i check su un target WAN."""
     ip = target["public_ip"]
@@ -435,19 +486,44 @@ async def probe_target(target: dict) -> dict:
     gateway_ip = target.get("gateway_ip")
     use_ping = target.get("check_ping", False)
 
+    # v2026-06: target collegato a Nebula → lo stato up/down arriva dal cloud Zyxel
+    # (fonte autorevole). L'ICMP sul firewall e' rumore (droppato dal lato WAN):
+    # NON pinghiamo il firewall e usiamo lo stato Nebula. Reversibile: se il link
+    # manca o lo stato non e' disponibile, torna il probe ICMP normale.
+    nebula_dev_id = (target.get("linked_nebula_dev_id") or "").strip() or None
+    nebula_status = None
+    if nebula_dev_id:
+        try:
+            ndoc = await db.zyxel_devices.find_one(
+                {"dev_id": nebula_dev_id}, {"_id": 0, "online_status": 1})
+            nebula_status = (ndoc or {}).get("online_status")  # "ONLINE"/"OFFLINE"/None
+        except Exception:
+            nebula_status = None
+    skip_target_ping = bool(nebula_status)  # abbiamo lo stato Nebula → niente ICMP sul FW
+    if skip_target_ping:
+        use_ping = False
+
     # Filter out non-numeric ports (legacy "icmp" entries)
     ports = [p for p in ports if isinstance(p, int) and p > 0]
 
-    # Ping target + gateway in parallel
-    tasks = [ping_host(ip)]
+    # Ping target (salvo se monitorato via Nebula) + gateway in parallelo
+    tasks = []
+    if not skip_target_ping:
+        tasks.append(ping_host(ip))
     if gateway_ip:
         tasks.append(ping_host(gateway_ip))
+    ping_results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
 
-    ping_results = await asyncio.gather(*tasks, return_exceptions=True)
-    ping_result = ping_results[0] if isinstance(ping_results[0], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+    idx = 0
+    if skip_target_ping:
+        ping_result = {"reachable": None, "latency_ms": None, "packet_loss_pct": None,
+                       "skipped": True, "reason": "nebula_monitored"}
+    else:
+        ping_result = ping_results[idx] if (ping_results and isinstance(ping_results[idx], dict)) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+        idx += 1
     gateway_ping = None
-    if gateway_ip and len(ping_results) > 1:
-        gateway_ping = ping_results[1] if isinstance(ping_results[1], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+    if gateway_ip:
+        gateway_ping = ping_results[idx] if (len(ping_results) > idx and isinstance(ping_results[idx], dict)) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
     # TCP port checks (in parallel) — skip if no ports configured
     port_checks = []
@@ -497,6 +573,12 @@ async def probe_target(target: dict) -> dict:
     else:
         status = "offline"
 
+    # v2026-06: override con stato Nebula (fonte autorevole) quando disponibile.
+    if nebula_status == "ONLINE":
+        status = "online"
+    elif nebula_status == "OFFLINE":
+        status = "offline"
+
     result = {
         "target_id": target["id"],
         "client_id": target["client_id"],
@@ -507,6 +589,8 @@ async def probe_target(target: dict) -> dict:
         "ping": ping_result,
         "ports": port_checks,
         "check_ping": use_ping,
+        "nebula_monitored": skip_target_ping,
+        "nebula_status": nebula_status,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     if gateway_ip:
@@ -1345,17 +1429,21 @@ async def get_target_insights(
     ).sort("timestamp", 1).to_list(20000)
 
     def _is_online(h):
-        # Schema FLAT (post v2026-03-01): reachable diretto
+        # v2026-06: lo STATO ha priorità. "filtered"/"degraded"/"online" = firewall
+        # RAGGIUNGIBILE (anche se droppa ICMP/TCP e reachable=False): NON è downtime.
+        # Solo "offline" conta come giù ai fini SLA.
+        status = (h.get("status") or "").lower()
+        if status in ("online", "filtered", "degraded"):
+            return True
+        if status == "offline":
+            return False
+        # Nessuno stato salvato: fallback ai flag reachable
         if "reachable" in h:
             return bool(h.get("reachable"))
-        # Schema NESTED legacy
         nested = (h.get("ping") or {}).get("reachable")
         if nested is not None:
             return bool(nested)
-        # Fallback ultimo livello: usa lo `status` salvato (online/filtered/degraded
-        # sono comunque raggiungibili dal POV dell'uptime SLA)
-        status = (h.get("status") or "").lower()
-        return status in ("online", "filtered", "degraded")
+        return False
 
     def _lat(h):
         if "latency_ms" in h:
@@ -1762,6 +1850,19 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                        "configured": cf_token, "source": ("db" if cf_from_db else ("env" if cf_token else None)),
                        "masked": cf_masked, "note": cf_note},
     }
+    try:
+        from downdetector import status_info as _dd_status
+        dd_info = await _dd_status()
+    except Exception:
+        dd_info = {"configured": False, "source": None, "masked_client_id": None}
+    sources["downdetector"] = {
+        "name": "Downdetector Enterprise (Ookla)", "kind": "Segnalazioni utenti in tempo reale (crowdsourced)",
+        "requires_key": True, "enabled": dd_info.get("configured", False), "ok": None,
+        "configured": dd_info.get("configured", False), "source": dd_info.get("source"),
+        "masked": dd_info.get("masked_client_id"),
+        "note": (f"Credenziali configurate ({'UI/DB' if dd_info.get('source') == 'db' else 'env'})"
+                 if dd_info.get("configured") else "A pagamento — inserisci Client ID + Secret qui sotto"),
+    }
     if test:
         import time as _t
         now = int(_t.time())
@@ -1799,6 +1900,17 @@ async def outage_sources_status(test: bool = True, current_user: dict = Depends(
                         sources["cloudflare"]["ok"] = False; sources["cloudflare"]["note"] = str(e)
         except Exception as e:  # noqa: BLE001
             logger.debug("outage-sources status test failed: %s", e)
+        # Downdetector live test (client httpx separato)
+        if sources["downdetector"]["configured"]:
+            try:
+                from downdetector import check_downdetector
+                dd = await check_downdetector("Telecom Italia", "IT")
+                sources["downdetector"]["ok"] = bool(dd.get("ok")) and dd.get("error") is None
+                sources["downdetector"]["note"] = ("Credenziali valide — API raggiungibile"
+                                                   if sources["downdetector"]["ok"]
+                                                   else (dd.get("error") or "Errore autenticazione"))
+            except Exception as e:  # noqa: BLE001
+                sources["downdetector"]["ok"] = False; sources["downdetector"]["note"] = str(e)
 
     active = await db.isp_outage_state.count_documents({"active": True})
     last = await db.isp_outage_state.find_one({}, {"_id": 0, "last_seen": 1}, sort=[("last_seen", -1)])
@@ -1866,6 +1978,54 @@ async def delete_cloudflare_token(current_user: dict = Depends(get_current_user)
     require_admin(current_user)
     await db.settings.delete_one({"key": "cloudflare_radar_token"})
     return {"ok": True}
+
+
+class DowndetectorCredsRequest(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+@router.put("/outage-sources/downdetector-creds")
+async def set_downdetector_creds(req: DowndetectorCredsRequest, current_user: dict = Depends(get_current_user)):
+    """Salva (cifrate) le credenziali Downdetector Enterprise e le verifica."""
+    require_admin(current_user)
+    from security import security_manager
+    cid = (req.client_id or "").strip()
+    csec = (req.client_secret or "").strip()
+    if len(cid) < 6 or len(csec) < 6:
+        raise HTTPException(status_code=400, detail="Client ID / Secret non validi")
+    # verifica: prova a ottenere un token OAuth2
+    import httpx
+    base = _os_env("DD_BASE_URL", "https://downdetectorapi.com/v2").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as c:
+            r = await c.post(f"{base}/tokens", params={"grant_type": "client_credentials"},
+                             auth=(cid, csec), headers={"Accept": "application/json"})
+            if r.status_code != 200 or not r.json().get("access_token"):
+                raise HTTPException(status_code=400, detail="Credenziali rifiutate da Downdetector (verifica Client ID/Secret e piano attivo)")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Impossibile verificare le credenziali: {e}")
+    await db.settings.update_one({"key": "downdetector_client_id"},
+        {"$set": {"key": "downdetector_client_id", "value": security_manager.encrypt_credential(cid),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await db.settings.update_one({"key": "downdetector_client_secret"},
+        {"$set": {"key": "downdetector_client_secret", "value": security_manager.encrypt_credential(csec),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    return {"ok": True, "masked_client_id": "…" + cid[-4:]}
+
+
+@router.delete("/outage-sources/downdetector-creds")
+async def delete_downdetector_creds(current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    await db.settings.delete_many({"key": {"$in": ["downdetector_client_id", "downdetector_client_secret"]}})
+    return {"ok": True}
+
+
+def _os_env(k, d=None):
+    import os as _o
+    return _o.environ.get(k, d)
 
 
 async def _resolve_dns(server: str, hostname: str, timeout: float = 3.0) -> dict:

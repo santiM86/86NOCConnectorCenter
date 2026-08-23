@@ -361,6 +361,21 @@ export default function AlertEngineSettingsPage() {
               Durante questa fascia gli alert NON di down (es. C2, KEV, anomalie) vengono accorpati in un unico riepilogo inviato al termine. I veri down (server/sito/blackout) restano istantanei.
             </p>
           </div>
+          <div className="rounded-md border border-[var(--bg-border)] p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Switch checked={cfg.morning_digest_enabled !== false} onCheckedChange={(v) => set("morning_digest_enabled", v)} data-testid="morning-digest-switch" />
+              <Label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Digest mattutino "Cosa è DOWN"</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-[var(--text-muted)]">Invia ogni giorno alle</span>
+              <Input type="time" value={cfg.morning_digest_time || "07:00"} onChange={(e) => set("morning_digest_time", e.target.value)}
+                className="h-8 w-28 text-sm bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="morning-digest-time" disabled={cfg.morning_digest_enabled === false} />
+              <span className="text-[10px] text-[var(--text-muted)]">(ora italiana)</span>
+            </div>
+            <p className="text-[9px] text-[var(--text-muted)]">
+              Un unico messaggio con SOLO ciò che è DOWN (vitali spenti, siti/WAN giù, guasti operatori), l'orario da quando è giù e la lista dei "Rientrati nella notte".
+            </p>
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={detectChats} disabled={busy === "detect"} className="h-8 gap-1 text-xs" data-testid="detect-chats-btn">
               <ArrowsClockwise size={12} /> {busy === "detect" ? "Rilevo…" : "Rileva chat"}

@@ -6024,3 +6024,47 @@ enrichment IP negli alert esistenti con badge reputazione.
 - Status endpoint mostra `configured/source(db|env)/masked`.
 - UI `OutageSourcesSettingsPage.jsx`: card "Token Cloudflare Radar" con input password, "Salva e verifica", "Rimuovi", badge CONFIGURATO(UI/env)+masked, link a dash.cloudflare API tokens.
 - Rimosso CLOUDFLARE_RADAR_TOKEN da .env → unica fonte gestita da UI/DB. Testato end-to-end (PUT→db, status source=db ok, screenshot UI).
+
+## 2026-06 (septies) — Integrazione Downdetector Enterprise (Ookla) v2
+- **NEW** `backend/downdetector.py`: client OAuth2 (POST {base}/tokens?grant_type=client_credentials, Basic Auth client_id:client_secret → JWT 1h, cache in-memory+lock). `check_downdetector(isp_name,country)` → risolve company per slug/nome (filtro country IT) e legge `status` (success/warning/danger). Credenziali cifrate in db.settings (downdetector_client_id/secret), fallback env DD_CLIENT_ID/DD_CLIENT_SECRET. Base override DD_BASE_URL.
+- Integrato come 4ª fonte in `isp_outage.check_isp_outage` → status warning/danger = segnale widespread.
+- **NEW** endpoint `PUT/DELETE /api/external-monitor/outage-sources/downdetector-creds` (admin, verifica live le credenziali prima di salvare). Status endpoint espone la fonte downdetector (configured/source/masked + test live).
+- UI `OutageSourcesSettingsPage.jsx`: 4ª riga fonte + card credenziali (Client ID + Client Secret, salva/verifica/rimuovi, link Dashboard Enterprise).
+- Testato: status mostra 4 fonti; PUT con credenziali finte → correttamente rifiutato dall'OAuth reale Downdetector; screenshot UI OK. Credenziali reali da inserire dall'utente (servizio a pagamento).
+
+## 2026-06 (octies) — Digest mattutino 07:00: SOLO DOWN + orario
+- Riscritto `morning_status_digest` (alert_engine.py): NON elenca più gli alert "critici" generici (backup/CVE/patch esclusi). Ora elenca SOLO ciò che è DOWN: dispositivi vitali spenti, siti/WAN giù, guasti operatori.
+- Per ogni voce mostra da QUANDO è giù: "giù da HH:MM (durata fa)" con data se non è oggi (Europe/Rome). Durata in g/h/m.
+- Fix nome cliente: risolve UUID → nome (fallback client_name, poi "Cliente <8char>").
+- Sezione separata "🌐 Guasti operatori" (isp_outage_watch) con clienti impattati e orario.
+- Filtro down: keyword down/offline/blackout/power/isolat/vital/liveness/reach/situation/external_monitor/isp_outage/connector/wan; esclude backup/kev/cve/vuln/datto_sync/patch/cert/disk/license.
+- Testato su DB reale: messaggio "Cosa è DOWN adesso" con 3 elementi + orari corretti, nomi risolti.
+
+## 2026-06 (nonies) — Digest mattutino: orario configurabile + "Rientrati nella notte"
+- Config `morning_digest_enabled` (bool) + `morning_digest_time` ("HH:MM", Europe/Rome) in DEFAULT_CONFIG → salvabili via PUT /api/alert-engine/config.
+- server.py: sostituito il cron fisso 07:00 con `morning_digest_tick` ogni 1 min → invia UNA volta/giorno all'orario configurato (finestra 90 min, dedup via _id morning_digest_marker, robusto a riavvii). Titolo digest usa l'orario configurato.
+- morning_status_digest: aggiunta sezione "✅ Rientrati nella notte: N" con i down-type risolti nelle ultime 12h (cliente · elemento · risolto HH:MM), cap 15 + "e altri N".
+- UI AlertEngineSettingsPage.jsx: card "Digest mattutino Cosa è DOWN" con Switch + input time (data-testid morning-digest-switch / morning-digest-time).
+- Testato: PUT config (06:45→07:00), digest con titolo orario dinamico, sezione Rientrati (alert risolto simulato), tick dedup/out_of_window; screenshot UI OK.
+
+## 2026-06 (decies) — Fix incoerenza stato WAN "filtered" tra le viste
+Causa: uno stesso firewall "FILTERED" (blocca ICMP/TCP dal lato WAN, reachable=False ma raggiungibile) era interpretato in modo diverso in ogni vista.
+- SLA (get_target_insights `_is_online`): dava priorità a `reachable` → filtered contato come DOWN → uptime 0%/LOSS 100%. FIX: priorità allo `status` (online/filtered/degraded = UP, solo offline = down).
+- Lista clienti / badge WAN (overview.py wan_status): "filtered" non era tra gli stati online → cadeva su "offline" → pill rossa "WAN OFFLINE". FIX: incluso "filtered" tra gli online.
+- Overview StatBox WAN (ClientOverviewPage.js): status==="online"?OK:ALERT → filtered=ALERT rosso. FIX: online/filtered/degraded = OK verde.
+Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora concordano → "filtered" = raggiungibile (UP), non OFFLINE. Verificato schema wan_probe_history (status+reachable). Il valore LOSS 100% resta mostrato (ICMP droppato) ma non conta più come downtime.
+
+## 2026-06 (undecies) — Nebula: ICMP disattivato per i firewall Nebula (opzione a)
+- probe_target (external_monitor.py): se il target WAN ha `linked_nebula_dev_id` e c'è lo stato in db.zyxel_devices → NON pinga il firewall (ICMP filtrato = rumore/100% loss falso), usa `online_status` Nebula come verità (ONLINE→online, OFFLINE→offline), tiene il gateway_ping per la latenza reale. Reversibile: senza link o senza stato Nebula torna il probe ICMP normale.
+- Risultato risultato probe: `nebula_monitored`, `nebula_status`; ping con `skipped:true`, loss None (niente più 100% falso, SLA corretta via _is_online).
+- UI DashboardPage: badge "NEBULA" nella riga WAN quando nebula_monitored (ICMP badge/loss nascosti automaticamente).
+- Attivazione: il target va collegato a Nebula (menu "Collega a firewall Zyxel Nebula" in Monitor Esterno); i già collegati beneficiano subito.
+- Testato: casi ONLINE→online (ICMP skip, loss None), OFFLINE→offline, no-link→probe normale. Backend/frontend OK.
+
+## 2026-06 (duodecies) — Auto-link target WAN ↔ firewall Nebula
+- `auto_link_wan_targets_nebula(client_id=None)` (external_monitor.py): per ogni target WAN non linkato cerca il firewall Nebula corrispondente. Match: 1) IP pubblico (zyxel_devices.public_ip / wan_interfaces[].public_ip), 2) fallback: unico firewall Nebula del cliente per target device_type=firewall. Setta linked_nebula_dev_id + linked_nebula_site_id.
+- Endpoint `POST /api/external-monitor/auto-link-nebula` (admin).
+- Agganciato a fine `sync_client_devices` (zyxel_nebula.py) → auto-link automatico ad ogni sync per cliente.
+- UI ExternalMonitorPage: pulsante "Auto-collega Nebula" (data-testid auto-link-nebula-btn).
+- Effetto combinato: una volta linkato, scatta l'auto-disattivazione ICMP + stato da Nebula (feature precedente) → monitoraggio pulito senza intervento manuale.
+- Testato: match per IP pubblico linka correttamente (dev_id+site_id); endpoint 403 senza auth (montato). Backend/frontend OK.

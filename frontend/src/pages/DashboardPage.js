@@ -352,6 +352,7 @@ function ClientCard({ client: c, navigate }) {
                       <span className="font-bold text-[var(--text-primary)]">{w.label}</span>
                       <span className="text-[8px] px-1 py-0.5 rounded font-bold uppercase" style={{ color: wc, background: `${wc}15` }}>{w.status === "online" ? "ONLINE" : w.status === "offline" ? "OFFLINE" : w.status?.toUpperCase() || "?"}</span>
                       <span className="font-mono text-[var(--text-muted)]">{w.ip}</span>
+                      {w.nebula_monitored && <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold" title="Stato dal cloud Nebula — ICMP disattivato (il firewall filtra il ping dal lato WAN)">NEBULA</span>}
                       {w.check_ping && <span className="text-[8px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-400 font-bold">ICMP</span>}
                       <span className="ml-auto font-mono font-bold" style={{ color: wc }}>{w.latency_ms != null ? `${w.latency_ms}ms` : "—"}</span>
                       {w.loss_pct != null && w.loss_pct > 0 && <span className="font-mono text-red-400">{w.loss_pct}%</span>}

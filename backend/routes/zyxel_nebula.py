@@ -762,6 +762,12 @@ async def sync_client_devices(client_id: str) -> dict:
         except Exception:  # noqa: BLE001
             pass
     await db.zyxel_client_links.update_one({"client_id": client_id}, {"$set": {"last_sync_at": now, "last_sync_count": synced}})
+    # Auto-collega i target WAN di questo cliente ai firewall Nebula appena sincronizzati
+    try:
+        from routes.external_monitor import auto_link_wan_targets_nebula
+        await auto_link_wan_targets_nebula(client_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"auto-link nebula (client {client_id}) fallito: {e}")
     return {"synced": synced, "org_id": org_id}
 
 

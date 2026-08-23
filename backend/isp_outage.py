@@ -170,12 +170,28 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         signals.append(f"Cloudflare Radar: {len(out['cf'])} outage annotato nell'ultima 24h")
         sources.append("Cloudflare Radar")
 
+    # Downdetector Enterprise (crowdsourced ufficiale, se configurato)
+    dd = None
+    try:
+        from downdetector import check_downdetector
+        dd = await check_downdetector(isp_name, (country_code or "IT"))
+        if dd.get("configured"):
+            if dd.get("problem"):
+                widespread = True
+                signals.append(f"Downdetector: segnalazioni utenti elevate su {dd.get('company') or isp_name} (stato {dd.get('status')})")
+                sources.append("Downdetector")
+            elif dd.get("status") == "success":
+                signals.append(f"Downdetector: nessun picco di segnalazioni per {dd.get('company') or isp_name}")
+                sources.append("Downdetector")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("downdetector correlation failed: %s", e)
+
     if widespread or national:
         summary = ("🌐 GUASTO DIFFUSO CONFERMATO: l'interruzione è rilevata anche da fonti pubbliche "
                    "esterne → NON è un problema della singola sede, ma un outage dell'operatore"
                    + (" a livello nazionale." if national else "."))
     elif ripe is True and asn_n:
-        summary = ("✅ Nessun outage diffuso rilevato dalle fonti esterne (IODA/RIPEstat): l'operatore è "
+        summary = ("✅ Nessun outage diffuso rilevato dalle fonti esterne (IODA/RIPEstat/Downdetector): l'operatore è "
                    "operativo altrove → il guasto è probabilmente ISOLATO alla linea/sede del cliente.")
     else:
         summary = "Correlazione outage esterno non conclusiva (dati insufficienti sull'operatore)."
@@ -185,6 +201,7 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         "asn": f"AS{asn_n}" if asn_n else None, "isp_name": isp_name, "country": country_code,
         "signals": signals, "summary": summary,
         "sources": sorted(set(sources)),
+        "downdetector": dd,
         "external_links": _external_links(isp_name, country_code, asn_n),
         "checked_at": int(time.time()),
     }
