@@ -6053,3 +6053,10 @@ Causa: uno stesso firewall "FILTERED" (blocca ICMP/TCP dal lato WAN, reachable=F
 - Lista clienti / badge WAN (overview.py wan_status): "filtered" non era tra gli stati online → cadeva su "offline" → pill rossa "WAN OFFLINE". FIX: incluso "filtered" tra gli online.
 - Overview StatBox WAN (ClientOverviewPage.js): status==="online"?OK:ALERT → filtered=ALERT rosso. FIX: online/filtered/degraded = OK verde.
 Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora concordano → "filtered" = raggiungibile (UP), non OFFLINE. Verificato schema wan_probe_history (status+reachable). Il valore LOSS 100% resta mostrato (ICMP droppato) ma non conta più come downtime.
+
+## 2026-06 (undecies) — Nebula: ICMP disattivato per i firewall Nebula (opzione a)
+- probe_target (external_monitor.py): se il target WAN ha `linked_nebula_dev_id` e c'è lo stato in db.zyxel_devices → NON pinga il firewall (ICMP filtrato = rumore/100% loss falso), usa `online_status` Nebula come verità (ONLINE→online, OFFLINE→offline), tiene il gateway_ping per la latenza reale. Reversibile: senza link o senza stato Nebula torna il probe ICMP normale.
+- Risultato risultato probe: `nebula_monitored`, `nebula_status`; ping con `skipped:true`, loss None (niente più 100% falso, SLA corretta via _is_online).
+- UI DashboardPage: badge "NEBULA" nella riga WAN quando nebula_monitored (ICMP badge/loss nascosti automaticamente).
+- Attivazione: il target va collegato a Nebula (menu "Collega a firewall Zyxel Nebula" in Monitor Esterno); i già collegati beneficiano subito.
+- Testato: casi ONLINE→online (ICMP skip, loss None), OFFLINE→offline, no-link→probe normale. Backend/frontend OK.

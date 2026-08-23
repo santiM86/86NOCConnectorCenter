@@ -435,19 +435,44 @@ async def probe_target(target: dict) -> dict:
     gateway_ip = target.get("gateway_ip")
     use_ping = target.get("check_ping", False)
 
+    # v2026-06: target collegato a Nebula → lo stato up/down arriva dal cloud Zyxel
+    # (fonte autorevole). L'ICMP sul firewall e' rumore (droppato dal lato WAN):
+    # NON pinghiamo il firewall e usiamo lo stato Nebula. Reversibile: se il link
+    # manca o lo stato non e' disponibile, torna il probe ICMP normale.
+    nebula_dev_id = (target.get("linked_nebula_dev_id") or "").strip() or None
+    nebula_status = None
+    if nebula_dev_id:
+        try:
+            ndoc = await db.zyxel_devices.find_one(
+                {"dev_id": nebula_dev_id}, {"_id": 0, "online_status": 1})
+            nebula_status = (ndoc or {}).get("online_status")  # "ONLINE"/"OFFLINE"/None
+        except Exception:
+            nebula_status = None
+    skip_target_ping = bool(nebula_status)  # abbiamo lo stato Nebula → niente ICMP sul FW
+    if skip_target_ping:
+        use_ping = False
+
     # Filter out non-numeric ports (legacy "icmp" entries)
     ports = [p for p in ports if isinstance(p, int) and p > 0]
 
-    # Ping target + gateway in parallel
-    tasks = [ping_host(ip)]
+    # Ping target (salvo se monitorato via Nebula) + gateway in parallelo
+    tasks = []
+    if not skip_target_ping:
+        tasks.append(ping_host(ip))
     if gateway_ip:
         tasks.append(ping_host(gateway_ip))
+    ping_results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
 
-    ping_results = await asyncio.gather(*tasks, return_exceptions=True)
-    ping_result = ping_results[0] if isinstance(ping_results[0], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+    idx = 0
+    if skip_target_ping:
+        ping_result = {"reachable": None, "latency_ms": None, "packet_loss_pct": None,
+                       "skipped": True, "reason": "nebula_monitored"}
+    else:
+        ping_result = ping_results[idx] if (ping_results and isinstance(ping_results[idx], dict)) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+        idx += 1
     gateway_ping = None
-    if gateway_ip and len(ping_results) > 1:
-        gateway_ping = ping_results[1] if isinstance(ping_results[1], dict) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
+    if gateway_ip:
+        gateway_ping = ping_results[idx] if (len(ping_results) > idx and isinstance(ping_results[idx], dict)) else {"reachable": False, "latency_ms": None, "packet_loss_pct": 100}
 
     # TCP port checks (in parallel) — skip if no ports configured
     port_checks = []
@@ -497,6 +522,12 @@ async def probe_target(target: dict) -> dict:
     else:
         status = "offline"
 
+    # v2026-06: override con stato Nebula (fonte autorevole) quando disponibile.
+    if nebula_status == "ONLINE":
+        status = "online"
+    elif nebula_status == "OFFLINE":
+        status = "offline"
+
     result = {
         "target_id": target["id"],
         "client_id": target["client_id"],
@@ -507,6 +538,8 @@ async def probe_target(target: dict) -> dict:
         "ping": ping_result,
         "ports": port_checks,
         "check_ping": use_ping,
+        "nebula_monitored": skip_target_ping,
+        "nebula_status": nebula_status,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     if gateway_ip:
