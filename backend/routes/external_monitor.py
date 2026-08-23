@@ -428,6 +428,57 @@ async def check_tcp_port(ip: str, port: int, timeout: int = 8) -> dict:
     }
 
 
+async def auto_link_wan_targets_nebula(client_id: Optional[str] = None) -> dict:
+    """Collega automaticamente i target WAN non ancora linkati al firewall Nebula
+    corrispondente. Match: 1) per IP pubblico (firewall.public_ip / wan_interfaces),
+    2) fallback: unico firewall Nebula del cliente per un target di tipo firewall."""
+    q = {"$or": [{"linked_nebula_dev_id": {"$in": [None, ""]}}, {"linked_nebula_dev_id": {"$exists": False}}]}
+    if client_id:
+        q = {"$and": [q, {"client_id": client_id}]}
+    targets = await db.wan_targets.find(q, {"_id": 0}).to_list(5000)
+    linked, details = 0, []
+    fw_cache: dict = {}
+    for t in targets:
+        cid = t.get("client_id")
+        pip = (t.get("public_ip") or "").strip()
+        if cid not in fw_cache:
+            fw_cache[cid] = await db.zyxel_devices.find(
+                {"client_id": cid, "device_type": "firewall"},
+                {"_id": 0, "dev_id": 1, "site_id": 1, "public_ip": 1, "wan_interfaces": 1, "name": 1},
+            ).to_list(100)
+        fws = fw_cache[cid]
+        match, method = None, None
+        for d in fws:
+            ips = set()
+            if d.get("public_ip"):
+                ips.add(str(d["public_ip"]).strip())
+            for w in (d.get("wan_interfaces") or []):
+                if w.get("public_ip"):
+                    ips.add(str(w["public_ip"]).strip())
+            if pip and pip in ips:
+                match, method = d, "public_ip"
+                break
+        if not match and t.get("device_type") == "firewall" and len(fws) == 1:
+            match, method = fws[0], "unico_firewall_cliente"
+        if match:
+            await db.wan_targets.update_one(
+                {"id": t["id"]},
+                {"$set": {"linked_nebula_dev_id": match["dev_id"],
+                          "linked_nebula_site_id": match.get("site_id")}},
+            )
+            linked += 1
+            details.append({"target": t.get("label"), "public_ip": pip,
+                            "firewall": match.get("name"), "dev_id": match["dev_id"], "method": method})
+    return {"linked": linked, "scanned": len(targets), "details": details}
+
+
+@router.post("/auto-link-nebula")
+async def auto_link_nebula_endpoint(current_user: dict = Depends(get_current_user)):
+    """Collega in automatico tutti i target WAN ai firewall Nebula corrispondenti."""
+    require_admin(current_user)
+    return await auto_link_wan_targets_nebula()
+
+
 async def probe_target(target: dict) -> dict:
     """Esegue tutti i check su un target WAN."""
     ip = target["public_ip"]

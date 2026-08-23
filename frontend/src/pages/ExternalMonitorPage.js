@@ -182,6 +182,15 @@ export default function ExternalMonitorPage() {
     } catch { toast.error("Errore"); }
   };
 
+  const autoLinkNebula = async () => {
+    try {
+      const res = await axios.post(`${API}/external-monitor/auto-link-nebula`);
+      const n = res.data?.linked ?? 0;
+      toast.success(n > 0 ? `${n} target collegati automaticamente a Nebula` : "Nessun nuovo collegamento (già tutti linkati o nessun match)");
+      setTimeout(fetchAll, 800);
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore auto-collegamento Nebula"); }
+  };
+
   const testConnection = async () => {
     if (!form.public_ip) { toast.error("Inserisci un IP pubblico"); return; }
     setTesting(true);
@@ -257,6 +266,9 @@ export default function ExternalMonitorPage() {
         <div className="flex gap-2">
           <Button size="sm" className="h-7 text-xs gap-1" onClick={probeNow} data-testid="probe-now-btn">
             <Lightning size={12} /> Probe Ora
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 text-xs gap-1 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10" onClick={autoLinkNebula} data-testid="auto-link-nebula-btn" title="Collega automaticamente i target WAN ai firewall Nebula corrispondenti (per IP pubblico / sito)">
+            <LinkIcon size={12} /> Auto-collega Nebula
           </Button>
           <Button size="sm" className="h-7 text-xs gap-1" onClick={() => setShowAdd(!showAdd)} data-testid="add-target-btn">
             <Plus size={12} /> Aggiungi Target

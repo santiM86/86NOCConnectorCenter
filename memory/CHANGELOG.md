@@ -6060,3 +6060,11 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - UI DashboardPage: badge "NEBULA" nella riga WAN quando nebula_monitored (ICMP badge/loss nascosti automaticamente).
 - Attivazione: il target va collegato a Nebula (menu "Collega a firewall Zyxel Nebula" in Monitor Esterno); i già collegati beneficiano subito.
 - Testato: casi ONLINE→online (ICMP skip, loss None), OFFLINE→offline, no-link→probe normale. Backend/frontend OK.
+
+## 2026-06 (duodecies) — Auto-link target WAN ↔ firewall Nebula
+- `auto_link_wan_targets_nebula(client_id=None)` (external_monitor.py): per ogni target WAN non linkato cerca il firewall Nebula corrispondente. Match: 1) IP pubblico (zyxel_devices.public_ip / wan_interfaces[].public_ip), 2) fallback: unico firewall Nebula del cliente per target device_type=firewall. Setta linked_nebula_dev_id + linked_nebula_site_id.
+- Endpoint `POST /api/external-monitor/auto-link-nebula` (admin).
+- Agganciato a fine `sync_client_devices` (zyxel_nebula.py) → auto-link automatico ad ogni sync per cliente.
+- UI ExternalMonitorPage: pulsante "Auto-collega Nebula" (data-testid auto-link-nebula-btn).
+- Effetto combinato: una volta linkato, scatta l'auto-disattivazione ICMP + stato da Nebula (feature precedente) → monitoraggio pulito senza intervento manuale.
+- Testato: match per IP pubblico linka correttamente (dev_id+site_id); endpoint 403 senza auth (montato). Backend/frontend OK.
