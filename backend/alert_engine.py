@@ -463,48 +463,121 @@ async def run_backbone_watchdog(db, cfg_global: Dict[str, Any]) -> dict:
 
 
 async def morning_status_digest(db) -> dict:
-    """Riepilogo mattutino (07:00): stato di TUTTI i clienti, mostrando SOLO
-    alert critici e dispositivi down (nient'altro). In aggiunta al digest notturno."""
+    """Riepilogo mattutino (07:00): elenca SOLO ciò che è DOWN (dispositivi vitali
+    spenti, siti/WAN giù, guasti operatori). NIENTE alert 'critici' generici
+    (backup, CVE, ecc.). Per ogni voce mostra da QUANDO è giù."""
     try:
         cfg = await get_config(db)
     except Exception:
         return {"sent": 0}
     if "telegram" not in (cfg.get("channels") or []) or not cfg.get("telegram_enabled"):
         return {"sent": 0, "reason": "telegram_off"}
-    # Solo alert ATTIVI e CRITICI
+
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo("Europe/Rome")
+
+    def _down_since(created_at):
+        """(orario HH:MM, durata leggibile) da un ISO/created_at, o (None, None)."""
+        if not created_at:
+            return None, None
+        try:
+            dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None, None
+        now = datetime.now(timezone.utc)
+        mins = max(0, int((now - dt).total_seconds() // 60))
+        h, m = divmod(mins, 60)
+        if h >= 48:
+            d, hh = divmod(h, 24)
+            dur = f"{d}g {hh}h"
+        else:
+            dur = (f"{h}h {m}m" if h else f"{m}m")
+        loc = dt.astimezone(_TZ)
+        now_loc = datetime.now(_TZ)
+        when = loc.strftime("%H:%M") if loc.date() == now_loc.date() else loc.strftime("%d/%m %H:%M")
+        return when, dur
+
+    _DOWN_KW = ("down", "offline", "blackout", "power", "isolat", "vital",
+                "liveness", "reach", "situation", "external_monitor", "isp_outage",
+                "connector", "wan", "host_down", "agent")
+    _EXCLUDE_KW = ("backup", "kev", "cve", "vuln", "datto_sync", "patch",
+                   "cert", "disk", "license", "sync_stale")
+
+    def _is_down_alert(a):
+        st = (a.get("source_type") or "").lower()
+        ti = (a.get("title") or "").lower()
+        if any(x in st for x in _EXCLUDE_KW):
+            return False
+        return any(k in (st + " " + ti) for k in _DOWN_KW)
+
     active = await db.alerts.find(
-        {"status": "active", "severity": "critical"},
-        {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1},
-    ).to_list(2000)
-    cids = list({a.get("client_id") for a in active if a.get("client_id")})
+        {"status": "active"},
+        {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1, "title": 1,
+         "device_name": 1, "device_ip": 1, "created_at": 1, "affected_clients": 1},
+    ).to_list(3000)
+
+    down = [a for a in active if _is_down_alert(a)]
+    # separa gli outage operatore (multi-cliente) dal resto
+    operator_outages = [a for a in down if "isp_outage" in (a.get("source_type") or "").lower()]
+    device_downs = [a for a in down if a not in operator_outages]
+
+    # risolvi nomi clienti (fix UUID)
+    cids = list({a.get("client_id") for a in device_downs if a.get("client_id")})
     cmap = {}
     if cids:
-        for c in await db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000):
-            cmap[c["id"]] = c["name"]
+        for c in await db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}).to_list(2000):
+            cmap[c["id"]] = c.get("name")
+
+    def _client_label(a):
+        cid = a.get("client_id")
+        return (cmap.get(cid) or a.get("client_name")
+                or (f"Cliente {str(cid)[:8]}" if cid else "—"))
+
+    def _item_label(a):
+        nm = (a.get("device_name") or "").strip()
+        if not nm:
+            nm = (a.get("device_ip") or "").strip()
+        if not nm:
+            # ripulisci il titolo (es. "WAN Firewall: OFFLINE" → "WAN Firewall")
+            t = (a.get("title") or "elemento").strip()
+            for sep in (":", " — ", " - "):
+                if sep in t:
+                    t = t.split(sep)[0].strip()
+            nm = t
+        return nm
+
     by_client = {}
-    for a in active:
-        cli = cmap.get(a.get("client_id")) or a.get("client_name") or a.get("client_id") or "—"
-        d = by_client.setdefault(cli, {"down": 0, "crit": 0})
-        if _is_instant_source(a.get("source_type")):
-            d["down"] += 1
-        else:
-            d["crit"] += 1
-    tot = len(active)
-    if not by_client:
-        body = "☀️ <b>Buongiorno — ARGUS</b> (07:00)\nNessun problema critico attivo. Tutti i clienti operativi. ✅"
+    for a in device_downs:
+        lbl = _client_label(a)
+        by_client.setdefault(lbl, []).append(a)
+
+    total_down = len(device_downs)
+    if not device_downs and not operator_outages:
+        body = ("☀️ <b>Buongiorno — ARGUS</b> (07:00)\n"
+                "Nessun elemento DOWN. Tutti i dispositivi vitali, siti e linee operativi. ✅")
     else:
-        lines = []
-        for cli in sorted(by_client, key=lambda c: -(by_client[c]["down"] * 10 + by_client[c]["crit"]))[:60]:
-            d = by_client[cli]
-            parts = []
-            if d["down"]:
-                parts.append(f"{d['down']} down")
-            if d["crit"]:
-                parts.append(f"{d['crit']} critici")
-            lines.append(f"• <b>{cli}</b>: {', '.join(parts)}")
-        body = (f"☀️ <b>Buongiorno — Stato clienti ARGUS</b> (07:00)\n"
-                f"{len(by_client)} clienti con criticità · {tot} alert critici totali\n\n"
-                + "\n".join(lines))
+        lines = [f"☀️ <b>Buongiorno — Cosa è DOWN adesso</b> (07:00)",
+                 f"{total_down} elementi giù su {len(by_client)} clienti\n"]
+        # ordina i clienti per numero di down desc
+        for cli in sorted(by_client, key=lambda c: -len(by_client[c]))[:80]:
+            lines.append(f"• <b>{cli}</b>")
+            for a in sorted(by_client[cli], key=lambda x: str(x.get("created_at") or "")):
+                hhmm, dur = _down_since(a.get("created_at"))
+                since = f" — giù da {hhmm} ({dur} fa)" if hhmm else ""
+                lines.append(f"   ◦ {_item_label(a)}{since}")
+        if operator_outages:
+            lines.append("\n🌐 <b>Guasti operatori</b>")
+            for a in operator_outages:
+                hhmm, dur = _down_since(a.get("created_at"))
+                since = f" — da {hhmm} ({dur} fa)" if hhmm else ""
+                who = (a.get("title") or "Operatore").replace("OUTAGE OPERATORE", "").strip()
+                aff = a.get("affected_clients") or []
+                names = ", ".join(c.get("name", "?") for c in aff[:8]) if aff else ""
+                lines.append(f"   ◦ {who}{since}" + (f" · clienti: {names}" if names else ""))
+        body = "\n".join(lines)
+
     try:
         from telegram_notifier import send_telegram_text
         await send_telegram_text(db, body, chat_id=cfg.get("telegram_chat_id") or None,
@@ -512,8 +585,8 @@ async def morning_status_digest(db) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.debug("morning digest send failed: %s", e)
         return {"sent": 0, "error": str(e)[:120]}
-    logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {tot} critical alerts")
-    return {"sent": 1, "clients": len(by_client), "alerts": tot}
+    logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {total_down} down, {len(operator_outages)} operator outages")
+    return {"sent": 1, "clients": len(by_client), "down": total_down, "operator_outages": len(operator_outages)}
 
 
 

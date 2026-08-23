@@ -6031,3 +6031,11 @@ enrichment IP negli alert esistenti con badge reputazione.
 - **NEW** endpoint `PUT/DELETE /api/external-monitor/outage-sources/downdetector-creds` (admin, verifica live le credenziali prima di salvare). Status endpoint espone la fonte downdetector (configured/source/masked + test live).
 - UI `OutageSourcesSettingsPage.jsx`: 4ª riga fonte + card credenziali (Client ID + Client Secret, salva/verifica/rimuovi, link Dashboard Enterprise).
 - Testato: status mostra 4 fonti; PUT con credenziali finte → correttamente rifiutato dall'OAuth reale Downdetector; screenshot UI OK. Credenziali reali da inserire dall'utente (servizio a pagamento).
+
+## 2026-06 (octies) — Digest mattutino 07:00: SOLO DOWN + orario
+- Riscritto `morning_status_digest` (alert_engine.py): NON elenca più gli alert "critici" generici (backup/CVE/patch esclusi). Ora elenca SOLO ciò che è DOWN: dispositivi vitali spenti, siti/WAN giù, guasti operatori.
+- Per ogni voce mostra da QUANDO è giù: "giù da HH:MM (durata fa)" con data se non è oggi (Europe/Rome). Durata in g/h/m.
+- Fix nome cliente: risolve UUID → nome (fallback client_name, poi "Cliente <8char>").
+- Sezione separata "🌐 Guasti operatori" (isp_outage_watch) con clienti impattati e orario.
+- Filtro down: keyword down/offline/blackout/power/isolat/vital/liveness/reach/situation/external_monitor/isp_outage/connector/wan; esclude backup/kev/cve/vuln/datto_sync/patch/cert/disk/license.
+- Testato su DB reale: messaggio "Cosa è DOWN adesso" con 3 elementi + orari corretti, nomi risolti.
