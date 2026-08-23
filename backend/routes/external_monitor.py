@@ -1345,17 +1345,21 @@ async def get_target_insights(
     ).sort("timestamp", 1).to_list(20000)
 
     def _is_online(h):
-        # Schema FLAT (post v2026-03-01): reachable diretto
+        # v2026-06: lo STATO ha priorità. "filtered"/"degraded"/"online" = firewall
+        # RAGGIUNGIBILE (anche se droppa ICMP/TCP e reachable=False): NON è downtime.
+        # Solo "offline" conta come giù ai fini SLA.
+        status = (h.get("status") or "").lower()
+        if status in ("online", "filtered", "degraded"):
+            return True
+        if status == "offline":
+            return False
+        # Nessuno stato salvato: fallback ai flag reachable
         if "reachable" in h:
             return bool(h.get("reachable"))
-        # Schema NESTED legacy
         nested = (h.get("ping") or {}).get("reachable")
         if nested is not None:
             return bool(nested)
-        # Fallback ultimo livello: usa lo `status` salvato (online/filtered/degraded
-        # sono comunque raggiungibili dal POV dell'uptime SLA)
-        status = (h.get("status") or "").lower()
-        return status in ("online", "filtered", "degraded")
+        return False
 
     def _lat(h):
         if "latency_ms" in h:

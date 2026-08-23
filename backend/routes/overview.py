@@ -526,7 +526,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 if not r:
                     continue
                 st = r.get("status", "unknown")
-                if st in ("online", "degraded"):
+                # v2026-06: "filtered" = firewall raggiungibile (droppa ICMP/porte)
+                # → NON è offline. Coerente con la diagnosi e con WanClientTab/SLA.
+                if st in ("online", "degraded", "filtered"):
                     any_online = True
                 else:
                     all_online = False

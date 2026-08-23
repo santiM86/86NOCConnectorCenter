@@ -6046,3 +6046,10 @@ enrichment IP negli alert esistenti con badge reputazione.
 - morning_status_digest: aggiunta sezione "✅ Rientrati nella notte: N" con i down-type risolti nelle ultime 12h (cliente · elemento · risolto HH:MM), cap 15 + "e altri N".
 - UI AlertEngineSettingsPage.jsx: card "Digest mattutino Cosa è DOWN" con Switch + input time (data-testid morning-digest-switch / morning-digest-time).
 - Testato: PUT config (06:45→07:00), digest con titolo orario dinamico, sezione Rientrati (alert risolto simulato), tick dedup/out_of_window; screenshot UI OK.
+
+## 2026-06 (decies) — Fix incoerenza stato WAN "filtered" tra le viste
+Causa: uno stesso firewall "FILTERED" (blocca ICMP/TCP dal lato WAN, reachable=False ma raggiungibile) era interpretato in modo diverso in ogni vista.
+- SLA (get_target_insights `_is_online`): dava priorità a `reachable` → filtered contato come DOWN → uptime 0%/LOSS 100%. FIX: priorità allo `status` (online/filtered/degraded = UP, solo offline = down).
+- Lista clienti / badge WAN (overview.py wan_status): "filtered" non era tra gli stati online → cadeva su "offline" → pill rossa "WAN OFFLINE". FIX: incluso "filtered" tra gli online.
+- Overview StatBox WAN (ClientOverviewPage.js): status==="online"?OK:ALERT → filtered=ALERT rosso. FIX: online/filtered/degraded = OK verde.
+Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora concordano → "filtered" = raggiungibile (UP), non OFFLINE. Verificato schema wan_probe_history (status+reachable). Il valore LOSS 100% resta mostrato (ICMP droppato) ma non conta più come downtime.
