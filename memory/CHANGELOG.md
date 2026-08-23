@@ -6068,3 +6068,9 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - UI ExternalMonitorPage: pulsante "Auto-collega Nebula" (data-testid auto-link-nebula-btn).
 - Effetto combinato: una volta linkato, scatta l'auto-disattivazione ICMP + stato da Nebula (feature precedente) → monitoraggio pulito senza intervento manuale.
 - Testato: match per IP pubblico linka correttamente (dev_id+site_id); endpoint 403 senza auth (montato). Backend/frontend OK.
+
+## 2026-06 (terdecies) — WAN/sito down: invio Telegram in TEMPO REALE (gap chiuso)
+- GAP trovato: gli alert WAN offline e FAILOVER/CLIENTE ISOLATO (external_monitor / external_monitor_line) facevano solo webpush + dashboard, NON venivano inviati su Telegram in tempo reale.
+- FIX: aggiunto notify_alert_telegram() sull'emit di WAN offline (probe cycle) e su failover/isolato. Aggiunti "external_monitor"/"wan" a _TG_INSTANT_KEYWORDS → istantanei anche in quiet hours notturne.
+- Confermato che vitali down, situazioni, ISP outage, Hyper-V VM down già inviavano real-time.
+- Testato: _is_instant_source('external_monitor')=True, backup=False; notify_alert_telegram invia il doc WAN OFFLINE (non accodato) fuori quiet hours.

@@ -96,7 +96,8 @@ def _telegram_severity_ok(cfg: Dict[str, Any], severity: str) -> bool:
 
 # source_type che rappresentano un "vero down" → sempre istantanei anche in quiet hours
 _TG_INSTANT_KEYWORDS = ("down", "offline", "blackout", "power", "isolat",
-                        "situation", "reach", "liveness", "vital", "connector")
+                        "situation", "reach", "liveness", "vital", "connector",
+                        "external_monitor", "wan")
 
 
 def _is_instant_source(source_type: str) -> bool:
