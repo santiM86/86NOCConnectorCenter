@@ -349,3 +349,16 @@
 .tvx-sec-row .tvx-isp-name { color: #f5d0fe; }
 .tvx-sec-row .tvx-isp-clients { color: #e9d5ff; }
 
+
+/* NUOVO DISPOSITIVO (rogue / MAC sconosciuto) — tono ciano */
+.tv-popup-new { border-color: #22d3ee; background: #041318;
+  box-shadow: 0 0 60px 0 rgba(34,211,238,.40), inset 0 0 40px rgba(34,211,238,.08); }
+.tv-popup-new .tv-popup-badge { background: #22d3ee; color: #012027; }
+.tv-popup-new .tv-popup-title { color: #cffafe; }
+.tv-popup-new .tv-popup-pulse { background: #22d3ee; }
+.tvx-new-row { background: rgba(34,211,238,.10); border-color: rgba(34,211,238,.45);
+  box-shadow: 0 0 22px rgba(34,211,238,.16) inset; }
+.tvx-new-row .tvx-isp-dot { background: #22d3ee; }
+.tvx-new-tag { background: #0e7490; }
+.tvx-new-row .tvx-isp-name { color: #cffafe; }
+.tvx-new-row .tvx-isp-clients { color: #a5f3fc; }

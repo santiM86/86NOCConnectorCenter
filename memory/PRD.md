@@ -8523,3 +8523,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   ClientOverviewPage tab WAN (nome ISP dopo public_ip), NebulaFirewalls.jsx (chip ISP
   nel firewall usando fw.isp dal sync). Verificato: 8.8.8.8->Google, 1.1.1.1->Cloudflare.
 - ATTENZIONE fix: nel chip Nebula usato solo fw.isp (geo era fuori scope in FirewallDetail).
+
+## 2026-08-24 — TV: banner NUOVO DISPOSITIVO (rogue/MAC sconosciuto)
+- tv_dashboard.py: aggiunto new_devices (alert source_type=rogue_device attivi di OGGI,
+  fuso Europe/Rome) con mac/vendor/name/client_name/investigating -> nel feed /api/tv/dashboard.
+- TvDashboardPage.js: banner persistente ciano NUOVO DISPOSITIVO + popup transitorio (kind=new)
+  + suono, alla comparsa di un MAC mai visto. CSS tvx-new-row/tv-popup-new in TvDashboard.css.
+- Verificato con rogue sintetico + screenshot: banner mostra MAC, vendor, cliente.
