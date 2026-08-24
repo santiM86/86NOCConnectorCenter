@@ -343,4 +343,9 @@
 .tvx-isp-tag { font-size: 12px; font-weight: 800; letter-spacing: .12em; color: #fff; background: #dc2626; padding: 3px 10px; border-radius: 6px; }
 .tvx-isp-name { font-size: 18px; font-weight: 800; color: #fecaca; }
 .tvx-isp-clients { font-size: 15px; font-weight: 600; color: #fde68a; }
+.tvx-sec-row { background: rgba(217,70,239,.10); border-color: rgba(217,70,239,.45); box-shadow: 0 0 22px rgba(217,70,239,.16) inset; }
+.tvx-sec-row .tvx-isp-dot { background: #d946ef; }
+.tvx-sec-tag { background: #a21caf; }
+.tvx-sec-row .tvx-isp-name { color: #f5d0fe; }
+.tvx-sec-row .tvx-isp-clients { color: #e9d5ff; }
 

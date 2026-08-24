@@ -476,10 +476,19 @@ async def tv_dashboard_data():
         else:
             cs["backup"] = None
 
-    # Eventi critici extra per i popup TV: outage operatore + incidenti sicurezza
+    # Eventi critici extra per i popup/banner TV: outage operatore + incidenti sicurezza.
+    # SOLO eventi di OGGI (fuso Europe/Rome), niente storici (richiesta utente).
     _name_map = {cs["id"]: cs["name"] for cs in client_summaries}
+    try:
+        from zoneinfo import ZoneInfo
+        _local_now = now.astimezone(ZoneInfo("Europe/Rome"))
+        _today_start = _local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start_iso = _today_start.astimezone(timezone.utc).isoformat()
+    except Exception:
+        today_start_iso = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     isp_rows = await db.alerts.find(
-        {"status": "active", "source_type": "isp_outage_watch"},
+        {"status": "active", "source_type": "isp_outage_watch",
+         "created_at": {"$gte": today_start_iso}},
         {"_id": 0, "id": 1, "title": 1, "affected_clients": 1},
     ).to_list(50)
     isp_outages = [{
@@ -489,12 +498,14 @@ async def tv_dashboard_data():
     } for a in isp_rows]
     sec_rows = await db.alerts.find(
         {"status": "active", "severity": {"$in": ["critical", "high"]},
+         "created_at": {"$gte": today_start_iso},
          "source_type": {"$regex": "c2|ransom|security|situation|threat|malware|intrusion", "$options": "i"}},
-        {"_id": 0, "id": 1, "title": 1, "client_id": 1, "client_name": 1, "source_type": 1},
-    ).to_list(50)
+        {"_id": 0, "id": 1, "title": 1, "client_id": 1, "client_name": 1, "source_type": 1, "severity": 1},
+    ).sort("created_at", -1).to_list(50)
     security_incidents = [{
         "id": a.get("id"),
         "title": a.get("title") or "Incidente sicurezza",
+        "severity": a.get("severity", "high"),
         "client_name": _name_map.get(a.get("client_id")) or a.get("client_name") or "—",
     } for a in sec_rows]
 
