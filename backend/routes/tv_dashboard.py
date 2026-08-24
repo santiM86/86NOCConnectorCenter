@@ -170,23 +170,9 @@ async def tv_dashboard_data():
 
     # 3. All device poll statuses
     all_devices = await db.device_poll_status.find({}, {"_id": 0}).to_list(2000)
-    # Dedup record duplicati per dispositivo (master vs scanner-fallback): "reachable
-    # wins", poi il più recente. Allinea la TV alla scheda cliente (/api/devices).
-    def _ok(d):
-        return bool(d.get("ping_reachable") or d.get("reachable"))
-    def _ts(d):
-        return d.get("last_seen_at") or d.get("last_seen") or d.get("updated_at") or ""
-    _dedup = {}
-    for d in all_devices:
-        k = f"{d.get('client_id')}:{d.get('ip')}"
-        cur = _dedup.get(k)
-        if cur is None:
-            _dedup[k] = d
-            continue
-        # reachable vince; a parità, il più recente
-        if (_ok(d), _ts(d)) > (_ok(cur), _ts(cur)):
-            _dedup[k] = d
-    all_devices = list(_dedup.values())
+    # Fonte UNICA di liveness condivisa: dedup canonica (reachable wins, poi recente).
+    from liveness import dedup_poll_records
+    all_devices = dedup_poll_records(all_devices)
 
     # 4. Managed devices (for names)
     managed = await db.managed_devices.find({}, {"_id": 0}).to_list(2000)
@@ -255,6 +241,35 @@ async def tv_dashboard_data():
                 })
 
     # 7. Build per-client summary + collect ALL offline devices
+    # FONTE UNICA DI LIVENESS: compute_status (evidence + debounce + cascade-stale +
+    # blackout) — identica a scheda cliente (/api/devices) e dashboard (overview).
+    from liveness_resolver import (build_evidence_maps, compute_status,
+                                   build_clients_without_online_agent, build_blackout_clients)
+    _ip_ev, _mac_ev = await build_evidence_maps(db, window_minutes=15)
+    _off_clients = await build_clients_without_online_agent(db)
+    _blackout = await build_blackout_clients(db, _off_clients)
+    _managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed}
+    _status_map = {}
+    for _d in all_devices:
+        _cid = _d.get("client_id"); _ip = _d.get("device_ip") or _d.get("ip")
+        if not _cid or not _ip:
+            continue
+        _md = _managed_by_key.get((_cid, _ip), {})
+        try:
+            _st, _ = compute_status(_d, _md, _ip_ev, _mac_ev, _off_clients, _blackout)
+        except Exception:
+            _st = "online" if (_d.get("ping_reachable") or _d.get("reachable")) else "offline"
+        _status_map[f"{_cid}:{_ip}"] = _st
+
+    def _dev_key(d):
+        return f"{d.get('client_id')}:{d.get('device_ip') or d.get('ip')}"
+
+    def _dev_online(d):
+        return _status_map.get(_dev_key(d)) == "online"
+
+    def _dev_offline(d):
+        return _status_map.get(_dev_key(d)) == "offline"
+
     client_summaries = []
     all_offline_devices = []
     total_online = 0
@@ -264,8 +279,11 @@ async def tv_dashboard_data():
     for client in clients_raw:
         cid = client["id"]
         client_devices = [d for d in all_devices if d.get("client_id") == cid]
-        online = sum(1 for d in client_devices if d.get("reachable"))
-        offline = len(client_devices) - online
+        # FONTE UNICA: conteggio via compute_status (identico a scheda cliente/overview).
+        # I device "stale"/"pending" NON contano come offline (era la causa dei falsi
+        # positivi rossi sulla TV rispetto alla scheda cliente).
+        online = sum(1 for d in client_devices if _dev_online(d))
+        offline = sum(1 for d in client_devices if _dev_offline(d))
         total_online += online
         total_offline += offline
         total_devices_count += len(client_devices)
@@ -287,10 +305,10 @@ async def tv_dashboard_data():
                 connector_version = connector.get("connector_version", "")
             last_heartbeat = _time_ago(last_seen) if last_seen else "mai"
 
-        # Offline devices with enriched data
+        # Offline devices with enriched data (solo status == "offline", non stale)
         problem_devices = []
         for d in client_devices:
-            if not d.get("reachable"):
+            if _dev_offline(d):
                 dev_ip = d.get("device_ip", "")
                 dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
                 last_seen_dev = d.get("last_seen", d.get("updated_at", ""))
@@ -309,15 +327,15 @@ async def tv_dashboard_data():
 
         vital_down = [d for d in problem_devices if d.get("vital")]
 
-        # Online devices list for this client
+        # Online devices list for this client (solo status == "online")
         online_devices = []
         for d in client_devices:
-            if d.get("reachable"):
+            if _dev_online(d):
                 dev_ip = d.get("device_ip", "")
                 dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
                 online_devices.append({"ip": dev_ip, "name": dev_name})
 
-        health = round((online / max(len(client_devices), 1)) * 100)
+        health = round((online / max(online + offline, 1)) * 100)
 
         # Hardware Health Matrix (rollup worst-of across iLO servers of this client)
         ilo_docs = [d for d in client_devices
