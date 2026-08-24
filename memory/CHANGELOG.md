@@ -6091,3 +6091,8 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - Aggiunta sezione "TUTTE LE AZIENDE (N)" in cima: elenco puntato di TUTTI i clienti con pallino colorato — verde=tutto ok, rosso=qualcosa down (vitali/WAN offline/backup falliti), giallo=warning. Tag sintetico sul problema (vitali/WAN/backup). Legenda inclusa. Ordinati crit>warn>ok, poi alfabetico. Griglia multi-colonna densa per 45".
 - allClients memo (tutti i clienti, non solo quelli con problemi). Card di dettaglio restano sotto per i soli clienti con problemi.
 - Testato: screenshot → roster con 86BIT_Office rosso (tag WAN) + legenda; card dettaglio sotto. Compila OK.
+
+## 2026-06 (septendecies) — TV popup: solo eventi critici (vitali/WAN/backup)
+- check() dei popup centrali ora scatta SOLO su: nuovo VITALE down, nuova WAN OFFLINE (sede isolata), nuovo BACKUP fallito. Niente più popup per ogni workstation offline.
+- Badge popup dinamico: "DISPOSITIVO VITALE OFFLINE" / "SEDE / WAN OFFLINE" / "BACKUP FALLITO".
+- NB: lo screenshot utente mostra ancora la VECCHIA versione in PRODUZIONE (design a card "21 OFFLINE" + popup per ogni device) → serve deploy per applicare la nuova TV dashboard.

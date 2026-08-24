@@ -42,11 +42,13 @@ function useAlarmSystem() {
     const p = prevRef.current;
     const vitalKeys = new Set();
     const bkKeys = new Set();
+    const wanKeys = new Set();
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => vitalKeys.add(`${c.id}:${v.ip}`));
       if (c.backup && (c.backup.failed || 0) > 0) bkKeys.add(`${c.id}:bk`);
+      (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => wanKeys.add(`${c.id}:${w.public_ip}`));
     });
-    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, primed: true }; return; }
+    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, primed: true }; return; }
     let any = false;
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => {
@@ -54,12 +56,17 @@ function useAlarmSystem() {
           pushPopup("off", c.name, `VITALE DOWN — ${v.name || v.ip}`); any = true;
         }
       });
+      (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => {
+        if (!(p.wanKeys || new Set()).has(`${c.id}:${w.public_ip}`)) {
+          pushPopup("off", c.name, `WAN OFFLINE — ${w.label || w.public_ip}`); any = true;
+        }
+      });
       if (c.backup && (c.backup.failed || 0) > 0 && !p.bkKeys.has(`${c.id}:bk`)) {
         pushPopup("crit", c.name, `BACKUP FALLITO — ${c.backup.failed} VM`); any = true;
       }
     });
     if (any && soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
-    prevRef.current = { vitalKeys, bkKeys, primed: true };
+    prevRef.current = { vitalKeys, bkKeys, wanKeys, primed: true };
   }, [soundOn, beep, pushPopup]);
   useEffect(() => {
     if (popups.length === 0) return;
@@ -145,7 +152,7 @@ export default function TvDashboardPage() {
           {popups.map(pp => (
             <div key={pp.id} className={`tv-popup tv-popup-${pp.kind}`} data-testid="tv-critical-popup">
               <button className="tv-popup-x" onClick={(e) => { e.stopPropagation(); dismiss(pp.id); }} data-testid="tv-popup-dismiss" aria-label="Chiudi">×</button>
-              <div className="tv-popup-badge">{pp.kind === "off" ? "DISPOSITIVO VITALE OFFLINE" : "ALLARME CRITICO"}</div>
+              <div className="tv-popup-badge">{pp.title.startsWith("WAN") ? "SEDE / WAN OFFLINE" : pp.title.startsWith("BACKUP") ? "BACKUP FALLITO" : "DISPOSITIVO VITALE OFFLINE"}</div>
               <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
               <div className="tv-popup-title" data-testid="tv-popup-title">{pp.title}</div>
             </div>
