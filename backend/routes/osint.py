@@ -134,7 +134,8 @@ async def _compute_kev_asset_exposure(client_id: Optional[str] = None):
     # 1) KEV in memoria, indicizzato per token vendor
     kev = await db.cisa_kev.find(
         {}, {"_id": 0, "cve_id": 1, "vendor": 1, "product": 1, "name": 1,
-             "short_description": 1, "required_action": 1, "due_date": 1, "ransomware": 1},
+             "short_description": 1, "required_action": 1, "due_date": 1, "ransomware": 1,
+             "date_added": 1},
     ).to_list(3000)
     kev_by_vendor: dict = {}
     for k in kev:
@@ -178,7 +179,7 @@ async def _compute_kev_asset_exposure(client_id: Optional[str] = None):
                     "cve_id": k["cve_id"], "product": k.get("product"),
                     "name": k.get("name"), "short_description": k.get("short_description"),
                     "required_action": k.get("required_action"), "due_date": k.get("due_date"),
-                    "ransomware": k.get("ransomware"),
+                    "ransomware": k.get("ransomware"), "date_added": k.get("date_added"),
                     "match_type": "specific" if specific else "vendor_category",
                 }
         if seen:
