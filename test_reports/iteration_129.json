@@ -1,0 +1,27 @@
+{
+  "summary": "Iter129 — Test SOLO FRONTEND (login admin reale + 2FA TOTP) del fix 'Modifica Dispositivo' Hyper-V su client 86BIT_Office (da3d6e40-b3e5-4d46-9787-dde328a3aa36), device SRVDATI86B 10.10.1.10. Tutti i 4 punti richiesti PASSATI: (1) AUTOFILL: selezionando 'VM Hyper-V' il campo 'Nome VM su Hyper-V' si precompila automaticamente con 'SRVDATI86B' senza digitare; (2) PERSISTENZA con 'Salva': riaprendo il modal dopo refetch -> virtualization='hyperv', vm='SRVDATI86B', host='TEST_HVHOST' RITENUTI; (3) BADGE VM: la riga SRVDATI86B mostra il badge 'VM·HV' dopo il salvataggio (verificato anche via screenshot) e sparisce dopo il revert; (4) REGRESSIONE 'Applica ora': modificato host in 'TEST_HVHOST2', click 'Applica ora' -> nessun errore, riaprendo il modal i valori sono ritenuti. Verifica extra: dopo HARD RELOAD della pagina (/client/{id} -> tab Dispositivi) i valori persistono ('hyperv','SRVDATI86B','TEST_RELOADHOST') e il badge VM·HV e' presente => persistenza reale server-side, non solo optimistic update. Nessun toast 'Errori durante il salvataggio' in nessuno dei flussi. Stato di test RIPRISTINATO: device riportato a '— non impostato (fisico) —' (verificato: virt='', vm='', host='', badge assente).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DeviceEditModal.persistChanges(): il flag virtDirty confronta hypervVmName/hypervHostHint con i valori del device anche quando virtualization != 'hyperv'; poiche' il payload invia stringhe vuote in quel caso, il comportamento e' corretto ma la logica e' fragile — considerare di normalizzare i valori effettivi (effVmName/effHostHint) prima del confronto per evitare POST inutili.",
+    "Il modal non mostra alcun indicatore di errore inline sui campi Hyper-V: in caso di POST /virtualization fallito l'unico feedback e' un toast. Accettabile, ma un errore persistente accanto al blocco 'Tipo macchina' sarebbe piu' chiaro.",
+    "ClientOverviewPage.js e' un file enorme (>5000 righe) con DevicesTab/ILO/Backup/Scanner nello stesso modulo: candidato prioritario allo split (pre-esistente, non introdotto da questo fix)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (richiesto solo frontend)", "frontend": "100% (5/5: autofill, persistenza Salva, badge VM, persistenza Applica ora, persistenza dopo hard reload)"},
+  "seed_data_creation": "Nessun nuovo record. Modificato temporaneamente il device SRVDATI86B (10.10.1.10) a VM Hyper-V con host TEST_HVHOST/TEST_HVHOST2/TEST_RELOADHOST e poi RIPRISTINATO a 'non impostato (fisico)'.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (funzionanti, non modificate)",
+  "context_for_next_testing_agent": "Per raggiungere il pulsante matita del device: /client/{clientId} -> click [data-testid=tab-devices] -> il tab parte con filtro 'Vitali' + vista 'Raggruppata', quindi bisogna cliccare [data-testid=vital-filter-all-btn] e [data-testid=devices-view-table-btn] prima che compaia [data-testid=edit-device-{ip}] (in vista raggruppata il testid e' grouped-edit-device-{ip}). Login: usare page.type() (non fill) su login-email/password, poi /2fa con pyotp; il 403 in console su /api/auth/me con token pre-2FA e' atteso. Il campo select 'Tipo macchina' e' una <select> nativa: usare select_option('hyperv').",
+  "rca_of_the_issue": "Nessun difetto riprodotto: il fix backend (dedup dei doc legacy in managed_devices + preferenza del doc piu' ricco in get_devices) e l'autofill frontend funzionano end-to-end. La persistenza e' confermata anche dopo un hard reload, quindi non si tratta di solo optimistic update lato client."
+}

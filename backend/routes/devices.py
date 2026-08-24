@@ -133,7 +133,20 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     managed_by_ip = {}
     for md in managed_devices_raw:
         md_ip = md.get("ip") or md.get("ip_address", "")
-        if md_ip:
+        if not md_ip:
+            continue
+        cur = managed_by_ip.get(md_ip)
+        if cur is None:
+            managed_by_ip[md_ip] = md
+            continue
+        # v2026-06 DEDUP-READ: se esistono piu' doc per lo stesso IP (legacy),
+        # preferisci quello con piu' segnale di gestione (virtualization, VM name,
+        # silence, is_vital) cosi' non perdiamo le impostazioni salvate.
+        def _score(m):
+            return sum(1 for k in ("virtualization", "hyperv_vm_name", "hyperv_host_hint",
+                                    "alerts_silenced", "is_vital", "hyperv_alert_on_off")
+                       if m.get(k))
+        if _score(md) > _score(cur):
             managed_by_ip[md_ip] = md
 
     # v2026-07-24 DATTO-AS-EVIDENCE (fix falso-rosso su server ICMP-bloccati):

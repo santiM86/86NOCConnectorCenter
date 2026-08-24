@@ -57,10 +57,31 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setAlertsSilenced(!!device?.alerts_silenced);
     setSilenceReason(device?.alerts_silenced_reason || "");
     setVmAlertOnOff(!!device?.hyperv_alert_on_off);
-    setVirtualization(device?.virtualization || "");
-    setHypervVmName(device?.hyperv_vm_name || "");
-    setHypervHostHint(device?.hyperv_host_hint || "");
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint]);
+    // AUTOFILL "tipo macchina": se il device NON ha ancora una classificazione
+    // manuale ma l'agent l'ha gia' riconosciuto come VM Hyper-V (hyperv_state
+    // presente dallo snapshot dell'host), precompiliamo i campi cosi' l'utente
+    // non deve riscrivere tutto a mano. Restano modificabili.
+    const persistedVirt = device?.virtualization || "";
+    const detectedHV = !!device?.hyperv_state;
+    const effVirt = persistedVirt || (detectedHV ? "hyperv" : "");
+    setVirtualization(effVirt);
+    setHypervVmName(
+      device?.hyperv_vm_name || (effVirt === "hyperv" ? (device?.name || "") : "")
+    );
+    setHypervHostHint(
+      device?.hyperv_host_hint || (effVirt === "hyperv" ? (device?.hyperv_host || "") : "")
+    );
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name]);
+
+  // Cambio "tipo macchina" con AUTOFILL: scegliendo Hyper-V precompila il nome
+  // VM (col nome device) e l'host (se rilevato) quando i campi sono vuoti.
+  const handleVirtChange = (v) => {
+    setVirtualization(v);
+    if (v === "hyperv") {
+      setHypervVmName((prev) => prev || device?.name || "");
+      setHypervHostHint((prev) => prev || device?.hyperv_host || "");
+    }
+  };
 
   const buildOptimistic = () => ({
     ...device,
@@ -455,7 +476,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
             </label>
             <select
               value={virtualization}
-              onChange={(e) => setVirtualization(e.target.value)}
+              onChange={(e) => handleVirtChange(e.target.value)}
               className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-white focus:border-cyan-500 outline-none"
               data-testid="virtualization-select"
             >

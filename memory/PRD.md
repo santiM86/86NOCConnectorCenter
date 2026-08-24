@@ -8576,3 +8576,19 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - CSS: classi .tvx-repoll / .tvx-repoll-dot / .tvx-repoll-lbl / .tvx-repoll-time.
 - Confermato all'utente: re-poll 2 min su sottoinsieme vitali = traffico trascurabile
   (SNMP GET unicast, pochi KB, batch da 12), nessun broadcast storm/rallentamento.
+
+## 2026-06 — FIX persistenza "Modifica Dispositivo" Hyper-V + Autofill
+- ROOT CAUSE: indice unico (client_id, ip) su managed_devices. In prod, accanto al
+  doc canonico (con `ip`) sopravvivono doc LEGACY con solo `ip_address` (ip assente).
+  La scrittura aggiornava il canonico ma la lettura /api/devices (managed_by_ip
+  last-wins) pescava il doc legacy stale -> "salvo ma non mantiene" + niente icona VM.
+- FIX backend device_info_card.py (set_device_virtualization + set_device_vm_alert):
+  seleziona il doc canonico (quello con ip==device_ip), ELIMINA i duplicati legacy,
+  aggiorna il canonico. Niente piu' DuplicateKeyError, lettura non ambigua.
+- FIX backend devices.py get_devices: managed_by_ip preferisce il doc piu' ricco
+  (virtualization/vm_name/silence/is_vital) come difesa in profondita'.
+- AUTOFILL frontend DeviceEditModal.js: selezionando "VM Hyper-V" precompila
+  "Nome VM su Hyper-V" col nome device e l'host se rilevato (device.hyperv_host);
+  se l'agent ha gia' rilevato la VM (hyperv_state) il tipo macchina si pre-imposta.
+- VERIFICATO: testing agent iter129 100% (autofill, persistenza Salva+Applica ora,
+  badge VM·HV, persistenza dopo hard reload). Backend anche via curl (scenario dup).
