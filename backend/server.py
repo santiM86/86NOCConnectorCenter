@@ -1171,6 +1171,12 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=240),
             max_instances=1, coalesce=True,
         )
+        from services.vital_freshness import scan_all as vital_freshness_scan
+        osint_scheduler.add_job(
+            vital_freshness_scan, trigger=_OsTrig(minutes=2), id="vital_freshness_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
+            max_instances=1, coalesce=True,
+        )
         osint_scheduler.add_job(
             kev_asset_alert_tick, trigger=_OsTrig(minutes=360), id="kev_asset_alert_tick",
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
@@ -1195,7 +1201,7 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
         )
         osint_scheduler.start()
-        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, syslog-anomaly: 3m, latency-baseline: 10m, kev-alert: 6h, tg-digest: 5m, morning: tick 1m @ configurabile)")
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, syslog-anomaly: 3m, latency-baseline: 10m, vital-freshness: 2m, kev-alert: 6h, tg-digest: 5m, morning: tick 1m @ configurabile)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
 
