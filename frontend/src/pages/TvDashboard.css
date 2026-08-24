@@ -269,6 +269,13 @@
 .tvx-btn { font-size: 12px; font-weight: 700; color: #9fb0c3; background: #10161f; border: 1px solid #1c2430;
   border-radius: 8px; padding: 7px 12px; cursor: pointer; }
 .tvx-btn:hover { border-color: #2a3646; color: #e6edf3; }
+.tvx-repoll { display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 8px;
+  background: rgba(34,197,94,.08); border: 1px solid rgba(34,197,94,.20); }
+.tvx-repoll-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e;
+  box-shadow: 0 0 8px #22c55e; animation: tvxpulse 2s infinite; }
+.tvx-repoll-lbl { font-size: 9px; letter-spacing: 1.5px; font-weight: 800; color: #5b6b7d; }
+.tvx-repoll-time { font-size: 13px; font-weight: 800; color: #86efac; font-variant-numeric: tabular-nums; }
+.tvx-repoll-time em { font-size: 10px; font-weight: 600; color: #5b6b7d; font-style: normal; }
 .tvx-clock { text-align: right; }
 .tvx-time { font-size: 26px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 .tvx-date { font-size: 10px; letter-spacing: 2px; color: #5b6b7d; margin-top: 3px; }

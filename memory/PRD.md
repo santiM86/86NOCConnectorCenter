@@ -8537,3 +8537,42 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - FIX: aggiunte router/vm a familyOrder+familyLabels; inoltre displayFamilies include
   in coda QUALSIASI famiglia extra presente nel catalogo (future-proof). 
 - DeviceProfilesPage FAMILY_META: aggiunti label/icona per router e vm.
+
+## 2026-08-24 — Vault: precompilazione intelligente Nuova Credenziale
+- VaultPage.js: smartPrefill() riempie SOLO i campi vuoti quando cambi Tipo/IP/Cliente:
+  porta+URL interna (scheme://IP) da TYPE_DEFAULTS per tipo; username+tag+porta
+  riutilizzati dallultima credenziale dello stesso tipo (+stesso cliente se selezionato).
+  Nota UX ambra nel dialog. Non tocca i valori gia digitati dallutente.
+- Verificato screenshot: tipo iLO + IP -> porta 443 e URL https://IP autocompilati.
+
+## 2026-08-24 — Vault: auto-riconoscimento nome dispositivo da IP
+- NUOVO GET /api/vault/device-lookup?ip=&client_id= (routes/vault.py, admin): cerca il
+  nome in managed_devices -> device_poll_status -> discovered_endpoints/scan_results/lan_devices.
+- VaultPage.js: lookupDeviceName() debounced 500ms su onChange IP -> precompila
+  device_name se vuoto. useRef aggiunto. Verificato: 192.168.1.3 -> nome managed.
+
+## 2026-08-24 — Debounce vitali rapido (A) + Pre-allarme (C)
+- liveness_resolver.py: VITAL_MIN_FAILURES=2, VITAL_GRACE_SECONDS=120, PRE_ALARM_SECONDS=90.
+  effective_reachable(pd,min_failures,grace) parametrizzato; compute_status usa soglie
+  vitali (2min) se md.is_vital. Nuova down_phase(pd,is_vital)->ok/prealarm/down.
+- services/pre_alarm.py (scheduler 1m): per i vitali in fase prealarm emette alert LOW
+  source_type=pre_down_warning (dedup, Telegram), auto-resolve su recupero o su down pieno.
+  Salta clienti senza sonda online. Rispetta manutenzione (insert_alert_if_emit+notify).
+- Verificato: A (vitale off 140s vs non-vitale on), C (95s->prealarm, recupero->resolved).
+
+## 2026-08-24 — Ripoll forzato CONTINUO di tutti i vitali (ogni 2 min)
+- vital_freshness.py: nuovo flag always_repoll (default TRUE). Quando attivo, ogni ciclo
+  (scheduler 2 min) forza il re-poll di TUTTI i vitali dei clienti con sonda online
+  (non solo gli stale). Re-poll eseguiti CONCORRENTI a blocchi di 12 (asyncio.gather).
+- Verificato: repoll_targets=3 su 3 vitali con sonda online (repolled reale solo in prod
+  con agent WS). Config db.settings key vital_freshness_config.always_repoll per on/off.
+
+## 2026-06 — Indicatore "ultimo re-poll vitali" su TV Dashboard
+- Backend tv_dashboard.py: nuovo campo response `vital_repoll` {last, time_ago, count}
+  = timestamp PIU' RECENTE (max last_poll/last_update) tra i poll-record dei vitali gestiti.
+- Frontend TvDashboardPage.js: indicatore globale unico nell'header (tvx-right),
+  "RE-POLL VITALI HH:MM · Ns fa" con pallino verde pulsante. Minimale, no clutter
+  (opzione scelta dall'utente: solo indicatore globale, non per-device).
+- CSS: classi .tvx-repoll / .tvx-repoll-dot / .tvx-repoll-lbl / .tvx-repoll-time.
+- Confermato all'utente: re-poll 2 min su sottoinsieme vitali = traffico trascurabile
+  (SNMP GET unicast, pochi KB, batch da 12), nessun broadcast storm/rallentamento.

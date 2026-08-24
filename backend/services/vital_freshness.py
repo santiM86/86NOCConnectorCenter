@@ -34,8 +34,9 @@ SETTINGS_KEY = "vital_freshness_config"
 DEFAULT_CONFIG = {
     "enabled": True,
     "stale_after_min": 15,    # oltre questo → alert "monitoraggio non aggiornato"
-    "repoll_after_min": 3,    # oltre questo → tenta re-poll forzato
+    "repoll_after_min": 3,    # (se always_repoll=False) oltre questo → re-poll forzato
     "repoll": True,
+    "always_repoll": True,    # RIPOLL FORZATO DI TUTTI I VITALI OGNI CICLO (2 min)
     "alert": True,
 }
 
@@ -110,6 +111,7 @@ async def scan_all() -> dict:
     stale_after = float(cfg["stale_after_min"])
     repoll_after = float(cfg["repoll_after_min"])
     do_repoll = bool(cfg.get("repoll", True))
+    always_repoll = bool(cfg.get("always_repoll", True))
     do_alert = bool(cfg.get("alert", True))
     now = datetime.now(timezone.utc)
 
@@ -139,6 +141,7 @@ async def scan_all() -> dict:
     alerted = 0
     resolved = 0
     checked = 0
+    repoll_targets = []  # (cid, ip, community)
     for v in vitals:
         cid = v.get("client_id"); ip = v.get("ip")
         if not cid or not ip:
@@ -150,6 +153,12 @@ async def scan_all() -> dict:
         pd = poll_by_key.get((cid, ip)) or {}
         last_poll = pd.get("last_poll") or pd.get("last_update")
         age = _age_min(last_poll)
+
+        # RIPOLL FORZATO: se always_repoll → TUTTI i vitali ogni ciclo (2 min),
+        # per avere lo stato sempre in diretta; altrimenti solo quelli stale.
+        if do_repoll and (always_repoll or age >= repoll_after):
+            repoll_targets.append((cid, ip, v.get("community") or v.get("snmp_community")))
+
         dedup = f"monstale:{cid}:{ip}"
         existing = await db.alerts.find_one({"dedup_key": dedup, "status": "active"}, {"_id": 0, "id": 1})
 
@@ -162,11 +171,6 @@ async def scan_all() -> dict:
                               "resolution_note": "Monitoraggio tornato aggiornato."}})
                 resolved += 1
             continue
-
-        # STALE: prova auto-riparazione con re-poll forzato mirato
-        if do_repoll and age >= repoll_after:
-            if await _force_repoll(cid, ip, v.get("community") or v.get("snmp_community")):
-                repolled += 1
 
         # Alert solo oltre la soglia piu' alta (dopo che il nudge ha avuto tempo)
         if do_alert and age >= stale_after and not existing:
@@ -199,7 +203,19 @@ async def scan_all() -> dict:
                 except Exception:
                     pass
 
+    # RIPOLL FORZATO concorrente (a blocchi) su TUTTI i vitali raccolti.
+    if repoll_targets:
+        import asyncio
+        CHUNK = 12
+        for i in range(0, len(repoll_targets), CHUNK):
+            batch = repoll_targets[i:i + CHUNK]
+            results = await asyncio.gather(
+                *[_force_repoll(c, p, comm) for (c, p, comm) in batch],
+                return_exceptions=True)
+            repolled += sum(1 for r in results if r is True)
+
     if repolled or alerted or resolved:
-        logger.info("[vital-freshness] checked=%s repolled=%s alerted=%s resolved=%s",
-                    checked, repolled, alerted, resolved)
-    return {"checked": checked, "repolled": repolled, "alerted": alerted, "resolved": resolved}
+        logger.info("[vital-freshness] checked=%s repolled=%s/%s alerted=%s resolved=%s",
+                    checked, repolled, len(repoll_targets), alerted, resolved)
+    return {"checked": checked, "repolled": repolled, "repoll_targets": len(repoll_targets),
+            "alerted": alerted, "resolved": resolved}

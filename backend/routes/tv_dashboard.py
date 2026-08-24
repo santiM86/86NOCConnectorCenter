@@ -495,6 +495,21 @@ async def tv_dashboard_data():
         else:
             cs["backup"] = None
 
+    # Ultimo re-poll dei dispositivi VITALI: conferma a colpo d'occhio che il loop
+    # forzato ogni 2 min e' vivo (senza riempire il monitor). Prendiamo il timestamp
+    # PIU' RECENTE tra i poll-record dei vitali gestiti.
+    vital_repoll_times = []
+    for m in managed:
+        if not m.get("is_vital"):
+            continue
+        pd = poll_by_key.get((m.get("client_id"), m.get("ip")))
+        if pd:
+            ts = (pd.get("last_poll") or pd.get("last_update")
+                  or pd.get("last_seen") or pd.get("updated_at"))
+            if ts:
+                vital_repoll_times.append(ts)
+    vital_last_repoll = max(vital_repoll_times) if vital_repoll_times else None
+
     # Eventi critici extra per i popup/banner TV: outage operatore + incidenti sicurezza.
     # SOLO eventi di OGGI (fuso Europe/Rome), niente storici (richiesta utente).
     _name_map = {cs["id"]: cs["name"] for cs in client_summaries}
@@ -570,6 +585,11 @@ async def tv_dashboard_data():
         "isp_outages": isp_outages,
         "security_incidents": security_incidents,
         "new_devices": new_devices,
+        "vital_repoll": {
+            "last": vital_last_repoll,
+            "time_ago": _time_ago(vital_last_repoll) if vital_last_repoll else "",
+            "count": len(vital_repoll_times),
+        },
     }
 
 
