@@ -8615,3 +8615,15 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - VERIFICATO: testing agent iter130 100% (5/5: genera QR, lista, revoca, vista mobile via
   token, gate) + backend via curl (create/list/revoke/me/dashboard, 401 su bogus/revocato)
   + screenshot iPhone (lista + sheet + fragment). qrcode.react@4.2.0 aggiunto.
+
+## 2026-06 — PWA vista mobile (icona Home iPhone, schermo intero)
+- App gia' PWA (manifest+sw.js+apple-mobile-web-app-capable). Aggiunto: icona ARGUS
+  on-brand (A teal→blue) rigenerata per apple-touch-icon(180)/icon-192/icon-512/
+  favicon-32/logo-48; shortcut manifest "Monitor Mobile" -> /m; hint iOS "Aggiungi
+  alla Home" (MobileMonitorPage, solo Safari iOS non-standalone, dismissibile).
+- Aggiungendo /m alla Home su iOS si apre standalone (fullscreen, no barra browser);
+  token in localStorage persiste (stesso origin).
+- Nota traffico rete (config agent reale): ping ICMP 60s (1 probe/device), SNMP poll
+  60s (alcuni profili 120s, concorrenza max 16, unicast), discovery LAN 5m, SNMP ports
+  ~12m, topology ~40m, re-poll vitali 2m. API cloud (Hornet/Datto/Zyxel/OSINT) dal
+  Center, ZERO traffico su LAN cliente. ~40 Kbps medi per 100 device = trascurabile.

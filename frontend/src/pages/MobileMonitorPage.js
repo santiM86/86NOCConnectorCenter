@@ -33,6 +33,16 @@ export default function MobileMonitorPage() {
   const [error, setError] = useState(() => (localStorage.getItem(REVOKED_KEY) ? "revoked" : null));
   const [selected, setSelected] = useState(null); // client id
   const [clock, setClock] = useState(new Date());
+  // Suggerimento iOS "Aggiungi alla Home" (solo Safari iOS, non gia' installata)
+  const [showA2HS, setShowA2HS] = useState(false);
+  useEffect(() => {
+    const ua = window.navigator.userAgent || "";
+    const isIos = /iphone|ipad|ipod/i.test(ua);
+    const isStandalone = window.navigator.standalone === true ||
+      window.matchMedia?.("(display-mode: standalone)")?.matches;
+    const dismissed = localStorage.getItem("argus_mobile_a2hs_dismissed");
+    if (isIos && !isStandalone && !dismissed) setShowA2HS(true);
+  }, []);
 
   // 1) Cattura il token dall'URL e lo persiste; poi ripulisce l'URL.
   //    Sicurezza: preferiamo il FRAGMENT (#t=...) alla query (?t=...) cosi' il
@@ -199,6 +209,18 @@ export default function MobileMonitorPage() {
           </div>
         )}
       </div>
+
+      {/* Suggerimento iOS: aggiungi ARGUS alla Home come app a schermo intero */}
+      {showA2HS && (
+        <div className="mm-a2hs" data-testid="mobile-a2hs">
+          <span className="mm-a2hs-ic">A</span>
+          <span className="mm-a2hs-txt">
+            Aggiungi ARGUS alla Home: tocca <b>Condividi</b> <span className="mm-a2hs-share">⬆</span> e poi <b>«Aggiungi a Home»</b>. Si aprirà a schermo intero come un'app.
+          </span>
+          <button className="mm-a2hs-x" data-testid="mobile-a2hs-dismiss"
+            onClick={() => { localStorage.setItem("argus_mobile_a2hs_dismissed", "1"); setShowA2HS(false); }}>×</button>
+        </div>
+      )}
 
       {/* Detail sheet */}
       {sel && (

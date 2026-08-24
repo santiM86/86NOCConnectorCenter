@@ -58,6 +58,12 @@
       "name": "Stato Rete",
       "url": "/network-status",
       "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Monitor Mobile",
+      "short_name": "Mobile",
+      "url": "/m",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
     }
   ]
 }
