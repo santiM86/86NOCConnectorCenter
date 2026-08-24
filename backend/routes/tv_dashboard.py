@@ -264,26 +264,45 @@ async def tv_dashboard_data():
     _off_clients = await build_clients_without_online_agent(db)
     _blackout = await build_blackout_clients(db, _off_clients)
     _managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed}
-    _status_map = {}
+    # UNIFICAZIONE come Overview: unione di poll (device_poll_status) + managed
+    # (managed_devices). Cosi' i vitali GESTITI senza poll-record (es. Server iLO
+    # via Redfish) non vengono piu' persi dalla TV. compute_status gestisce pd=None.
+    unified_units = []
+    _seen_keys = set()
     for _d in all_devices:
         _cid = _d.get("client_id"); _ip = _d.get("device_ip") or _d.get("ip")
         if not _cid or not _ip:
             continue
-        _md = _managed_by_key.get((_cid, _ip), {})
+        _key = (_cid, _ip); _seen_keys.add(_key)
+        unified_units.append({"client_id": _cid, "device_ip": _ip,
+                              "md": _managed_by_key.get(_key, {}), "pd": _d})
+    for _m in managed:
+        _cid = _m.get("client_id"); _ip = _m.get("ip")
+        if not _cid or not _ip:
+            continue
+        _key = (_cid, _ip)
+        if _key in _seen_keys:
+            continue
+        _seen_keys.add(_key)
+        unified_units.append({"client_id": _cid, "device_ip": _ip, "md": _m, "pd": None})
+
+    _status_map = {}
+    for _u in unified_units:
         try:
-            _st, _ = compute_status(_d, _md, _ip_ev, _mac_ev, _off_clients, _blackout)
+            _st, _ = compute_status(_u["pd"], _u["md"], _ip_ev, _mac_ev, _off_clients, _blackout)
         except Exception:
-            _st = "online" if (_d.get("ping_reachable") or _d.get("reachable")) else "offline"
-        _status_map[f"{_cid}:{_ip}"] = _st
+            _pd = _u["pd"] or {}
+            _st = "online" if (_pd.get("ping_reachable") or _pd.get("reachable")) else "offline"
+        _status_map[f"{_u['client_id']}:{_u['device_ip']}"] = _st
 
-    def _dev_key(d):
-        return f"{d.get('client_id')}:{d.get('device_ip') or d.get('ip')}"
+    def _ukey(u):
+        return f"{u['client_id']}:{u['device_ip']}"
 
-    def _dev_online(d):
-        return _status_map.get(_dev_key(d)) == "online"
+    def _u_online(u):
+        return _status_map.get(_ukey(u)) == "online"
 
-    def _dev_offline(d):
-        return _status_map.get(_dev_key(d)) == "offline"
+    def _u_offline(u):
+        return _status_map.get(_ukey(u)) == "offline"
 
     client_summaries = []
     all_offline_devices = []
@@ -293,15 +312,14 @@ async def tv_dashboard_data():
 
     for client in clients_raw:
         cid = client["id"]
-        client_devices = [d for d in all_devices if d.get("client_id") == cid]
-        # FONTE UNICA: conteggio via compute_status (identico a scheda cliente/overview).
-        # I device "stale"/"pending" NON contano come offline (era la causa dei falsi
-        # positivi rossi sulla TV rispetto alla scheda cliente).
-        online = sum(1 for d in client_devices if _dev_online(d))
-        offline = sum(1 for d in client_devices if _dev_offline(d))
+        # UNIONE poll + managed (come Overview): include vitali gestiti senza poll.
+        client_units = [u for u in unified_units if u["client_id"] == cid]
+        client_devices = [u["pd"] for u in client_units if u["pd"] is not None]
+        online = sum(1 for u in client_units if _u_online(u))
+        offline = sum(1 for u in client_units if _u_offline(u))
         total_online += online
         total_offline += offline
-        total_devices_count += len(client_devices)
+        total_devices_count += len(client_units)
 
         client_alerts = [a for a in enriched_alerts if a.get("client_id") == cid]
         critical_count = sum(1 for a in client_alerts if a.get("severity") == "critical")
@@ -320,13 +338,15 @@ async def tv_dashboard_data():
                 connector_version = connector.get("connector_version", "")
             last_heartbeat = _time_ago(last_seen) if last_seen else "mai"
 
-        # Offline devices with enriched data (solo status == "offline", non stale)
+        # Offline devices (status == "offline", non stale) — su UNIONE poll+managed.
         problem_devices = []
-        for d in client_devices:
-            if _dev_offline(d):
-                dev_ip = d.get("device_ip", "")
+        for u in client_units:
+            if _u_offline(u):
+                dev_ip = u["device_ip"]
                 dev_name = _disp_name(cid, dev_ip)
-                last_seen_dev = d.get("last_seen", d.get("updated_at", ""))
+                _pd = u["pd"] or {}
+                _md = u["md"] or {}
+                last_seen_dev = _pd.get("last_seen") or _pd.get("updated_at") or _md.get("last_seen_at", "")
                 offline_dev = {
                     "ip": dev_ip,
                     "name": dev_name,
@@ -334,8 +354,8 @@ async def tv_dashboard_data():
                     "client_id": cid,
                     "last_seen": last_seen_dev,
                     "down_since": _time_ago(last_seen_dev),
-                    "vital": f"{cid}:{dev_ip}" in vital_map,
-                    "device_type": vital_map.get(f"{cid}:{dev_ip}", ""),
+                    "vital": (f"{cid}:{dev_ip}" in vital_map) or bool(_md.get("is_vital")),
+                    "device_type": vital_map.get(f"{cid}:{dev_ip}", _md.get("device_type", "")),
                 }
                 problem_devices.append(offline_dev)
                 all_offline_devices.append(offline_dev)
@@ -344,11 +364,10 @@ async def tv_dashboard_data():
 
         # Online devices list for this client (solo status == "online")
         online_devices = []
-        for d in client_devices:
-            if _dev_online(d):
-                dev_ip = d.get("device_ip", "")
-                dev_name = _disp_name(cid, dev_ip)
-                online_devices.append({"ip": dev_ip, "name": dev_name})
+        for u in client_units:
+            if _u_online(u):
+                dev_ip = u["device_ip"]
+                online_devices.append({"ip": dev_ip, "name": _disp_name(cid, dev_ip)})
 
         health = round((online / max(online + offline, 1)) * 100)
 

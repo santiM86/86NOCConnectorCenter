@@ -8469,3 +8469,14 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - TV: banner viola per incidenti sicurezza critici (C2/ransom/threat).
 - Entrambi i banner mostrano SOLO eventi creati OGGI (fuso Europe/Rome), niente storici (tv_dashboard.py filtro created_at >= inizio giornata locale).
 - File: routes/tv_dashboard.py, frontend/src/pages/TvDashboardPage.js, frontend/src/pages/TvDashboard.css
+
+## 2026-08-24 — FIX discrepanza TV vs Overview (vitali gestiti senza poll)
+- CAUSA: routes/tv_dashboard.py iterava SOLO device_poll_status; un device vitale
+  GESTITO senza poll-record (es. Server HP iLO via Redfish) era invisibile alla TV
+  -> cliente verde, mentre Overview (che unisce poll + managed e chiama
+  compute_status(pd=None, md)) lo mostrava OFFLINE. Es. Zincatura di Cambiano.
+- FIX: la TV ora costruisce unified_units = UNIONE device_poll_status + managed_devices
+  e calcola lo stato con compute_status per ogni unita (identico a overview.py).
+  online/offline/vital_down/online_devices iterano su client_units.
+- Verifica preview: 28 managed senza poll, 1 vitale (10.100.61.100) prima ignorato,
+  ora valutato. Endpoint 200, TV rende OK.
