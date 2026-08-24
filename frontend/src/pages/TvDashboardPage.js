@@ -199,6 +199,16 @@ export default function TvDashboardPage() {
         </div>
         <div className="tvx-right">
           <span className={`tvx-live ${hasCrit ? "crit" : "ok"}`}>● {hasCrit ? "ATTENZIONE" : "REGOLARE"}</span>
+          {data.vital_repoll && data.vital_repoll.count > 0 && data.vital_repoll.last && (
+            <div className="tvx-repoll" data-testid="tv-vital-repoll" title={`Re-poll SNMP forzato ogni 2 min su ${data.vital_repoll.count} dispositivi vitali`}>
+              <span className="tvx-repoll-dot" />
+              <span className="tvx-repoll-lbl">RE-POLL VITALI</span>
+              <span className="tvx-repoll-time">
+                {new Date(data.vital_repoll.last).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+                <em> · {data.vital_repoll.time_ago}</em>
+              </span>
+            </div>
+          )}
           <button className="tvx-btn" onClick={(e) => { e.stopPropagation(); init(); }} data-testid="tv-sound-toggle">{soundOn ? "♪ ON" : "♪ OFF"}</button>
           <button className="tvx-btn" onClick={(e) => { e.stopPropagation(); testAlarm(); }} data-testid="tv-test-alarm">TEST</button>
           <div className="tvx-clock">
@@ -209,7 +219,7 @@ export default function TvDashboardPage() {
       </header>
 
       {/* Banner PERSISTENTE outage operatore + sicurezza (solo eventi di oggi) */}
-      {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0 || (data.new_devices || []).length > 0) && (
+      {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0) && (
         <div className="tvx-isp-banner" data-testid="tv-isp-banner">
           {(data.isp_outages || []).map(o => (
             <div key={o.id} className="tvx-isp-row" data-testid="tv-isp-banner-row">
@@ -227,14 +237,6 @@ export default function TvDashboardPage() {
               <span className="tvx-isp-tag tvx-sec-tag">SICUREZZA</span>
               <span className="tvx-isp-name">{s.title}</span>
               <span className="tvx-isp-clients">{s.client_name}</span>
-            </div>
-          ))}
-          {(data.new_devices || []).map(d => (
-            <div key={d.id} className="tvx-isp-row tvx-new-row" data-testid="tv-newdev-banner-row">
-              <span className="tvx-isp-dot" />
-              <span className="tvx-isp-tag tvx-new-tag">NUOVO DISPOSITIVO</span>
-              <span className="tvx-isp-name" style={{ fontFamily: "monospace" }}>{d.mac}</span>
-              <span className="tvx-isp-clients">{d.vendor} · {d.client_name}{d.investigating ? " · in indagine" : ""}</span>
             </div>
           ))}
         </div>

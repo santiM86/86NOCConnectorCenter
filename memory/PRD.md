@@ -8566,3 +8566,13 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   (non solo gli stale). Re-poll eseguiti CONCORRENTI a blocchi di 12 (asyncio.gather).
 - Verificato: repoll_targets=3 su 3 vitali con sonda online (repolled reale solo in prod
   con agent WS). Config db.settings key vital_freshness_config.always_repoll per on/off.
+
+## 2026-06 — Indicatore "ultimo re-poll vitali" su TV Dashboard
+- Backend tv_dashboard.py: nuovo campo response `vital_repoll` {last, time_ago, count}
+  = timestamp PIU' RECENTE (max last_poll/last_update) tra i poll-record dei vitali gestiti.
+- Frontend TvDashboardPage.js: indicatore globale unico nell'header (tvx-right),
+  "RE-POLL VITALI HH:MM · Ns fa" con pallino verde pulsante. Minimale, no clutter
+  (opzione scelta dall'utente: solo indicatore globale, non per-device).
+- CSS: classi .tvx-repoll / .tvx-repoll-dot / .tvx-repoll-lbl / .tvx-repoll-time.
+- Confermato all'utente: re-poll 2 min su sottoinsieme vitali = traffico trascurabile
+  (SNMP GET unicast, pochi KB, batch da 12), nessun broadcast storm/rallentamento.
