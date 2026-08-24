@@ -8537,3 +8537,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - FIX: aggiunte router/vm a familyOrder+familyLabels; inoltre displayFamilies include
   in coda QUALSIASI famiglia extra presente nel catalogo (future-proof). 
 - DeviceProfilesPage FAMILY_META: aggiunti label/icona per router e vm.
+
+## 2026-08-24 — Vault: precompilazione intelligente Nuova Credenziale
+- VaultPage.js: smartPrefill() riempie SOLO i campi vuoti quando cambi Tipo/IP/Cliente:
+  porta+URL interna (scheme://IP) da TYPE_DEFAULTS per tipo; username+tag+porta
+  riutilizzati dallultima credenziale dello stesso tipo (+stesso cliente se selezionato).
+  Nota UX ambra nel dialog. Non tocca i valori gia digitati dallutente.
+- Verificato screenshot: tipo iLO + IP -> porta 443 e URL https://IP autocompilati.

@@ -179,6 +179,39 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
     external_url: "", client_id: scopedClientId || "",
   });
 
+  // Default porta/scheme per tipo credenziale (per precompilazione URL/porta).
+  const TYPE_DEFAULTS = {
+    ilo: { port: 443, scheme: "https" }, idrac: { port: 443, scheme: "https" },
+    redfish: { port: 443, scheme: "https" }, https: { port: 443, scheme: "https" },
+    http: { port: 80, scheme: "http" }, ssh: { port: 22, scheme: "ssh" },
+    rdp: { port: 3389, scheme: "rdp" }, snmp: { port: 161, scheme: "" },
+    mikrotik: { port: 443, scheme: "https" }, fortigate: { port: 443, scheme: "https" },
+    unifi: { port: 443, scheme: "https" }, ftp: { port: 21, scheme: "ftp" },
+  };
+
+  // Precompila i campi RIPETITIVI (solo se vuoti) in base ai dati gia' inseriti:
+  //  - porta e URL interna dal tipo (+ IP)
+  //  - username e tag riutilizzati dall'ultima credenziale dello stesso tipo/cliente
+  const smartPrefill = (patch, includeIdentity) => {
+    setForm(prev => {
+      const next = { ...prev, ...patch };
+      const d = TYPE_DEFAULTS[next.credential_type] || {};
+      if (!next.port && d.port) next.port = String(d.port);
+      if (!next.url && next.device_ip && d.scheme) next.url = `${d.scheme}://${next.device_ip}`;
+      if (includeIdentity) {
+        const cid = next.client_id || scopedClientId || null;
+        const tpl = credentials.find(c => c.credential_type === next.credential_type && (!cid || c.client_id === cid) && c.username)
+          || credentials.find(c => c.credential_type === next.credential_type && c.username) || null;
+        if (tpl) {
+          if (!next.username && tpl.username) next.username = tpl.username;
+          if (!next.tags && Array.isArray(tpl.tags) && tpl.tags.length) next.tags = tpl.tags.join(", ");
+          if (!next.port && tpl.port) next.port = String(tpl.port);
+        }
+      }
+      return next;
+    });
+  };
+
   const fetchCreds = useCallback(async () => {
     try {
       const url = scopedClientId
@@ -625,10 +658,16 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
+            {!editCred && (
+              <div className="text-[10px] text-amber-300/80 bg-amber-500/10 border border-amber-500/25 rounded px-2 py-1.5 flex items-center gap-1.5" data-testid="cred-autofill-hint">
+                <span>⚡</span>
+                <span>Precompilo automaticamente porta, URL e username in base alle credenziali già inserite per questo tipo/cliente. Puoi modificarli.</span>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label className="text-[var(--text-muted)] text-[10px]">Tipo</Label>
-                <Select value={form.credential_type} onValueChange={v => setForm({ ...form, credential_type: v })}>
+                <Select value={form.credential_type} onValueChange={v => smartPrefill({ credential_type: v }, true)}>
                   <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-type-select">
                     <SelectValue />
                   </SelectTrigger>
@@ -641,13 +680,13 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
               </div>
               <div>
                 <Label className="text-[var(--text-muted)] text-[10px]">IP Dispositivo</Label>
-                <Input value={form.device_ip} onChange={e => setForm({ ...form, device_ip: e.target.value })} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-device-ip" />
+                <Input value={form.device_ip} onChange={e => smartPrefill({ device_ip: e.target.value }, false)} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-device-ip" />
               </div>
             </div>
             {!scopedClientId && (
               <div>
                 <Label className="text-[var(--text-muted)] text-[10px]">Cliente</Label>
-                <Select value={form.client_id || "__none__"} onValueChange={v => setForm({ ...form, client_id: v === "__none__" ? "" : v })}>
+                <Select value={form.client_id || "__none__"} onValueChange={v => smartPrefill({ client_id: v === "__none__" ? "" : v }, true)}>
                   <SelectTrigger className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-client-select">
                     <SelectValue placeholder="Seleziona cliente (opzionale)" />
                   </SelectTrigger>
