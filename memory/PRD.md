@@ -8495,3 +8495,13 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   Config db.settings key vital_freshness_config (enabled/stale_after_min=15/repoll_after_min=3).
 - Verificato preview: alert creato su vitale stale e auto-risolto al poll fresco.
 - Rispetta le finestre di manutenzione (usa insert_alert_if_emit + notify_alert_telegram).
+
+## 2026-08-24 — Alert KEV: solo vulnerabilità RECENTI (no CVE vecchie di anni)
+- RICHIESTA: gli alert KEV scattavano su CVE 2018-2021 (rumore). Mostrare solo recenti.
+- FILTRO recency configurabile (db.settings key kev_exposure_config): default
+  recent_years=3 (tieni CVE con anno >= anno-3) OR recent_days=550 (aggiunte a KEV di recente).
+- services/osint_poller.py: _is_recent_cve() applicato in kev_asset_alert_tick e in
+  osint_exposure_tick (percorso Shodan). Se un asset non ha piu CVE recenti -> lalert
+  kev_exposure/osint esistente viene AUTO-RISOLTO. Esposizione salvata resta completa.
+- routes/osint.py: aggiunto date_added alla proiezione/match KEV.
+- Verificato: CVE QNAP 2018-2021 filtrate, CVE 2024/2025 mantenute.

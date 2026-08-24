@@ -30,6 +30,45 @@ logger = logging.getLogger("osint.poller")
 EXPOSURE_BATCH = 15
 EXPOSURE_REFRESH_H = 168  # 7 giorni
 
+# Filtro "solo vulnerabilità recenti" per gli alert KEV (evita rumore su CVE
+# vecchie di anni). Una CVE è considerata RECENTE se soddisfa almeno uno di:
+#   - anno della CVE >= (anno corrente - KEV_RECENT_YEARS)
+#   - aggiunta al catalogo KEV (date_added) negli ultimi KEV_RECENT_DAYS giorni
+KEV_SETTINGS_KEY = "kev_exposure_config"
+KEV_DEFAULTS = {"enabled": True, "recent_only": True, "recent_years": 3, "recent_days": 550}
+
+
+async def _kev_cfg() -> dict:
+    doc = await db.settings.find_one({"key": KEV_SETTINGS_KEY}, {"_id": 0, "value": 1})
+    cfg = dict(KEV_DEFAULTS)
+    if doc and isinstance(doc.get("value"), dict):
+        cfg.update(doc["value"])
+    return cfg
+
+
+def _cve_year(cve_id: str):
+    try:
+        return int(str(cve_id).split("-")[1])
+    except Exception:
+        return None
+
+
+def _is_recent_cve(m: dict, now: datetime, cfg: dict) -> bool:
+    yr = _cve_year(m.get("cve_id"))
+    if yr is not None and yr >= (now.year - int(cfg["recent_years"])):
+        return True
+    da = m.get("date_added")
+    if da:
+        try:
+            d = datetime.fromisoformat(str(da).replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            if (now - d).days <= int(cfg["recent_days"]):
+                return True
+        except Exception:
+            pass
+    return False
+
 
 async def osint_feeds_tick() -> None:
     try:
@@ -53,21 +92,35 @@ async def kev_asset_alert_tick() -> dict:
         return {"emitted": 0}
     emitted = 0
     now_iso = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    kcfg = await _kev_cfg()
     for a in data.get("items", []):
         cid = a.get("client_id")
         cves = a.get("matches") or []
         if not cid or not cves:
             continue
-        ransom = any(str(m.get("ransomware")).lower() == "known" for m in cves)
-        due_dates = sorted([m.get("due_date") for m in cves if m.get("due_date")])
-        earliest = due_dates[0] if due_dates else None
-        cve_ids = [m.get("cve_id") for m in cves]
+        # SOLO vulnerabilità recenti (niente CVE vecchie di anni), se abilitato.
+        if kcfg.get("enabled", True) and kcfg.get("recent_only", True):
+            recent = [m for m in cves if _is_recent_cve(m, now_dt, kcfg)]
+            cves = recent
         dev_key = re.sub(r"[^a-z0-9]+", "-", str(a.get("name") or a.get("model") or "asset").lower())
         dev_id = f"kev:{cid}:{dev_key}"
         existing = await db.alerts.find_one(
             {"client_id": cid, "source_type": "kev_exposure", "device_id": dev_id, "status": "active"},
             {"_id": 0, "id": 1},
         )
+        # Nessuna CVE recente → risolvi eventuale alert vecchio e passa oltre.
+        if not cves:
+            if existing:
+                await db.alerts.update_one(
+                    {"id": existing["id"]},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso,
+                              "resolution_note": "Nessuna CVE KEV recente per questo asset (solo vecchie, filtrate)."}})
+            continue
+        ransom = any(str(m.get("ransomware")).lower() == "known" for m in cves)
+        due_dates = sorted([m.get("due_date") for m in cves if m.get("due_date")])
+        earliest = due_dates[0] if due_dates else None
+        cve_ids = [m.get("cve_id") for m in cves]
         alert_doc = {
             "id": str(uuid.uuid4()),
             "client_id": cid,
@@ -163,11 +216,17 @@ async def osint_exposure_tick() -> None:
             )
 
             # Alert per-tenant se ci sono CVE attivamente sfruttate esposte
-            if kev_hits and client_id:
-                cve_list = ", ".join(sorted(k.get("cve_id") for k in kev_hits if k.get("cve_id"))[:6])
-                await _emit_exposure_alert(client_id, ip, t.get("label") or ip, kev_hits, cve_list)
+            # (solo RECENTI: niente CVE vecchie di anni — l'esposizione salvata
+            # resta completa, filtriamo solo la parte che genera l'alert).
+            alert_hits = kev_hits
+            _kc = await _kev_cfg()
+            if _kc.get("enabled", True) and _kc.get("recent_only", True):
+                alert_hits = [k for k in kev_hits if _is_recent_cve(k, now, _kc)]
+            if alert_hits and client_id:
+                cve_list = ", ".join(sorted(k.get("cve_id") for k in alert_hits if k.get("cve_id"))[:6])
+                await _emit_exposure_alert(client_id, ip, t.get("label") or ip, alert_hits, cve_list)
             elif client_id:
-                # Esposizione rientrata: risolvi eventuali alert OSINT attivi per questo IP
+                # Esposizione rientrata o solo CVE vecchie: risolvi alert OSINT attivi
                 await _resolve_exposure_alert(client_id, ip)
 
         if processed:
