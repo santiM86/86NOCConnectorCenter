@@ -6096,3 +6096,9 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - check() dei popup centrali ora scatta SOLO su: nuovo VITALE down, nuova WAN OFFLINE (sede isolata), nuovo BACKUP fallito. Niente più popup per ogni workstation offline.
 - Badge popup dinamico: "DISPOSITIVO VITALE OFFLINE" / "SEDE / WAN OFFLINE" / "BACKUP FALLITO".
 - NB: lo screenshot utente mostra ancora la VECCHIA versione in PRODUZIONE (design a card "21 OFFLINE" + popup per ogni device) → serve deploy per applicare la nuova TV dashboard.
+
+## 2026-06 (duodevicesimo) — Popup TV estesi: NO SONDA + ISP outage + Sicurezza
+- Feed /api/tv/dashboard: aggiunti `isp_outages` (alert attivi source_type=isp_outage_watch, con clienti impattati) e `security_incidents` (alert attivi critical/high, source_type regex c2|ransom|security|situation|threat|malware|intrusion).
+- TvDashboardPage check(): popup ora anche per — Sonda/Agent offline (connector_online===false, "SONDA OFFLINE"), Guasto operatore ISP ("GUASTO OPERATORE"), Incidente sicurezza ("SICUREZZA"). Oltre a vitali/WAN/backup già presenti.
+- Badge popup dinamico per ogni tipo. Anti-doppione via chiavi tracked (sondaKeys/ispKeys/secKeys).
+- Testato: feed espone le nuove liste + connector_online; compila OK. (Da pubblicare in produzione per vederlo sul TV.)

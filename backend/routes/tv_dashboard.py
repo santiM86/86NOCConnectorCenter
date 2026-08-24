@@ -426,6 +426,28 @@ async def tv_dashboard_data():
         else:
             cs["backup"] = None
 
+    # Eventi critici extra per i popup TV: outage operatore + incidenti sicurezza
+    _name_map = {cs["id"]: cs["name"] for cs in client_summaries}
+    isp_rows = await db.alerts.find(
+        {"status": "active", "source_type": "isp_outage_watch"},
+        {"_id": 0, "id": 1, "title": 1, "affected_clients": 1},
+    ).to_list(50)
+    isp_outages = [{
+        "id": a.get("id"),
+        "title": (a.get("title") or "Guasto operatore").replace("OUTAGE OPERATORE", "").strip(),
+        "clients": [c.get("name", "?") for c in (a.get("affected_clients") or [])][:10],
+    } for a in isp_rows]
+    sec_rows = await db.alerts.find(
+        {"status": "active", "severity": {"$in": ["critical", "high"]},
+         "source_type": {"$regex": "c2|ransom|security|situation|threat|malware|intrusion", "$options": "i"}},
+        {"_id": 0, "id": 1, "title": 1, "client_id": 1, "client_name": 1, "source_type": 1},
+    ).to_list(50)
+    security_incidents = [{
+        "id": a.get("id"),
+        "title": a.get("title") or "Incidente sicurezza",
+        "client_name": _name_map.get(a.get("client_id")) or a.get("client_name") or "—",
+    } for a in sec_rows]
+
     return {
         "timestamp": now_iso,
         "global_stats": {
@@ -449,6 +471,8 @@ async def tv_dashboard_data():
         "connectors": connector_list,
         "low_toner": low_toner_printers[:10],
         "ticker": ticker_events[:15],
+        "isp_outages": isp_outages,
+        "security_incidents": security_incidents,
     }
 
 

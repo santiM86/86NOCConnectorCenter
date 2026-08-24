@@ -43,30 +43,40 @@ function useAlarmSystem() {
     const vitalKeys = new Set();
     const bkKeys = new Set();
     const wanKeys = new Set();
+    const sondaKeys = new Set();
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => vitalKeys.add(`${c.id}:${v.ip}`));
       if (c.backup && (c.backup.failed || 0) > 0) bkKeys.add(`${c.id}:bk`);
       (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => wanKeys.add(`${c.id}:${w.public_ip}`));
+      if (c.connector_online === false) sondaKeys.add(c.id);
     });
-    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, primed: true }; return; }
+    const ispKeys = new Set((data.isp_outages || []).map(o => o.id));
+    const secKeys = new Set((data.security_incidents || []).map(s => s.id));
+    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, primed: true }; return; }
+    const has = (set, k) => (set || new Set()).has(k);
     let any = false;
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => {
-        if (!p.vitalKeys.has(`${c.id}:${v.ip}`)) {
-          pushPopup("off", c.name, `VITALE DOWN — ${v.name || v.ip}`); any = true;
-        }
+        if (!has(p.vitalKeys, `${c.id}:${v.ip}`)) { pushPopup("off", c.name, `VITALE DOWN — ${v.name || v.ip}`); any = true; }
       });
       (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => {
-        if (!(p.wanKeys || new Set()).has(`${c.id}:${w.public_ip}`)) {
-          pushPopup("off", c.name, `WAN OFFLINE — ${w.label || w.public_ip}`); any = true;
-        }
+        if (!has(p.wanKeys, `${c.id}:${w.public_ip}`)) { pushPopup("off", c.name, `WAN OFFLINE — ${w.label || w.public_ip}`); any = true; }
       });
-      if (c.backup && (c.backup.failed || 0) > 0 && !p.bkKeys.has(`${c.id}:bk`)) {
+      if (c.backup && (c.backup.failed || 0) > 0 && !has(p.bkKeys, `${c.id}:bk`)) {
         pushPopup("crit", c.name, `BACKUP FALLITO — ${c.backup.failed} VM`); any = true;
       }
+      if (c.connector_online === false && !has(p.sondaKeys, c.id)) {
+        pushPopup("off", c.name, `SONDA OFFLINE — cliente non monitorato`); any = true;
+      }
+    });
+    (data.isp_outages || []).forEach(o => {
+      if (!has(p.ispKeys, o.id)) { pushPopup("crit", (o.clients || []).slice(0, 3).join(", ") || "Più clienti", `GUASTO OPERATORE — ${o.title}`); any = true; }
+    });
+    (data.security_incidents || []).forEach(s => {
+      if (!has(p.secKeys, s.id)) { pushPopup("crit", s.client_name, `SICUREZZA — ${s.title}`); any = true; }
     });
     if (any && soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
-    prevRef.current = { vitalKeys, bkKeys, wanKeys, primed: true };
+    prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, primed: true };
   }, [soundOn, beep, pushPopup]);
   useEffect(() => {
     if (popups.length === 0) return;
@@ -152,7 +162,14 @@ export default function TvDashboardPage() {
           {popups.map(pp => (
             <div key={pp.id} className={`tv-popup tv-popup-${pp.kind}`} data-testid="tv-critical-popup">
               <button className="tv-popup-x" onClick={(e) => { e.stopPropagation(); dismiss(pp.id); }} data-testid="tv-popup-dismiss" aria-label="Chiudi">×</button>
-              <div className="tv-popup-badge">{pp.title.startsWith("WAN") ? "SEDE / WAN OFFLINE" : pp.title.startsWith("BACKUP") ? "BACKUP FALLITO" : "DISPOSITIVO VITALE OFFLINE"}</div>
+              <div className="tv-popup-badge">{
+                pp.title.startsWith("WAN") ? "SEDE / WAN OFFLINE"
+                : pp.title.startsWith("BACKUP") ? "BACKUP FALLITO"
+                : pp.title.startsWith("SONDA") ? "SONDA OFFLINE"
+                : pp.title.startsWith("GUASTO OPERATORE") ? "GUASTO OPERATORE (ISP)"
+                : pp.title.startsWith("SICUREZZA") ? "INCIDENTE SICUREZZA"
+                : "DISPOSITIVO VITALE OFFLINE"
+              }</div>
               <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
               <div className="tv-popup-title" data-testid="tv-popup-title">{pp.title}</div>
             </div>
