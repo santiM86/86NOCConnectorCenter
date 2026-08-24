@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 6  # v2026-06: aggiunto profilo HPE OfficeConnect 1620 (smart switch, solo MIB standard)
+SEED_VERSION = 7  # v2026-08: aggiunto profilo DrayTek Vigor (router/firewall, enterprise 1.3.6.1.4.1.7367)
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -677,6 +677,37 @@ PROFILES: list[dict[str, Any]] = [
         },
         "polling_interval_seconds": 60,
         "capabilities": ["snmp_basic", "interface_traffic", "session_count", "cpu_memory", "nebula_cloud_ready"],
+    },
+
+    # ---------------- DrayTek Vigor (router/firewall) ----------------
+    {
+        "key": "draytek_vigor",
+        "vendor": "DrayTek",
+        "family": "router",
+        "label": "DrayTek Vigor (Router/Firewall)",
+        "description": "Router/firewall DrayTek serie Vigor (es. Vigor2865/2927/2962/3910/165). Classificazione via enterprise OID DrayTek (1.3.6.1.4.1.7367) o sysDescr. Monitoraggio interfacce standard MIB-II + OID DrayTek per memoria/modello/firmware. Su firmware datati CPU/memoria possono essere disponibili solo nella stringa sysDescr. SNMP va abilitato in System Maintenance > SNMP sul router.",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.7367."],
+            "sysdescr_patterns": [r"draytek", r"vigor"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 443, "scheme": "https", "path": "/", "alt_ports": [80, 8080], "notes": "Vigor default HTTPS 443 (o HTTP 80). Alcune installazioni cambiano la porta di management. Abilitare SNMP v2c in System Maintenance > SNMP."},
+        "oids": {
+            **COMMON_OIDS,
+            "drRouterModel":     "1.3.6.1.4.1.7367.3.1.0",   # modello router
+            "drRouterRevision":  "1.3.6.1.4.1.7367.3.2.0",   # revisione / firmware
+            "drFirmwareBuild":   "1.3.6.1.4.1.7367.3.3.0",   # data build firmware
+            "drMemoryUsagePct":  "1.3.6.1.4.1.7367.3.7.0",   # % memoria usata (firmware recenti)
+            "drLanMac":          "1.3.6.1.4.1.7367.3.8.0",   # MAC LAN
+            "hrProcessorLoad":   "1.3.6.1.2.1.25.3.3.1.2",   # CPU % via HOST-RESOURCES (se supportato dal modello)
+            "ifSpeed":           "1.3.6.1.2.1.2.2.1.5",      # bps per porta (table)
+        },
+        "thresholds": {
+            "cpu_warn_pct": 70, "cpu_crit_pct": 90,
+            "mem_warn_pct": 80, "mem_crit_pct": 95,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "interface_traffic", "cpu_memory"],
     },
 
     # ---------------- APC UPS (PowerNet) ----------------
