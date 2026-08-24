@@ -177,6 +177,14 @@ def _parse_dt(v: Any) -> Optional[datetime]:
 # ---------------------------------------------------------------------------
 
 async def _dispatch_notification(db, cfg: Dict[str, Any], alert_doc: Dict[str, Any]) -> None:
+    # Finestra di manutenzione attiva → nessuna notifica (push/telegram).
+    try:
+        from maintenance_gate import is_in_maintenance
+        if await is_in_maintenance(db, alert_doc.get("client_id"),
+                                   alert_doc.get("device_ip") or alert_doc.get("ip")):
+            return
+    except Exception:
+        pass
     channels = cfg.get("channels") or ["push"]
     # Web push
     if "push" in channels:
@@ -204,6 +212,14 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
     channels = cfg.get("channels") or ["push"]
     if "telegram" not in channels or not cfg.get("telegram_enabled"):
         return False
+    # Finestra di manutenzione attiva → nessuna notifica Telegram.
+    try:
+        from maintenance_gate import is_in_maintenance
+        if await is_in_maintenance(db, alert_doc.get("client_id"),
+                                   alert_doc.get("device_ip") or alert_doc.get("ip")):
+            return False
+    except Exception:
+        pass
     if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
         return False
     # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra
@@ -950,6 +966,33 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             return True
         return False
 
+    # +N IMPATTI: per ogni alert "padre" (switch down / sito isolato) raccogli la
+    # lista dei device figli soppressi, cosi' l'alert riporta l'impatto reale.
+    impacts_by_anchor: dict = {}
+    for it in items:
+        md_a, fam_a, _s_a, v_a = it
+        rc = v_a.get("root_cause")
+        if rc == "switch_down":
+            sw_ip = md_a.get("ip") or md_a.get("ip_address")
+            kids = []
+            for x in items:
+                xip = x[0].get("ip") or x[0].get("ip_address")
+                if xip and xip != sw_ip and ctx["child_to_switch"].get(xip) == sw_ip:
+                    kids.append({"name": _best_device_name(x[0], xip), "ip": xip})
+            if kids:
+                impacts_by_anchor[id(md_a)] = kids
+        elif rc in ("site_isolated", "site_power_down"):
+            cid_a = md_a["client_id"]
+            kids = []
+            for x in items:
+                if x[0]["client_id"] != cid_a or id(x[0]) == id(md_a):
+                    continue
+                xip = x[0].get("ip") or x[0].get("ip_address")
+                if x[1] != "firewall":
+                    kids.append({"name": _best_device_name(x[0], xip), "ip": xip})
+            if kids:
+                impacts_by_anchor[id(md_a)] = kids
+
     warn_min = float(cfg_global.get("vital_warn_minutes", 3))
     actions = 0
 
@@ -1029,9 +1072,23 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         }
         title = f"{title_map.get(sev, dev_name)} — {v['root_cause'].replace('_',' ').upper()}"
 
+        # +N IMPATTI: arricchisci il titolo/messaggio dell'alert padre con i figli soppressi.
+        _impacts = impacts_by_anchor.get(id(md)) or []
+        _impact_msg = ""
+        if _impacts:
+            n = len(_impacts)
+            title += f" · {n} dispositivi a valle impattati"
+            _names = ", ".join(d["name"] for d in _impacts[:12])
+            if n > 12:
+                _names += f" (+{n - 12} altri)"
+            _impact_msg = f" — {n} dispositivi a valle impattati: {_names}"
+
         if state.get("level", 0) == 0:
             alert = _mk_alert(cid, cname, dev_name, ip, dev_type, sev, source_type, title,
-                              f"Cliente {cname}: {reasoning}")
+                              f"Cliente {cname}: {reasoning}{_impact_msg}")
+            if _impacts:
+                alert["impacted_count"] = len(_impacts)
+                alert["impacted_devices"] = _impacts[:50]
             from alert_enrichment import enrich_alert
             await enrich_alert(db, alert)
             await insert_alert_if_emit(db, alert)

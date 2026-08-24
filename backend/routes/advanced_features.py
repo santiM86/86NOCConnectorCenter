@@ -3,12 +3,21 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from database import db
 from deps import get_current_user, validate_api_key
 from alert_filter import invalidate_maintenance_cache
 
 logger = logging.getLogger("advanced_features")
 router = APIRouter(prefix="/api", tags=["advanced"])
+
+
+class SilenceNowReq(BaseModel):
+    hours: float = 1.0
+    until_tomorrow: bool = False
+    title: str | None = None
+    description: str | None = None
+    device_ips: list[str] = []
 
 
 # ==================== CUSTOM THRESHOLDS ====================
@@ -82,7 +91,52 @@ async def create_maintenance_window(client_id: str, request: Request, current_us
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.maintenance_windows.insert_one({**window, "_id": window["id"]})
-    invalidate_maintenance_cache(client_id)
+    try:
+        from maintenance_gate import invalidate_cache
+        invalidate_cache(client_id)
+    except Exception:
+        pass
+    return window
+
+
+@router.post("/maintenance/{client_id}/silence-now")
+async def silence_now(client_id: str, req: SilenceNowReq, current_user: dict = Depends(get_current_user)):
+    """Crea al volo una finestra di manutenzione che parte ORA e dura `hours` ore
+    (o fino a domani alle 06:00 se until_tomorrow=true). device_ips vuoto = tutto
+    il cliente. Usato dai pulsanti rapidi 'Silenzia ora'."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "id": 1})
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente non trovato")
+    now = datetime.now(timezone.utc)
+    if req.until_tomorrow:
+        end = (now + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+        label = "fino a domani mattina"
+    else:
+        hours = max(0.1, float(req.hours or 1))
+        end = now + timedelta(hours=hours)
+        label = f"per {hours:g}h"
+    device_ips = req.device_ips or []
+    window = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "title": req.title or f"Silenziato ora {label}",
+        "description": req.description or "Creata dal pulsante 'Silenzia ora'",
+        "start_time": now.isoformat(),
+        "end_time": end.isoformat(),
+        "device_ips": device_ips,
+        "suppress_alerts": True,
+        "recurring": False,
+        "recurrence_type": None,
+        "status": "active",
+        "created_by": current_user.get("email", "system"),
+        "created_at": now.isoformat(),
+    }
+    await db.maintenance_windows.insert_one({**window, "_id": window["id"]})
+    try:
+        from maintenance_gate import invalidate_cache
+        invalidate_cache(client_id)
+    except Exception:
+        pass
     return window
 
 
@@ -99,7 +153,11 @@ async def update_maintenance_window(client_id: str, window_id: str, request: Req
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Finestra non trovata")
-    invalidate_maintenance_cache(client_id)
+    try:
+        from maintenance_gate import invalidate_cache
+        invalidate_cache(client_id)
+    except Exception:
+        pass
     return {"status": "ok"}
 
 
@@ -109,13 +167,17 @@ async def delete_maintenance_window(client_id: str, window_id: str, current_user
     result = await db.maintenance_windows.delete_one({"id": window_id, "client_id": client_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Finestra non trovata")
-    invalidate_maintenance_cache(client_id)
+    try:
+        from maintenance_gate import invalidate_cache
+        invalidate_cache(client_id)
+    except Exception:
+        pass
     return {"status": "ok"}
 
 
 @router.get("/maintenance/active/{client_id}")
-async def get_active_maintenance(client_id: str):
-    """Check if there's an active maintenance window. Used by alert engine to suppress alerts."""
+async def get_active_maintenance(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Check if there's an active maintenance window (info riservata: richiede auth)."""
     now = datetime.now(timezone.utc).isoformat()
     active = await db.maintenance_windows.find_one({
         "client_id": client_id,

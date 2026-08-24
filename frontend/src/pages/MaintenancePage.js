@@ -10,7 +10,7 @@ export default function MaintenancePage() {
   const [windows, setWindows] = useState([]);
   const [devices, setDevices] = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true });
+  const [form, setForm] = useState({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true, recurring: false, recurrence_type: "daily" });
   const [editingId, setEditingId] = useState(null);
   const token = localStorage.getItem("noc_token");
   const headers = { Authorization: `Bearer ${token}` };
@@ -52,7 +52,7 @@ export default function MaintenancePage() {
         toast.success(editingId ? "Finestra aggiornata" : "Finestra di manutenzione creata");
         setShowForm(false);
         setEditingId(null);
-        setForm({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true });
+        setForm({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true, recurring: false, recurrence_type: "daily" });
         fetchData();
       })
       .catch(() => toast.error("Errore"));
@@ -73,6 +73,8 @@ export default function MaintenancePage() {
       end_time: w.end_time ? w.end_time.slice(0, 16) : "",
       device_ips: w.device_ips || [],
       suppress_alerts: w.suppress_alerts !== false,
+      recurring: !!w.recurring,
+      recurrence_type: w.recurrence_type || "daily",
     });
     setEditingId(w.id);
     setShowForm(true);
@@ -85,12 +87,41 @@ export default function MaintenancePage() {
     }));
   };
 
-  const isActive = (w) => {
-    const now = new Date().toISOString();
-    return w.start_time <= now && w.end_time >= now;
+  const silenceNow = (opts) => {
+    if (!selectedClient) return;
+    axios.post(`${API}/api/maintenance/${selectedClient}/silence-now`, opts, { headers })
+      .then(() => { toast.success("Cliente silenziato — alert soppressi"); fetchData(); })
+      .catch(() => toast.error("Errore"));
   };
 
-  const isPast = (w) => new Date(w.end_time) < new Date();
+  const isActive = (w) => {
+    const nowD = new Date();
+    if (!w.recurring) {
+      const now = nowD.toISOString();
+      return w.start_time <= now && w.end_time >= now;
+    }
+    const start = new Date(w.start_time);
+    const end = new Date(w.end_time);
+    const dur = end - start;
+    if (dur <= 0) return false;
+    for (const off of [0, -1]) {
+      const cs = new Date(nowD); cs.setDate(cs.getDate() + off);
+      cs.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), 0);
+      const ce = new Date(cs.getTime() + dur);
+      if (cs <= nowD && nowD <= ce) {
+        if (w.recurrence_type === "weekly" && cs.getDay() !== start.getDay()) continue;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const isPast = (w) => !w.recurring && new Date(w.end_time) < new Date();
+
+  const recurrenceLabel = (w) => {
+    if (!w.recurring) return null;
+    return w.recurrence_type === "weekly" ? "Settimanale" : "Giornaliera";
+  };
 
   return (
     <div className="space-y-6" data-testid="maintenance-page">
@@ -105,12 +136,21 @@ export default function MaintenancePage() {
             data-testid="maint-client-select">
             {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true }); }}
+          <button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ title: "", description: "", start_time: "", end_time: "", device_ips: [], suppress_alerts: true, recurring: false, recurrence_type: "daily" }); }}
             className="h-8 px-4 text-xs font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700"
             data-testid="maint-new-btn">
             {showForm ? "Annulla" : "Nuova Finestra"}
           </button>
         </div>
+      </div>
+
+      {/* Quick silence bar */}
+      <div className="flex items-center gap-2 flex-wrap rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2" data-testid="maint-silence-now-bar">
+        <span className="text-xs font-semibold text-amber-400">Silenzia ora tutto il cliente:</span>
+        <button onClick={() => silenceNow({ hours: 1 })} className="h-7 px-3 text-xs rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10" data-testid="silence-now-1h">1 ora</button>
+        <button onClick={() => silenceNow({ hours: 2 })} className="h-7 px-3 text-xs rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10" data-testid="silence-now-2h">2 ore</button>
+        <button onClick={() => silenceNow({ until_tomorrow: true })} className="h-7 px-3 text-xs rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10" data-testid="silence-now-tomorrow">Fino a domani</button>
+        <span className="text-[11px] text-[var(--text-secondary)]">Sopprime alert e notifiche per l'intero cliente selezionato.</span>
       </div>
 
       {/* Creation/Edit Form */}
@@ -155,17 +195,32 @@ export default function MaintenancePage() {
               {devices.length === 0 && <span className="text-xs text-[var(--text-secondary)]">Nessun dispositivo. Vuoto = tutti i dispositivi.</span>}
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
             <label className="flex items-center gap-2 text-xs text-[var(--text-primary)]">
               <input type="checkbox" checked={form.suppress_alerts} onChange={e => setForm(f => ({ ...f, suppress_alerts: e.target.checked }))} />
               Sopprimi alert durante la manutenzione
             </label>
+            <label className="flex items-center gap-2 text-xs text-[var(--text-primary)]">
+              <input type="checkbox" checked={form.recurring} onChange={e => setForm(f => ({ ...f, recurring: e.target.checked }))} data-testid="maint-recurring" />
+              Ricorrente
+            </label>
+            {form.recurring && (
+              <select value={form.recurrence_type} onChange={e => setForm(f => ({ ...f, recurrence_type: e.target.value }))}
+                className="h-8 px-3 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-surface)] text-[var(--text-primary)]"
+                data-testid="maint-recurrence-type">
+                <option value="daily">Ogni giorno (stessa ora)</option>
+                <option value="weekly">Ogni settimana (stesso giorno e ora)</option>
+              </select>
+            )}
             <button onClick={handleSubmit}
-              className="h-8 px-6 text-xs font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700"
+              className="h-8 px-6 text-xs font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 ml-auto"
               data-testid="maint-save-btn">
               {editingId ? "Aggiorna" : "Crea"} Finestra
             </button>
           </div>
+          {form.recurring && (
+            <p className="text-[11px] text-[var(--text-secondary)]">Per le finestre ricorrenti conta solo l'<b>ora</b> di inizio/fine{form.recurrence_type === "weekly" ? " e il giorno della settimana della data di inizio" : ""}. Ideale per le finestre di backup notturne.</p>
+          )}
         </div>
       )}
 
@@ -188,6 +243,7 @@ export default function MaintenancePage() {
                     {w.title}
                     {isActive(w) && <span className="ml-2 px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-500/20 text-amber-400">IN CORSO</span>}
                     {isPast(w) && <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-gray-500/20 text-gray-400">COMPLETATA</span>}
+                    {recurrenceLabel(w) && <span className="ml-2 px-1.5 py-0.5 text-[10px] font-bold rounded bg-violet-500/20 text-violet-300">RICORRENTE · {recurrenceLabel(w)}</span>}
                   </p>
                   <p className="text-xs text-[var(--text-secondary)]">
                     {new Date(w.start_time).toLocaleString("it-IT")} — {new Date(w.end_time).toLocaleString("it-IT")}
@@ -200,11 +256,13 @@ export default function MaintenancePage() {
               <div className="flex items-center gap-2">
                 {!isPast(w) && (
                   <button onClick={() => editWindow(w)}
+                    data-testid={`maint-edit-${w.id}`}
                     className="h-7 px-3 text-xs rounded-md border border-[var(--bg-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)]">
                     Modifica
                   </button>
                 )}
                 <button onClick={() => deleteWindow(w.id)}
+                  data-testid={`maint-delete-${w.id}`}
                   className="h-7 px-3 text-xs rounded-md border border-red-500/30 text-red-400 hover:bg-red-500/10">
                   Elimina
                 </button>

@@ -247,5 +247,13 @@ async def insert_alert_if_emit(db, alert_doc: dict) -> bool:
     if cid and ip:
         if await is_device_silenced(db, cid, ip):
             return False
+    # Finestra di manutenzione attiva → non creare l'alert (device o cliente).
+    if cid:
+        try:
+            from maintenance_gate import is_in_maintenance
+            if await is_in_maintenance(db, cid, ip):
+                return False
+        except Exception:
+            pass
     await db.alerts.insert_one(alert_doc)
     return True

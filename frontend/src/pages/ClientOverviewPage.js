@@ -289,7 +289,7 @@ export default function ClientOverviewPage() {
     { id: "wan", label: `WAN (${wanTargets.length})`, icon: Globe },
     { id: "alerts", label: `Alert (${alerts.length})`, icon: Bell },
     { id: "printers", label: `Stampanti (${mergedPrinters.length})`, icon: Printer },
-    { id: "backup", label: `Backup (${backups.length})`, icon: Database },
+    { id: "backup", label: `Backup${(() => { const t = (backupSummary.m365?.totals?.total_items || 0) + (backupSummary.vm?.totals?.vms_total || 0) + backups.length; return t > 0 ? ` (${t})` : ""; })()}`, icon: Database },
     { id: "discovery", label: "Auto-Discovery", icon: MagnifyingGlass },
     { id: "lan-scan", label: "Scanner LAN", icon: WifiHigh },
     { id: "vulnerability", label: "Vulnerability", icon: ShieldCheck },
@@ -4171,7 +4171,7 @@ function VMBackupPanel({ clientId }) {
   const [draft, setDraft] = useState([]);
   const [polling, setPolling] = useState(false);
   const [view, setView] = useState("all"); // all | problems | stale  (filtro tabella "elenco completo")
-  const [mode, setMode] = useState("dashboard"); // dashboard | list
+  const [mode, setMode] = useState("list"); // dashboard | list — default: elenco completo
   const [q, setQ] = useState("");
   const [groupBy, setGroupBy] = useState("host"); // host | customer
 
