@@ -807,6 +807,12 @@ async def run_probe_cycle():
                         "created_at": now_iso,
                     }
                     await insert_alert_if_emit(db, _ext_alert)
+                    # v2026-06: invio Telegram in TEMPO REALE del WAN/sito down
+                    try:
+                        from alert_engine import notify_alert_telegram
+                        await notify_alert_telegram(db, _ext_alert)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(f"telegram WAN down send failed: {e}")
                     # v2026-06: trace automatico verso l'IP pubblico, allegato all'alert
                     if r["status"] == "offline" and prev_status in ("online", "degraded", "filtered"):
                         asyncio.create_task(_auto_trace_on_wan_down(
@@ -860,6 +866,12 @@ async def run_probe_cycle():
                         "created_at": now_iso,
                     }
                 await insert_alert_if_emit(db, _line_alert)
+                # v2026-06: invio Telegram in TEMPO REALE (failover / cliente isolato)
+                try:
+                    from alert_engine import notify_alert_telegram
+                    await notify_alert_telegram(db, _line_alert)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"telegram line alert send failed: {e}")
                 try:
                     import webpush as _wp
                     await _wp.notify_new_alert(db, _line_alert)

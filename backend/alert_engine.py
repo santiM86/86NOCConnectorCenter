@@ -96,7 +96,8 @@ def _telegram_severity_ok(cfg: Dict[str, Any], severity: str) -> bool:
 
 # source_type che rappresentano un "vero down" → sempre istantanei anche in quiet hours
 _TG_INSTANT_KEYWORDS = ("down", "offline", "blackout", "power", "isolat",
-                        "situation", "reach", "liveness", "vital", "connector")
+                        "situation", "reach", "liveness", "vital", "connector",
+                        "external_monitor", "wan")
 
 
 def _is_instant_source(source_type: str) -> bool:
@@ -478,7 +479,23 @@ async def morning_status_digest(db) -> dict:
     time_lbl = cfg.get("morning_digest_time") or "07:00"
 
     from zoneinfo import ZoneInfo
+    from datetime import timedelta as _td
     _TZ = ZoneInfo("Europe/Rome")
+
+    # Finestra "NOTTE": dall'ultima occorrenza dell'orario di inizio fascia silenziosa
+    # (telegram_quiet_start, default 22:00) fino ad ora. Così al risveglio ricevi SOLO
+    # ciò che è andato down durante la notte, non lo storico dei giorni precedenti.
+    _now_loc = datetime.now(_TZ)
+    try:
+        _qh, _qm = str(cfg.get("telegram_quiet_start") or "22:00").split(":")
+        _qh, _qm = int(_qh), int(_qm)
+    except Exception:
+        _qh, _qm = 22, 0
+    _night = _now_loc.replace(hour=_qh, minute=_qm, second=0, microsecond=0)
+    if _night > _now_loc:
+        _night = _night - _td(days=1)
+    night_start_iso = _night.astimezone(timezone.utc).isoformat()
+    night_lbl = _night.strftime("%H:%M")
 
     def _down_since(created_at):
         """(orario HH:MM, durata leggibile) da un ISO/created_at, o (None, None)."""
@@ -517,21 +534,20 @@ async def morning_status_digest(db) -> dict:
         return any(k in (st + " " + ti) for k in _DOWN_KW)
 
     active = await db.alerts.find(
-        {"status": "active"},
+        {"status": "active", "created_at": {"$gte": night_start_iso}},
         {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1, "title": 1,
          "device_name": 1, "device_ip": 1, "created_at": 1, "affected_clients": 1},
     ).to_list(3000)
 
-    down = [a for a in active if _is_down_alert(a)]
+    # SOLO down avvenuti DURANTE LA NOTTE (created_at nella finestra notturna)
+    down = [a for a in active if _is_down_alert(a) and (a.get("created_at") or "") >= night_start_iso]
     # separa gli outage operatore (multi-cliente) dal resto
     operator_outages = [a for a in down if "isp_outage" in (a.get("source_type") or "").lower()]
     device_downs = [a for a in down if a not in operator_outages]
 
-    # RIENTRATI nella notte: down-type risolti nelle ultime 12h
-    from datetime import timedelta as _td
-    rec_cutoff = (datetime.now(timezone.utc) - _td(hours=12)).isoformat()
+    # RIENTRATI nella notte: down-type risolti nella stessa finestra notturna
     resolved = await db.alerts.find(
-        {"status": "resolved", "resolved_at": {"$gte": rec_cutoff}},
+        {"status": "resolved", "resolved_at": {"$gte": night_start_iso}},
         {"_id": 0, "client_id": 1, "client_name": 1, "source_type": 1, "title": 1,
          "device_name": 1, "device_ip": 1, "resolved_at": 1},
     ).to_list(2000)
@@ -570,10 +586,10 @@ async def morning_status_digest(db) -> dict:
     total_down = len(device_downs)
     if not device_downs and not operator_outages:
         body = ("☀️ <b>Buongiorno — ARGUS</b> (" + time_lbl + ")\n"
-                "Nessun elemento DOWN. Tutti i dispositivi vitali, siti e linee operativi. ✅")
+                f"Nessun nuovo DOWN durante la notte (dalle {night_lbl}). Tutto tranquillo. ✅")
     else:
-        lines = [f"☀️ <b>Buongiorno — Cosa è DOWN adesso</b> ({time_lbl})",
-                 f"{total_down} elementi giù su {len(by_client)} clienti\n"]
+        lines = [f"☀️ <b>Buongiorno — Andato DOWN durante la notte</b> ({time_lbl})",
+                 f"Dalle {night_lbl} di ieri sera: {total_down} elementi giù su {len(by_client)} clienti\n"]
         # ordina i clienti per numero di down desc
         for cli in sorted(by_client, key=lambda c: -len(by_client[c]))[:80]:
             lines.append(f"• <b>{cli}</b>")

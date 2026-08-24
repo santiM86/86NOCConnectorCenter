@@ -243,3 +243,90 @@
 .tv-dot-high { background: var(--orange); }
 .tv-dot-medium { background: var(--amber); }
 .tv-dot-low, .tv-dot-info { background: #0aa5ff; }
+
+/* ===== Wallboard v2 (tvx) — coerente col design ARGUS, denso per 45" ===== */
+.tvx { min-height: 100vh; background: #0a0e14; color: #e6edf3; padding: 18px 20px 28px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.tvx-head { display: flex; align-items: center; gap: 24px; padding-bottom: 16px; margin-bottom: 18px;
+  border-bottom: 1px solid #1c2430; }
+.tvx-brand { display: flex; align-items: center; gap: 12px; }
+.tvx-logo { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg,#14b8a6,#0ea5e9);
+  display: grid; place-items: center; font-weight: 800; font-size: 22px; color: #04121a; }
+.tvx-title { font-size: 24px; font-weight: 800; letter-spacing: 1px; line-height: 1; }
+.tvx-sub { font-size: 10px; letter-spacing: 3px; color: #5b6b7d; margin-top: 3px; }
+.tvx-stats { display: flex; gap: 12px; margin-left: 8px; }
+.tvx-stat { min-width: 120px; padding: 8px 16px; border-radius: 12px; background: #10161f; border: 1px solid #1c2430; }
+.tvx-stat-n { font-size: 32px; font-weight: 800; line-height: 1; }
+.tvx-stat-l { font-size: 10px; letter-spacing: 1.5px; color: #6b7d90; margin-top: 4px; }
+.tvx-stat.crit .tvx-stat-n { color: #ef4444; } .tvx-stat.crit { border-color: rgba(239,68,68,.4); }
+.tvx-stat.warn .tvx-stat-n { color: #eab308; }
+.tvx-stat.ok .tvx-stat-n { color: #22c55e; }
+.tvx-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.tvx-live { font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 999px; }
+.tvx-live.crit { color: #fca5a5; background: rgba(239,68,68,.14); animation: tvxpulse 1.4s infinite; }
+.tvx-live.ok { color: #86efac; background: rgba(34,197,94,.12); }
+@keyframes tvxpulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.tvx-btn { font-size: 12px; font-weight: 700; color: #9fb0c3; background: #10161f; border: 1px solid #1c2430;
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.tvx-btn:hover { border-color: #2a3646; color: #e6edf3; }
+.tvx-clock { text-align: right; }
+.tvx-time { font-size: 26px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.tvx-date { font-size: 10px; letter-spacing: 2px; color: #5b6b7d; margin-top: 3px; }
+
+.tvx-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.tvx-card { background: #10161f; border: 1px solid #1c2430; border-radius: 16px; padding: 14px 16px;
+  border-left: 4px solid #2a3646; }
+.tvx-card.crit { border-left-color: #ef4444; box-shadow: 0 0 0 1px rgba(239,68,68,.12) inset; }
+.tvx-card.warn { border-left-color: #eab308; }
+.tvx-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tvx-card-name { font-size: 18px; font-weight: 800; }
+.tvx-badge.nosonda { font-size: 9px; font-weight: 800; letter-spacing: 1px; color: #fca5a5;
+  background: rgba(239,68,68,.16); border-radius: 6px; padding: 2px 6px; margin-left: auto; }
+.tvx-sec { padding: 7px 0; border-top: 1px solid #161d27; }
+.tvx-sec:first-of-type { border-top: 0; }
+.tvx-sec-h { font-size: 9px; letter-spacing: 2px; color: #5b6b7d; margin-bottom: 5px; font-weight: 700; }
+.tvx-ok { font-size: 12px; color: #6ee7a8; }
+.tvx-muted { font-size: 12px; color: #5b6b7d; }
+.tvx-list { display: flex; flex-direction: column; gap: 3px; }
+.tvx-item { font-size: 13px; display: flex; align-items: center; gap: 7px; }
+.tvx-item.crit b { color: #fecaca; }
+.tvx-item .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex: none; animation: tvxpulse 1.4s infinite; }
+.tvx-when { margin-left: auto; font-size: 11px; color: #8b7d5b; font-variant-numeric: tabular-nums; }
+.tvx-more { font-size: 11px; color: #6b7d90; }
+.tvx-wan { display: flex; flex-wrap: wrap; gap: 6px; }
+.tvx-wan-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 9px;
+  background: #0c1219; border: 1px solid #1c2430; border-radius: 8px; }
+.tvx-wan-pill .dot { width: 8px; height: 8px; border-radius: 50%; }
+.tvx-wan-pill b { font-size: 11px; font-weight: 800; }
+.tvx-neb { font-size: 8px; font-weight: 800; letter-spacing: .5px; color: #6ee7a8; background: rgba(34,197,94,.12);
+  border-radius: 4px; padding: 1px 4px; }
+.tvx-lat { font-size: 10px; color: #6b7d90; }
+.tvx-bk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tvx-chip { font-size: 11px; font-weight: 800; letter-spacing: .5px; border-radius: 6px; padding: 3px 8px; }
+.tvx-chip.crit { color: #fecaca; background: rgba(239,68,68,.16); }
+.tvx-chip.warn { color: #fde68a; background: rgba(234,179,8,.14); }
+.tvx-bk-tot { font-size: 11px; color: #6b7d90; }
+.tvx-empty { display: grid; place-items: center; gap: 14px; height: 60vh; color: #6ee7a8; text-align: center; font-size: 18px; }
+.tvx-empty-icon { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 44px; background: rgba(34,197,94,.1); border: 2px solid rgba(34,197,94,.3); }
+
+/* ===== Roster: tutte le aziende ===== */
+.tvx-roster { background: #10161f; border: 1px solid #1c2430; border-radius: 16px; padding: 14px 16px; margin-bottom: 18px; }
+.tvx-roster-h { display: flex; align-items: center; justify-content: space-between; font-size: 10px; letter-spacing: 2px; color: #6b7d90; font-weight: 700; margin-bottom: 10px; }
+.tvx-legend { display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0; }
+.tvx-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin: 0 2px 0 10px; }
+.tvx-legend i.ok { background: #22c55e; } .tvx-legend i.warn { background: #eab308; } .tvx-legend i.crit { background: #ef4444; }
+.tvx-roster-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px 12px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.tvx-roster-item { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 5px 10px;
+  background: #0c1219; border: 1px solid #161d27; border-radius: 8px; border-left: 3px solid #22c55e; }
+.tvx-roster-item .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #22c55e; }
+.tvx-roster-item .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvx-roster-item .tag { margin-left: auto; font-size: 10px; font-weight: 800; letter-spacing: .5px; padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+.tvx-roster-item.ok { color: #a7f3c8; }
+.tvx-roster-item.ok .dot { background: #22c55e; }
+.tvx-roster-item.warn { border-left-color: #eab308; color: #fde68a; }
+.tvx-roster-item.warn .dot { background: #eab308; } .tvx-roster-item.warn .tag { color: #fde68a; background: rgba(234,179,8,.14); }
+.tvx-roster-item.crit { border-left-color: #ef4444; color: #fecaca; background: rgba(239,68,68,.06); }
+.tvx-roster-item.crit .dot { background: #ef4444; animation: tvxpulse 1.4s infinite; }
+.tvx-roster-item.crit .tag { color: #fecaca; background: rgba(239,68,68,.16); }

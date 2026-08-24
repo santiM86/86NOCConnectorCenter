@@ -6068,3 +6068,37 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - UI ExternalMonitorPage: pulsante "Auto-collega Nebula" (data-testid auto-link-nebula-btn).
 - Effetto combinato: una volta linkato, scatta l'auto-disattivazione ICMP + stato da Nebula (feature precedente) → monitoraggio pulito senza intervento manuale.
 - Testato: match per IP pubblico linka correttamente (dev_id+site_id); endpoint 403 senza auth (montato). Backend/frontend OK.
+
+## 2026-06 (terdecies) — WAN/sito down: invio Telegram in TEMPO REALE (gap chiuso)
+- GAP trovato: gli alert WAN offline e FAILOVER/CLIENTE ISOLATO (external_monitor / external_monitor_line) facevano solo webpush + dashboard, NON venivano inviati su Telegram in tempo reale.
+- FIX: aggiunto notify_alert_telegram() sull'emit di WAN offline (probe cycle) e su failover/isolato. Aggiunti "external_monitor"/"wan" a _TG_INSTANT_KEYWORDS → istantanei anche in quiet hours notturne.
+- Confermato che vitali down, situazioni, ISP outage, Hyper-V VM down già inviavano real-time.
+- Testato: _is_instant_source('external_monitor')=True, backup=False; notify_alert_telegram invia il doc WAN OFFLINE (non accodato) fuori quiet hours.
+
+## 2026-06 (quaterdecies) — Digest mattutino: SOLO down della NOTTE (no storico)
+- morning_status_digest ora filtra i down per la FINESTRA NOTTURNA: da telegram_quiet_start (default 22:00) di ieri sera fino all'ora del digest. Esclusi i down storici dei giorni precedenti.
+- Query active filtra created_at >= night_start; "Rientrati" filtra resolved_at >= night_start.
+- Titoli aggiornati: "Andato DOWN durante la notte — Dalle HH:MM di ieri sera"; se nulla: "Nessun nuovo DOWN durante la notte (dalle HH:MM). ✅".
+- Testato: item notturno (2h fa) incluso, item storico (20 giorni) escluso.
+
+## 2026-06 (quindecies) — TV Dashboard ridisegnata (45", coerente, solo Vitali/WAN/Backup)
+- Feed /api/tv/dashboard esteso: `vital_down`/`vital_down_count` (solo device is_vital offline), campi `nebula_monitored`/`nebula_status` sui wan_targets, `backup` per cliente (da db.backup_status: ok/warning/failed/missing/total).
+- TvDashboardPage.js riscritto con design system coerente (nuove classi tvx-* dark, denso per 45"). Ogni card mostra SOLO: Dispositivi Vitali down, WAN (pill con colore stato + badge NEBULA + latenza), Backup (chip falliti/mancanti/warning o OK). Mostrati solo i clienti con almeno un problema; ordinati per gravità.
+- Header: statistiche (vitali down, WAN offline, backup falliti/mancanti, clienti coinvolti), stato live, sound/test, orologio. Popup+audio ora innescati su VITALI down e BACKUP falliti nuovi.
+- Testato: screenshot 1920x1080 → card 86BIT_Office con vitali OK, WAN (Zyxel NEBULA OK + 2 OFFLINE rossi), backup 1/1 ok. Badge NEBULA confermato (auto-link+nebula funzionanti). Compila OK.
+
+## 2026-06 (sexdecies) — TV Dashboard: roster elenco puntato tutte le aziende
+- Aggiunta sezione "TUTTE LE AZIENDE (N)" in cima: elenco puntato di TUTTI i clienti con pallino colorato — verde=tutto ok, rosso=qualcosa down (vitali/WAN offline/backup falliti), giallo=warning. Tag sintetico sul problema (vitali/WAN/backup). Legenda inclusa. Ordinati crit>warn>ok, poi alfabetico. Griglia multi-colonna densa per 45".
+- allClients memo (tutti i clienti, non solo quelli con problemi). Card di dettaglio restano sotto per i soli clienti con problemi.
+- Testato: screenshot → roster con 86BIT_Office rosso (tag WAN) + legenda; card dettaglio sotto. Compila OK.
+
+## 2026-06 (septendecies) — TV popup: solo eventi critici (vitali/WAN/backup)
+- check() dei popup centrali ora scatta SOLO su: nuovo VITALE down, nuova WAN OFFLINE (sede isolata), nuovo BACKUP fallito. Niente più popup per ogni workstation offline.
+- Badge popup dinamico: "DISPOSITIVO VITALE OFFLINE" / "SEDE / WAN OFFLINE" / "BACKUP FALLITO".
+- NB: lo screenshot utente mostra ancora la VECCHIA versione in PRODUZIONE (design a card "21 OFFLINE" + popup per ogni device) → serve deploy per applicare la nuova TV dashboard.
+
+## 2026-06 (duodevicesimo) — Popup TV estesi: NO SONDA + ISP outage + Sicurezza
+- Feed /api/tv/dashboard: aggiunti `isp_outages` (alert attivi source_type=isp_outage_watch, con clienti impattati) e `security_incidents` (alert attivi critical/high, source_type regex c2|ransom|security|situation|threat|malware|intrusion).
+- TvDashboardPage check(): popup ora anche per — Sonda/Agent offline (connector_online===false, "SONDA OFFLINE"), Guasto operatore ISP ("GUASTO OPERATORE"), Incidente sicurezza ("SICUREZZA"). Oltre a vitali/WAN/backup già presenti.
+- Badge popup dinamico per ogni tipo. Anti-doppione via chiavi tracked (sondaKeys/ispKeys/secKeys).
+- Testato: feed espone le nuove liste + connector_online; compila OK. (Da pubblicare in produzione per vederlo sul TV.)
