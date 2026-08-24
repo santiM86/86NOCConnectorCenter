@@ -617,6 +617,22 @@ async def sync_client_devices(client_id: str) -> dict:
                         if primary:
                             doc["public_ip"] = primary.get("public_ip")
                             doc["line_state"] = "up" if primary.get("enabled") and primary.get("public_ip") else "down"
+                            # Nebula NON espone l'ISP nativamente: lo ricaviamo dall'IP
+                            # pubblico via geo-IP (ip-api, cache 30gg). Cosi' l'operatore
+                            # vede subito l'operatore della linea sul firewall Nebula.
+                            pub = doc.get("public_ip")
+                            if pub:
+                                try:
+                                    from routes.external_monitor import _geoip_cached
+                                    geo = await _geoip_cached(pub)
+                                    if geo and not geo.get("error"):
+                                        doc["isp"] = geo.get("isp") or geo.get("asn_name")
+                                        doc["isp_org"] = geo.get("org")
+                                        doc["asn"] = geo.get("asn")
+                                        doc["asn_name"] = geo.get("asn_name")
+                                        doc["geo_country_code"] = geo.get("country_code")
+                                except Exception as _ge:
+                                    logger.debug(f"geoip nebula {pub}: {_ge}")
                 except ZyxelError as e:
                     logger.debug(f"interface-settings dev={dev_id}: {e}")
 
