@@ -170,6 +170,23 @@ async def tv_dashboard_data():
 
     # 3. All device poll statuses
     all_devices = await db.device_poll_status.find({}, {"_id": 0}).to_list(2000)
+    # Dedup record duplicati per dispositivo (master vs scanner-fallback): "reachable
+    # wins", poi il più recente. Allinea la TV alla scheda cliente (/api/devices).
+    def _ok(d):
+        return bool(d.get("ping_reachable") or d.get("reachable"))
+    def _ts(d):
+        return d.get("last_seen_at") or d.get("last_seen") or d.get("updated_at") or ""
+    _dedup = {}
+    for d in all_devices:
+        k = f"{d.get('client_id')}:{d.get('ip')}"
+        cur = _dedup.get(k)
+        if cur is None:
+            _dedup[k] = d
+            continue
+        # reachable vince; a parità, il più recente
+        if (_ok(d), _ts(d)) > (_ok(cur), _ts(cur)):
+            _dedup[k] = d
+    all_devices = list(_dedup.values())
 
     # 4. Managed devices (for names)
     managed = await db.managed_devices.find({}, {"_id": 0}).to_list(2000)

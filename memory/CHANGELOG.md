@@ -6102,3 +6102,8 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - TvDashboardPage check(): popup ora anche per — Sonda/Agent offline (connector_online===false, "SONDA OFFLINE"), Guasto operatore ISP ("GUASTO OPERATORE"), Incidente sicurezza ("SICUREZZA"). Oltre a vitali/WAN/backup già presenti.
 - Badge popup dinamico per ogni tipo. Anti-doppione via chiavi tracked (sondaKeys/ispKeys/secKeys).
 - Testato: feed espone le nuove liste + connector_online; compila OK. (Da pubblicare in produzione per vederlo sul TV.)
+
+## 2026-06 (novemdecies) — Fix incongruenza TV vs scheda cliente (vitali down falsi)
+- CAUSA: device_poll_status ha record DUPLICATI per dispositivo (master vs scanner-fallback). La TV leggeva un record qualsiasi (spesso reachable=false stale) → mostrava vitali DOWN falsi (es. AQUATTRO SRVGEST01) mentre la scheda cliente (/api/devices, regola "reachable wins") lo dava ONLINE.
+- FIX: tv_dashboard.py deduplica all_devices per (client_id, ip) con "reachable wins" poi più recente — stessa regola di devices.py. Ora TV e scheda cliente concordano.
+- Verificato: feed /api/tv/dashboard → vitali down coerenti (0 falsi in preview). Da deployare in produzione per l'effetto pieno.
