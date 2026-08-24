@@ -8550,3 +8550,12 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   nome in managed_devices -> device_poll_status -> discovered_endpoints/scan_results/lan_devices.
 - VaultPage.js: lookupDeviceName() debounced 500ms su onChange IP -> precompila
   device_name se vuoto. useRef aggiunto. Verificato: 192.168.1.3 -> nome managed.
+
+## 2026-08-24 — Debounce vitali rapido (A) + Pre-allarme (C)
+- liveness_resolver.py: VITAL_MIN_FAILURES=2, VITAL_GRACE_SECONDS=120, PRE_ALARM_SECONDS=90.
+  effective_reachable(pd,min_failures,grace) parametrizzato; compute_status usa soglie
+  vitali (2min) se md.is_vital. Nuova down_phase(pd,is_vital)->ok/prealarm/down.
+- services/pre_alarm.py (scheduler 1m): per i vitali in fase prealarm emette alert LOW
+  source_type=pre_down_warning (dedup, Telegram), auto-resolve su recupero o su down pieno.
+  Salta clienti senza sonda online. Rispetta manutenzione (insert_alert_if_emit+notify).
+- Verificato: A (vitale off 140s vs non-vitale on), C (95s->prealarm, recupero->resolved).

@@ -28,6 +28,12 @@ from typing import Any, Mapping, Optional
 # Defaults condivisi tra tutti i consumer
 DEBOUNCE_MIN_FAILURES = 3      # 3 cicli consecutivi falliti
 DEBOUNCE_GRACE_SECONDS = 300   # 5 minuti senza nessun successo
+# A) Debounce PIU' RAPIDO per i dispositivi VITALI: allarme dopo ~2 min.
+VITAL_MIN_FAILURES = 2
+VITAL_GRACE_SECONDS = 120      # 2 minuti per i vitali
+# C) Pre-allarme "soft": segnala il device che sta fallendo gia' dopo ~90s,
+# prima dell'allarme pieno (debounce). Usato da services/pre_alarm.py.
+PRE_ALARM_SECONDS = 90
 EVIDENCE_WINDOW_MINUTES = 15   # quanto considerare "recente" un discovered_endpoint
 # v2026-06 SPEED: l'agent invia heartbeat ogni 15s. 180s (12 beat persi) era
 # troppo lento per rilevare un blackout "quasi live". 90s = 6 beat persi:
@@ -142,20 +148,13 @@ async def build_blackout_clients(db, offline_clients: Optional[set] = None) -> s
     return set(offline_clients) & wan_down
 
 
-def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
+def effective_reachable(pd: Optional[Mapping[str, Any]],
+                        min_failures: int = DEBOUNCE_MIN_FAILURES,
+                        grace_seconds: int = DEBOUNCE_GRACE_SECONDS) -> bool:
     """
     Decide se un device va mostrato online sulla base del solo poll
-    record (device_poll_status), con debounce anti-flap.
-
-    Returns:
-        True  -> mostra ONLINE
-        False -> mostra OFFLINE
-
-    Logica:
-      1. Se reachable=True               → True
-      2. Se reachable=False ma debounce non scattato (consec<3 o
-         last_reachable_at fresco <5min) → True (transitorio)
-      3. Altrimenti                       → False
+    record (device_poll_status), con debounce anti-flap. Per i VITALI si
+    passa una soglia piu' bassa (grace 2 min) per un allarme piu' rapido.
     """
     if not pd:
         return False
@@ -176,9 +175,37 @@ def effective_reachable(pd: Optional[Mapping[str, Any]]) -> bool:
     except Exception:
         secs_since = 1e9
     # Offline SOLO se ENTRAMBE le condizioni sono superate
-    if consec >= DEBOUNCE_MIN_FAILURES and secs_since >= DEBOUNCE_GRACE_SECONDS:
+    if consec >= min_failures and secs_since >= grace_seconds:
         return False
     return True
+
+
+def down_phase(pd: Optional[Mapping[str, Any]], is_vital: bool = False) -> str:
+    """C) Fase di down di un device che sta fallendo (per il pre-allarme):
+      - "ok"       : reachable o nessun fallimento
+      - "prealarm" : sta fallendo da >= PRE_ALARM_SECONDS ma debounce non ancora scattato
+      - "down"     : debounce scattato (offline confermato)
+    """
+    if not pd or pd.get("reachable"):
+        return "ok"
+    try:
+        consec = int(pd.get("consecutive_failures") or 0)
+    except (TypeError, ValueError):
+        consec = 0
+    last_ok = pd.get("last_reachable_at")
+    if not last_ok:
+        return "down"
+    try:
+        secs = (datetime.now(timezone.utc) - datetime.fromisoformat(str(last_ok).replace("Z", "+00:00"))).total_seconds()
+    except Exception:
+        secs = 1e9
+    grace = VITAL_GRACE_SECONDS if is_vital else DEBOUNCE_GRACE_SECONDS
+    minf = VITAL_MIN_FAILURES if is_vital else DEBOUNCE_MIN_FAILURES
+    if consec >= minf and secs >= grace:
+        return "down"
+    if consec >= 1 and secs >= PRE_ALARM_SECONDS:
+        return "prealarm"
+    return "ok"
 
 
 async def build_evidence_maps(
@@ -319,7 +346,10 @@ def compute_status(
 
     # 2. Poll-based
     if pd:
-        if effective_reachable(pd) and not agent_down:
+        _is_vital = bool((md or {}).get("is_vital"))
+        _minf = VITAL_MIN_FAILURES if _is_vital else DEBOUNCE_MIN_FAILURES
+        _grace = VITAL_GRACE_SECONDS if _is_vital else DEBOUNCE_GRACE_SECONDS
+        if effective_reachable(pd, _minf, _grace) and not agent_down:
             label = (pd.get("method") or pd.get("ping_method") or "ping")
             return "online", str(label).strip() if label else "ping"
         # agent giu' → stato incerto (stale) o blackout confermato (offline)
