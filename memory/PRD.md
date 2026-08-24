@@ -8401,3 +8401,17 @@ Dashboard dedicata `/channel-health` per visualizzare in un colpo d'occhio lo st
 - `wan_probe_results` — Ping/TCP WAN
 - `connector_updates` — ZIP rilasci connector (active=true per il corrente)
 - `clients`, `devices`, `alerts`, `users`, `audit_logs`
+
+
+## 2026-08-24 — TV Dashboard: fonte unica di liveness (P0 RISOLTO)
+- `backend/routes/tv_dashboard.py`: completato il refactor. Il loop per-cliente
+  ora conta online/offline e popola `problem_devices`/`vital_down`/`online_devices`
+  tramite `compute_status` (via `_dev_online`/`_dev_offline` + `_status_map`),
+  NON più con `reachable` grezzo. `health_pct` = online/(online+offline).
+- Effetto: i device con agent offline (stato "stale") non sono più falsi-down
+  sulla TV; congruenza totale con scheda cliente (`/api/devices`) e Overview
+  (`routes/overview.py`), che usano la stessa `compute_status`.
+- Verificato: `/api/tv/dashboard` 200 OK, stati coerenti con Overview, `/tv`
+  renderizza correttamente (VITALI DOWN=0 quando tutti gli agent sono stale).
+- Nota comportamentale: i device "stale"/"pending" NON contano come offline
+  (scelta confermata dall'utente, come Overview).

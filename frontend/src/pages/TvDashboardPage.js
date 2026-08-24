@@ -3,7 +3,7 @@ import axios from "axios";
 import "./TvDashboard.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const REFRESH_INTERVAL = 15000;
+const REFRESH_INTERVAL = 5000;
 const POPUP_TTL_MS = 30000;
 
 /* ---------- Audio alarm + popup criticals ---------- */
