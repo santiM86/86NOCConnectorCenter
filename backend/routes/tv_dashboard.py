@@ -176,12 +176,27 @@ async def tv_dashboard_data():
 
     # 4. Managed devices (for names)
     managed = await db.managed_devices.find({}, {"_id": 0}).to_list(2000)
+    # Mappa poll per chiave (cid:ip) per risolvere sys_name/hostname nel nome.
+    poll_by_key = {}
+    for _d in all_devices:
+        _k = (_d.get("client_id"), _d.get("device_ip") or _d.get("ip"))
+        if _k[0] and _k[1]:
+            poll_by_key[_k] = _d
+    managed_by_key = {(m.get("client_id"), m.get("ip")): m for m in managed}
     managed_name_map = {}
     vital_map = {}
     for m in managed:
         managed_name_map[f"{m.get('client_id')}:{m.get('ip')}"] = m.get("name", m.get("ip", ""))
         if m.get("is_vital"):
             vital_map[f"{m.get('client_id')}:{m.get('ip')}"] = m.get("device_type") or "device"
+
+    # Nome "migliore" unificato (sys_name SNMP > hostname > mDNS > nome > vendor+IP > IP)
+    from display_name import best_display_name
+
+    def _disp_name(cid, ip):
+        md = managed_by_key.get((cid, ip), {})
+        pd = poll_by_key.get((cid, ip), {})
+        return best_display_name(md, pd, ip)
 
     # 5. Active alerts - enriched with device/client names
     severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -310,7 +325,7 @@ async def tv_dashboard_data():
         for d in client_devices:
             if _dev_offline(d):
                 dev_ip = d.get("device_ip", "")
-                dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
+                dev_name = _disp_name(cid, dev_ip)
                 last_seen_dev = d.get("last_seen", d.get("updated_at", ""))
                 offline_dev = {
                     "ip": dev_ip,
@@ -332,7 +347,7 @@ async def tv_dashboard_data():
         for d in client_devices:
             if _dev_online(d):
                 dev_ip = d.get("device_ip", "")
-                dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip)
+                dev_name = _disp_name(cid, dev_ip)
                 online_devices.append({"ip": dev_ip, "name": dev_name})
 
         health = round((online / max(online + offline, 1)) * 100)
