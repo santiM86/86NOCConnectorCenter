@@ -8544,3 +8544,9 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   riutilizzati dallultima credenziale dello stesso tipo (+stesso cliente se selezionato).
   Nota UX ambra nel dialog. Non tocca i valori gia digitati dallutente.
 - Verificato screenshot: tipo iLO + IP -> porta 443 e URL https://IP autocompilati.
+
+## 2026-08-24 — Vault: auto-riconoscimento nome dispositivo da IP
+- NUOVO GET /api/vault/device-lookup?ip=&client_id= (routes/vault.py, admin): cerca il
+  nome in managed_devices -> device_poll_status -> discovered_endpoints/scan_results/lan_devices.
+- VaultPage.js: lookupDeviceName() debounced 500ms su onChange IP -> precompila
+  device_name se vuoto. useRef aggiunto. Verificato: 192.168.1.3 -> nome managed.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import {
@@ -192,6 +192,23 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
   // Precompila i campi RIPETITIVI (solo se vuoti) in base ai dati gia' inseriti:
   //  - porta e URL interna dal tipo (+ IP)
   //  - username e tag riutilizzati dall'ultima credenziale dello stesso tipo/cliente
+  // Auto-riconoscimento nome dispositivo dall'IP (debounced): se l'IP e' gia'
+  // censito (managed/poll/scan) precompila 'Nome Dispositivo' se vuoto.
+  const lookupTimer = useRef(null);
+  const lookupDeviceName = (ip) => {
+    clearTimeout(lookupTimer.current);
+    if (!ip || ip.length < 7) return;
+    lookupTimer.current = setTimeout(async () => {
+      try {
+        const cid = form.client_id || scopedClientId || "";
+        const res = await axios.get(`${API}/vault/device-lookup`, { params: cid ? { ip, client_id: cid } : { ip } });
+        if (res.data?.found && res.data.name) {
+          setForm(prev => prev.device_name ? prev : { ...prev, device_name: res.data.name });
+        }
+      } catch {}
+    }, 500);
+  };
+
   const smartPrefill = (patch, includeIdentity) => {
     setForm(prev => {
       const next = { ...prev, ...patch };
@@ -680,7 +697,7 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
               </div>
               <div>
                 <Label className="text-[var(--text-muted)] text-[10px]">IP Dispositivo</Label>
-                <Input value={form.device_ip} onChange={e => smartPrefill({ device_ip: e.target.value }, false)} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-device-ip" />
+                <Input value={form.device_ip} onChange={e => { smartPrefill({ device_ip: e.target.value }, false); lookupDeviceName(e.target.value); }} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="cred-device-ip" />
               </div>
             </div>
             {!scopedClientId && (

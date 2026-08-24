@@ -51,6 +51,49 @@ async def list_credentials(client_id: Optional[str] = None, current_user: dict =
     return creds
 
 
+@router.get("/vault/device-lookup")
+async def device_lookup(ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Auto-riconoscimento: dato un IP (e cliente), ritorna il nome/tipo del
+    dispositivo se gia' censito (managed_devices, poll, scan). Usato per
+    precompilare il campo 'Nome Dispositivo' in Nuova Credenziale."""
+    if current_user.get("role") not in ["admin"]:
+        raise HTTPException(status_code=403, detail="Solo gli admin possono accedere al vault")
+    ip = (ip or "").strip()
+    if not ip:
+        return {"found": False}
+    cq = {"client_id": client_id} if client_id else {}
+
+    # 1) managed_devices (fonte piu' autorevole: nome scelto dall'operatore)
+    md = await db.managed_devices.find_one({**cq, "ip": ip}, {"_id": 0, "name": 1, "device_type": 1, "device_class": 1, "profile_key": 1})
+    if md and md.get("name"):
+        return {"found": True, "source": "managed", "name": md.get("name"),
+                "device_type": md.get("device_type"), "device_class": md.get("device_class"),
+                "profile_key": md.get("profile_key")}
+
+    # 2) device_poll_status (nome dedotto dal polling / SNMP sysName)
+    pd = await db.device_poll_status.find_one({**cq, "device_ip": ip}, {"_id": 0, "device_name": 1, "device_type": 1})
+    if pd and pd.get("device_name") and pd.get("device_name") != ip:
+        return {"found": True, "source": "poll", "name": pd.get("device_name"),
+                "device_type": pd.get("device_type")}
+
+    # 3) scan/endpoint discovery (hostname/mDNS/PTR)
+    for coll, ipf, namef in (
+        ("discovered_endpoints", "ip", "hostname"),
+        ("scan_results", "ip", "hostname"),
+        ("lan_devices", "ip", "hostname"),
+    ):
+        try:
+            doc = await db[coll].find_one({**cq, ipf: ip}, {"_id": 0})
+        except Exception:
+            doc = None
+        if doc:
+            name = doc.get(namef) or doc.get("name") or doc.get("sys_name") or doc.get("mdns_name")
+            if name and name != ip:
+                return {"found": True, "source": coll, "name": name,
+                        "device_type": doc.get("device_type") or doc.get("device_class")}
+    return {"found": False}
+
+
 @router.get("/vault/credentials/{cred_id}")
 async def get_credential(cred_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["admin"]:
