@@ -204,6 +204,30 @@ export default function TvDashboardPage() {
         </div>
       </header>
 
+      {/* Banner PERSISTENTE outage operatore + sicurezza (solo eventi di oggi) */}
+      {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0) && (
+        <div className="tvx-isp-banner" data-testid="tv-isp-banner">
+          {(data.isp_outages || []).map(o => (
+            <div key={o.id} className="tvx-isp-row" data-testid="tv-isp-banner-row">
+              <span className="tvx-isp-dot" />
+              <span className="tvx-isp-tag">GUASTO OPERATORE</span>
+              <span className="tvx-isp-name">{o.title}</span>
+              {(o.clients || []).length > 0 && (
+                <span className="tvx-isp-clients">Clienti a rischio: {(o.clients || []).join(", ")}</span>
+              )}
+            </div>
+          ))}
+          {(data.security_incidents || []).map(s => (
+            <div key={s.id} className="tvx-isp-row tvx-sec-row" data-testid="tv-sec-banner-row">
+              <span className="tvx-isp-dot" />
+              <span className="tvx-isp-tag tvx-sec-tag">SICUREZZA</span>
+              <span className="tvx-isp-name">{s.title}</span>
+              <span className="tvx-isp-clients">{s.client_name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Roster: TUTTE le aziende (verde=ok, rosso=down, giallo=warning) */}
       <section className="tvx-roster" data-testid="tv-roster">
         <div className="tvx-roster-h">

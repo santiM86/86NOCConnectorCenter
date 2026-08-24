@@ -8462,3 +8462,10 @@ Testing: iteration_128.json — 7/7 backend, 5/5 UI. Nessun bug funzionale.
 Config toggle (enabled) per ogni servizio in db.settings (default ON); UI toggle rogue/traffic
 già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog).
 
+
+## 2026-08-24 — TV banner persistente (operatore + sicurezza) e link Downdetector
+- FIX link Downdetector: path corretto `/problemi/{slug}/` (prima `/stato/` -> 404) in isp_outage.py e downdetector.py.
+- TV: banner persistente rosso per outage operatore (sempre visibile finche attivo, non solo popup transitorio 30s).
+- TV: banner viola per incidenti sicurezza critici (C2/ransom/threat).
+- Entrambi i banner mostrano SOLO eventi creati OGGI (fuso Europe/Rome), niente storici (tv_dashboard.py filtro created_at >= inizio giornata locale).
+- File: routes/tv_dashboard.py, frontend/src/pages/TvDashboardPage.js, frontend/src/pages/TvDashboard.css

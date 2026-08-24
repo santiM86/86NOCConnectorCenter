@@ -139,7 +139,7 @@ async def check_downdetector(isp_name: Optional[str], country_iso: str = "IT") -
                 "ok": True, "status": st, "problem": st in ("warning", "danger"),
                 "company": company.get("name"),
                 "total_reports": (company.get("stats_24") or {}).get("sum") if isinstance(company.get("stats_24"), dict) else company.get("baseline_current"),
-                "url": f"https://downdetector.it/stato/{company.get('slug')}/" if company.get("slug") else None,
+                "url": f"https://downdetector.it/problemi/{company.get('slug')}/" if company.get("slug") else None,
             })
             return out
     except Exception as e:  # noqa: BLE001

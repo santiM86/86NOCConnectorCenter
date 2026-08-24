@@ -49,10 +49,9 @@ def _external_links(isp_name: Optional[str], country_code: Optional[str], asn: O
     name = (isp_name or "").lower()
     slug = next((s for kw, s in _DD_SLUGS.items() if kw in name), None)
     if slug:
-        links.append({"name": f"Downdetector — {isp_name}", "url": f"https://downdetector.it/stato/{slug}/"})
+        links.append({"name": f"Downdetector — {isp_name}", "url": f"https://downdetector.it/problemi/{slug}/"})
     else:
-        q = (isp_name or "").replace(" ", "+")
-        links.append({"name": "Downdetector Italia", "url": f"https://downdetector.it/cerca/?q={q}" if q else "https://downdetector.it/"})
+        links.append({"name": "Downdetector Italia", "url": "https://downdetector.it/"})
     if asn:
         links.append({"name": "IODA (BGP/active probing)", "url": f"https://ioda.inetintel.cc.gatech.edu/asn/{asn}"})
     if (country_code or "").upper() == "IT":
