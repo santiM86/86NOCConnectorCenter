@@ -174,8 +174,11 @@ async def tv_dashboard_data():
     # 4. Managed devices (for names)
     managed = await db.managed_devices.find({}, {"_id": 0}).to_list(2000)
     managed_name_map = {}
+    vital_map = {}
     for m in managed:
         managed_name_map[f"{m.get('client_id')}:{m.get('ip')}"] = m.get("name", m.get("ip", ""))
+        if m.get("is_vital"):
+            vital_map[f"{m.get('client_id')}:{m.get('ip')}"] = m.get("device_type") or "device"
 
     # 5. Active alerts - enriched with device/client names
     severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -281,9 +284,13 @@ async def tv_dashboard_data():
                     "client_id": cid,
                     "last_seen": last_seen_dev,
                     "down_since": _time_ago(last_seen_dev),
+                    "vital": f"{cid}:{dev_ip}" in vital_map,
+                    "device_type": vital_map.get(f"{cid}:{dev_ip}", ""),
                 }
                 problem_devices.append(offline_dev)
                 all_offline_devices.append(offline_dev)
+
+        vital_down = [d for d in problem_devices if d.get("vital")]
 
         # Online devices list for this client
         online_devices = []
@@ -317,6 +324,8 @@ async def tv_dashboard_data():
             "connector_version": connector_version,
             "last_heartbeat": last_heartbeat,
             "problem_devices": problem_devices[:8],
+            "vital_down": vital_down[:12],
+            "vital_down_count": len(vital_down),
             "online_devices": online_devices[:20],
             "printer_count": sum(1 for p in all_printers if p.get("client_id") == cid),
             "hardware_health": hw_health,
@@ -389,16 +398,33 @@ async def tv_dashboard_data():
             "latency_ms": wr.get("ping", {}).get("latency_ms"),
             "packet_loss_pct": wr.get("ping", {}).get("packet_loss_pct"),
             "ports": wr.get("ports", []),
+            "nebula_monitored": wr.get("nebula_monitored", False),
+            "nebula_status": wr.get("nebula_status"),
             "checked_at": wr.get("checked_at", ""),
         })
 
     # Enrich client summaries with WAN data
+    backup_docs = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "summary": 1, "updated_at": 1}).to_list(500)
+    backup_map = {b.get("client_id"): b for b in backup_docs}
     for cs in client_summaries:
         cid = cs["id"]
         cs["wan_targets"] = wan_by_client.get(cid, [])
         diag = wan_diag_map.get(cid)
         cs["wan_diagnosis"] = diag.get("diagnosis", "not_configured") if diag else "not_configured"
         cs["wan_diagnosis_text"] = diag.get("diagnosis_text", "Non configurato") if diag else "Non configurato"
+        b = backup_map.get(cid)
+        if b:
+            s = b.get("summary") or {}
+            cs["backup"] = {
+                "total": s.get("total_vms", 0),
+                "ok": s.get("backup_ok", 0),
+                "warning": s.get("backup_warning", 0),
+                "failed": s.get("backup_failed", 0),
+                "missing": s.get("backup_missing", 0),
+                "updated_ago": _time_ago(b.get("updated_at", "")),
+            }
+        else:
+            cs["backup"] = None
 
     return {
         "timestamp": now_iso,

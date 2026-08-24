@@ -6080,3 +6080,9 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - Query active filtra created_at >= night_start; "Rientrati" filtra resolved_at >= night_start.
 - Titoli aggiornati: "Andato DOWN durante la notte — Dalle HH:MM di ieri sera"; se nulla: "Nessun nuovo DOWN durante la notte (dalle HH:MM). ✅".
 - Testato: item notturno (2h fa) incluso, item storico (20 giorni) escluso.
+
+## 2026-06 (quindecies) — TV Dashboard ridisegnata (45", coerente, solo Vitali/WAN/Backup)
+- Feed /api/tv/dashboard esteso: `vital_down`/`vital_down_count` (solo device is_vital offline), campi `nebula_monitored`/`nebula_status` sui wan_targets, `backup` per cliente (da db.backup_status: ok/warning/failed/missing/total).
+- TvDashboardPage.js riscritto con design system coerente (nuove classi tvx-* dark, denso per 45"). Ogni card mostra SOLO: Dispositivi Vitali down, WAN (pill con colore stato + badge NEBULA + latenza), Backup (chip falliti/mancanti/warning o OK). Mostrati solo i clienti con almeno un problema; ordinati per gravità.
+- Header: statistiche (vitali down, WAN offline, backup falliti/mancanti, clienti coinvolti), stato live, sound/test, orologio. Popup+audio ora innescati su VITALI down e BACKUP falliti nuovi.
+- Testato: screenshot 1920x1080 → card 86BIT_Office con vitali OK, WAN (Zyxel NEBULA OK + 2 OFFLINE rossi), backup 1/1 ok. Badge NEBULA confermato (auto-link+nebula funzionanti). Compila OK.
