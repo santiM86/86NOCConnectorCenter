@@ -52,7 +52,8 @@ function useAlarmSystem() {
     });
     const ispKeys = new Set((data.isp_outages || []).map(o => o.id));
     const secKeys = new Set((data.security_incidents || []).map(s => s.id));
-    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, primed: true }; return; }
+    const newDevKeys = new Set((data.new_devices || []).map(d => d.id));
+    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, newDevKeys, primed: true }; return; }
     const has = (set, k) => (set || new Set()).has(k);
     let any = false;
     (data.clients || []).forEach(c => {
@@ -75,8 +76,11 @@ function useAlarmSystem() {
     (data.security_incidents || []).forEach(s => {
       if (!has(p.secKeys, s.id)) { pushPopup("crit", s.client_name, `SICUREZZA — ${s.title}`); any = true; }
     });
+    (data.new_devices || []).forEach(d => {
+      if (!has(p.newDevKeys, d.id)) { pushPopup("new", d.client_name, `NUOVO DISPOSITIVO — ${d.vendor} (${d.mac})`); any = true; }
+    });
     if (any && soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
-    prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, primed: true };
+    prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, newDevKeys, primed: true };
   }, [soundOn, beep, pushPopup]);
   useEffect(() => {
     if (popups.length === 0) return;
@@ -205,7 +209,7 @@ export default function TvDashboardPage() {
       </header>
 
       {/* Banner PERSISTENTE outage operatore + sicurezza (solo eventi di oggi) */}
-      {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0) && (
+      {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0 || (data.new_devices || []).length > 0) && (
         <div className="tvx-isp-banner" data-testid="tv-isp-banner">
           {(data.isp_outages || []).map(o => (
             <div key={o.id} className="tvx-isp-row" data-testid="tv-isp-banner-row">
@@ -223,6 +227,14 @@ export default function TvDashboardPage() {
               <span className="tvx-isp-tag tvx-sec-tag">SICUREZZA</span>
               <span className="tvx-isp-name">{s.title}</span>
               <span className="tvx-isp-clients">{s.client_name}</span>
+            </div>
+          ))}
+          {(data.new_devices || []).map(d => (
+            <div key={d.id} className="tvx-isp-row tvx-new-row" data-testid="tv-newdev-banner-row">
+              <span className="tvx-isp-dot" />
+              <span className="tvx-isp-tag tvx-new-tag">NUOVO DISPOSITIVO</span>
+              <span className="tvx-isp-name" style={{ fontFamily: "monospace" }}>{d.mac}</span>
+              <span className="tvx-isp-clients">{d.vendor} · {d.client_name}{d.investigating ? " · in indagine" : ""}</span>
             </div>
           ))}
         </div>

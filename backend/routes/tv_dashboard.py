@@ -528,6 +528,22 @@ async def tv_dashboard_data():
         "client_name": _name_map.get(a.get("client_id")) or a.get("client_name") or "—",
     } for a in sec_rows]
 
+    # Nuovi dispositivi con MAC sconosciuto (rogue / NAC-lite) comparsi OGGI
+    rogue_rows = await db.alerts.find(
+        {"status": "active", "source_type": "rogue_device",
+         "created_at": {"$gte": today_start_iso}},
+        {"_id": 0, "id": 1, "raw_data": 1, "rogue_vendor": 1, "device_name": 1,
+         "client_id": 1, "client_name": 1, "investigating": 1},
+    ).sort("created_at", -1).to_list(50)
+    new_devices = [{
+        "id": a.get("id"),
+        "mac": a.get("raw_data") or "?",
+        "vendor": a.get("rogue_vendor") or "vendor sconosciuto",
+        "name": a.get("device_name") or a.get("raw_data") or "?",
+        "client_name": _name_map.get(a.get("client_id")) or a.get("client_name") or "—",
+        "investigating": bool(a.get("investigating")),
+    } for a in rogue_rows]
+
     return {
         "timestamp": now_iso,
         "global_stats": {
@@ -553,6 +569,7 @@ async def tv_dashboard_data():
         "ticker": ticker_events[:15],
         "isp_outages": isp_outages,
         "security_incidents": security_incidents,
+        "new_devices": new_devices,
     }
 
 

@@ -23,6 +23,8 @@ const FAMILY_META = {
   "access-point": { icon: Cube, color: "#22d3ee", label: "Access Point" },
   printer:     { icon: Cube,  color: "#e879f9", label: "Stampante" },
   server_oob:  { icon: Cpu,   color: "#ef4444", label: "Server OOB" },
+  router:      { icon: Cube,  color: "#f97316", label: "Router" },
+  vm:          { icon: Cpu,   color: "#38bdf8", label: "Virtual Machine" },
   generic:     { icon: Cube,  color: "#64748b", label: "Generico" },
 };
 
