@@ -8480,3 +8480,18 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   online/offline/vital_down/online_devices iterano su client_units.
 - Verifica preview: 28 managed senza poll, 1 vitale (10.100.61.100) prima ignorato,
   ora valutato. Endpoint 200, TV rende OK.
+
+## 2026-08-24 — Vital Freshness Watchdog (auto-riparazione + sentinella staleness)
+- CONTESTO: domanda utente su affidabilita SNMP v2c e freschezza dati. Chiarito: liveness
+  (up/down) NON dipende da SNMP ma da evidence ARP/FDB (finestra 15 min) + ping 60s;
+  SNMP stale (dispatcher subnet-aware) impatta solo le METRICHE di dettaglio.
+- SCOPERTA: _get_client_agents_subnets filtra gia solo agent vivi (<3min) e il master
+  prende gli orfani -> edit cieco del dispatcher rischioso/non riproducibile nel preview.
+- SOLUZIONE (cause-agnostic): NUOVO services/vital_freshness.py, scheduler ogni 2 min.
+  1) AUTO-RIPARAZIONE: per vitali con poll stale e sonda ONLINE -> force_snmp_poll diretto
+     allagent (bypassa dispatcher, come /api/admin/snmp-poll-now).
+  2) SENTINELLA: se resta stale > stale_after_min -> alert source_type=monitoring_stale
+     (dedup + auto-resolve + Telegram). Salta clienti senza sonda online (blackout).
+  Config db.settings key vital_freshness_config (enabled/stale_after_min=15/repoll_after_min=3).
+- Verificato preview: alert creato su vitale stale e auto-risolto al poll fresco.
+- Rispetta le finestre di manutenzione (usa insert_alert_if_emit + notify_alert_telegram).
