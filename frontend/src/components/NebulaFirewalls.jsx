@@ -215,6 +215,14 @@ function FirewallDetail({ fw, wt, detectedPubIp }) {
         <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
           Linea WAN: <span className="font-bold uppercase" style={{ color: lineUp ? C.online : C.muted }}>{fw.line_state || "n/d"}</span>
         </span>
+        {fw.isp && (
+          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded font-semibold"
+                style={{ color: "#c4b5fd", background: "#8b5cf61A" }}
+                data-testid="nebula-fw-isp"
+                title={`Operatore ricavato dall'IP pubblico${fw.asn ? ` · ${fw.asn}` : ""}`}>
+            <Globe size={11} weight="bold" /> ISP: <span className="font-bold">{fw.isp}</span>
+          </span>
+        )}
       </div>
 
       {/* Connettività WAN reale (da target Monitor WAN collegato) */}

@@ -8515,3 +8515,11 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   ma NON il nome ISP. routes/zyxel_nebula.py: arricchito il record WAN con isp/isp_org/asn/
   asn_name/geo_country_code risolti dallIP pubblico via _geoip_cached (ip-api, cache 30gg).
   Verificato resolver (8.8.8.8 -> Google LLC AS15169). Da mostrare in UI WAN/Nebula (opzionale).
+
+## 2026-08-24 — ISP in UI (WAN) da IP pubblico
+- external_monitor.list_targets: nuovo _attach_isp() arricchisce ogni wan_target con
+  isp/asn/asn_name/geo_country_code + backup_isp (da _geoip_cached, dedup per IP).
+- UI: ExternalMonitorPage (chip ISP viola accanto a public_ip, testid isp-chip-<id>),
+  ClientOverviewPage tab WAN (nome ISP dopo public_ip), NebulaFirewalls.jsx (chip ISP
+  nel firewall usando fw.isp dal sync). Verificato: 8.8.8.8->Google, 1.1.1.1->Cloudflare.
+- ATTENZIONE fix: nel chip Nebula usato solo fw.isp (geo era fuori scope in FirewallDetail).
