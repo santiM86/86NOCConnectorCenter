@@ -134,7 +134,20 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     managed_by_ip = {}
     for md in managed_devices_raw:
         md_ip = md.get("ip") or md.get("ip_address", "")
-        if md_ip:
+        if not md_ip:
+            continue
+        cur = managed_by_ip.get(md_ip)
+        if cur is None:
+            managed_by_ip[md_ip] = md
+            continue
+        # v2026-06 DEDUP-READ: se esistono piu' doc per lo stesso IP (legacy),
+        # preferisci quello con piu' segnale di gestione (virtualization, VM name,
+        # silence, is_vital) cosi' non perdiamo le impostazioni salvate.
+        def _score(m):
+            return sum(1 for k in ("virtualization", "hyperv_vm_name", "hyperv_host_hint",
+                                    "alerts_silenced", "is_vital", "hyperv_alert_on_off")
+                       if m.get(k))
+        if _score(md) > _score(cur):
             managed_by_ip[md_ip] = md
 
     # v2026-07-24 DATTO-AS-EVIDENCE (fix falso-rosso su server ICMP-bloccati):
@@ -844,6 +857,49 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "is_vital_set_at": d.get("is_vital_set_at", ""),
             })
     return result
+
+
+@router.get("/clients/{client_id}/snmp-defaults")
+async def client_snmp_defaults(client_id: str, current_user: dict = Depends(get_current_user)):
+    """Suggerimento AUTOFILL: community + versione SNMP piu' usate tra i dispositivi
+    gia' configurati dello STESSO cliente. Usato dal modal 'Modifica Dispositivo'
+    per precompilare i campi senza scrivere a mano. Non decide nulla: e' solo un
+    suggerimento (il piu' frequente vince)."""
+    from collections import Counter
+    comm_counter: Counter = Counter()
+    ver_counter: Counter = Counter()
+    async for m in db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "snmp_community": 1, "community": 1, "snmp_version": 1, "monitor_type": 1},
+    ):
+        comm = (m.get("snmp_community") or m.get("community") or "").strip()
+        # Ignora il default generico 'public' per non proporlo come se fosse scelto.
+        if comm and comm.lower() != "public":
+            comm_counter[comm] += 1
+        ver = (m.get("snmp_version") or "").strip()
+        if ver:
+            ver_counter[ver] += 1
+    # Anche le community impostate a mano in db.devices contano.
+    async for d in db.devices.find(
+        {"client_id": client_id}, {"_id": 0, "snmp_community": 1, "community": 1, "snmp_version": 1}
+    ):
+        comm = (d.get("snmp_community") or d.get("community") or "").strip()
+        if comm and comm.lower() != "public":
+            comm_counter[comm] += 1
+        ver = (d.get("snmp_version") or "").strip()
+        if ver:
+            ver_counter[ver] += 1
+    top_comm = comm_counter.most_common(1)
+    top_ver = ver_counter.most_common(1)
+    return {
+        "client_id": client_id,
+        "community": top_comm[0][0] if top_comm else "",
+        "community_count": top_comm[0][1] if top_comm else 0,
+        "snmp_version": top_ver[0][0] if top_ver else "",
+        "snmp_version_count": top_ver[0][1] if top_ver else 0,
+        "total_configured": sum(comm_counter.values()),
+    }
+
 
 
 @router.get("/devices/{device_id}", response_model=DeviceResponse)

@@ -8576,3 +8576,54 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - CSS: classi .tvx-repoll / .tvx-repoll-dot / .tvx-repoll-lbl / .tvx-repoll-time.
 - Confermato all'utente: re-poll 2 min su sottoinsieme vitali = traffico trascurabile
   (SNMP GET unicast, pochi KB, batch da 12), nessun broadcast storm/rallentamento.
+
+## 2026-06 — FIX persistenza "Modifica Dispositivo" Hyper-V + Autofill
+- ROOT CAUSE: indice unico (client_id, ip) su managed_devices. In prod, accanto al
+  doc canonico (con `ip`) sopravvivono doc LEGACY con solo `ip_address` (ip assente).
+  La scrittura aggiornava il canonico ma la lettura /api/devices (managed_by_ip
+  last-wins) pescava il doc legacy stale -> "salvo ma non mantiene" + niente icona VM.
+- FIX backend device_info_card.py (set_device_virtualization + set_device_vm_alert):
+  seleziona il doc canonico (quello con ip==device_ip), ELIMINA i duplicati legacy,
+  aggiorna il canonico. Niente piu' DuplicateKeyError, lettura non ambigua.
+- FIX backend devices.py get_devices: managed_by_ip preferisce il doc piu' ricco
+  (virtualization/vm_name/silence/is_vital) come difesa in profondita'.
+- AUTOFILL frontend DeviceEditModal.js: selezionando "VM Hyper-V" precompila
+  "Nome VM su Hyper-V" col nome device e l'host se rilevato (device.hyperv_host);
+  se l'agent ha gia' rilevato la VM (hyperv_state) il tipo macchina si pre-imposta.
+- VERIFICATO: testing agent iter129 100% (autofill, persistenza Salva+Applica ora,
+  badge VM·HV, persistenza dopo hard reload). Backend anche via curl (scenario dup).
+
+## 2026-06 — Vista Mobile iPhone + Aggancio QR (accesso senza password) + Autofill SNMP
+- SCELTE UTENTE: 1a (sola lettura, tap sul cliente per dettagli) + 2a (token per-tecnico
+  revocabile legato all'utente) + 3a (non scade finche' non revocato) + QR in Impostazioni.
+- BACKEND routes/mobile_access.py (registrato in server.py):
+  - Collezione mobile_access_tokens (salva SOLO hash SHA-256 del token, mai in chiaro).
+  - POST/GET/DELETE /api/mobile/pairing (auth utente): crea/lista/revoca token; GET
+    /pairing/all (admin). Token = secrets.token_urlsafe(32).
+  - get_mobile_user: dependency read-only via header X-Mobile-Token (401 se assente/
+    revocato). GET /api/mobile/me + GET /api/mobile/dashboard (riusa tv_dashboard_data).
+- FRONTEND:
+  - /m (pubblica) MobileMonitorPage.js + MobileMonitor.css: legge token dal FRAGMENT
+    (#t=, non query, per non finire nei log proxy), lo salva in localStorage, header
+    tecnico + indicatore re-poll, 4 chip riepilogo, lista aziende ordinata per gravita',
+    bottom-sheet dettaglio (vitali/WAN/backup/alert). Gate se token assente/revocato.
+  - /settings/mobile-access MobileAccessPage.js: genera QR (qrcode.react QRCodeSVG),
+    pair URL copiabile, lista telefoni agganciati con revoca. Link in SettingsPage.
+- AUTOFILL SNMP: GET /api/clients/{id}/snmp-defaults (community+versione piu' usate tra
+  i managed_devices del cliente, ignora 'public'). DeviceEditModal precompila community/
+  versione quando non configurate + hint "N dispositivi usano «xxx»".
+- VERIFICATO: testing agent iter130 100% (5/5: genera QR, lista, revoca, vista mobile via
+  token, gate) + backend via curl (create/list/revoke/me/dashboard, 401 su bogus/revocato)
+  + screenshot iPhone (lista + sheet + fragment). qrcode.react@4.2.0 aggiunto.
+
+## 2026-06 — PWA vista mobile (icona Home iPhone, schermo intero)
+- App gia' PWA (manifest+sw.js+apple-mobile-web-app-capable). Aggiunto: icona ARGUS
+  on-brand (A teal→blue) rigenerata per apple-touch-icon(180)/icon-192/icon-512/
+  favicon-32/logo-48; shortcut manifest "Monitor Mobile" -> /m; hint iOS "Aggiungi
+  alla Home" (MobileMonitorPage, solo Safari iOS non-standalone, dismissibile).
+- Aggiungendo /m alla Home su iOS si apre standalone (fullscreen, no barra browser);
+  token in localStorage persiste (stesso origin).
+- Nota traffico rete (config agent reale): ping ICMP 60s (1 probe/device), SNMP poll
+  60s (alcuni profili 120s, concorrenza max 16, unicast), discovery LAN 5m, SNMP ports
+  ~12m, topology ~40m, re-poll vitali 2m. API cloud (Hornet/Datto/Zyxel/OSINT) dal
+  Center, ZERO traffico su LAN cliente. ~40 Kbps medi per 100 device = trascurabile.

@@ -445,6 +445,8 @@ from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as 
 app.include_router(syslog_trap_router)
 from routes.device_info_card import router as device_info_card_router
 app.include_router(device_info_card_router)
+from routes.mobile_access import router as mobile_access_router
+app.include_router(mobile_access_router)
 from routes.connectivity import router as connectivity_router, ensure_index as ensure_connectivity_idx
 app.include_router(connectivity_router)
 from routes.admin_integrations import router as admin_integrations_router

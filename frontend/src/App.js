@@ -48,6 +48,8 @@ import PrinterDiscoveryPage from "@/pages/PrinterDiscoveryPage";
 import PublicDashboard from "@/pages/PublicDashboard";
 import TvDashboardPage from "@/pages/TvDashboardPage";
 import MobileConsolePage from "@/pages/MobileConsolePage";
+import MobileMonitorPage from "@/pages/MobileMonitorPage";
+import MobileAccessPage from "@/pages/MobileAccessPage";
 import VulnerabilityPage from "@/pages/VulnerabilityPage";
 import OsintPage from "@/pages/OsintPage";
 import RogueDevicesPage from "@/pages/RogueDevicesPage";
@@ -263,6 +265,7 @@ function App() {
               <Route path="settings/outage-sources" element={<OutageSourcesSettingsPage />} />
               <Route path="settings/encryption" element={<EncryptionPage />} />
               <Route path="settings/audit" element={<AuditPage />} />
+              <Route path="settings/mobile-access" element={<MobileAccessPage />} />
               <Route path="oncall" element={<OnCallPage />} />
               <Route path="vault" element={<VaultPage />} />
               <Route path="reports" element={<ReportsPage />} />
@@ -299,6 +302,7 @@ function App() {
             </Route>
             <Route path="/public/:token" element={<PublicDashboard />} />
             <Route path="/tv" element={<TvDashboardPage />} />
+            <Route path="/m" element={<MobileMonitorPage />} />
             <Route path="/mobile" element={<ProtectedRoute><MobileConsolePage /></ProtectedRoute>} />
             <Route path="/portal" element={<ClientPortalPage />} />
             <Route path="/customer-portal" element={<CustomerPortalPage />} />

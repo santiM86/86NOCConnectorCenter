@@ -57,10 +57,53 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setAlertsSilenced(!!device?.alerts_silenced);
     setSilenceReason(device?.alerts_silenced_reason || "");
     setVmAlertOnOff(!!device?.hyperv_alert_on_off);
-    setVirtualization(device?.virtualization || "");
-    setHypervVmName(device?.hyperv_vm_name || "");
-    setHypervHostHint(device?.hyperv_host_hint || "");
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint]);
+    // AUTOFILL "tipo macchina": se il device NON ha ancora una classificazione
+    // manuale ma l'agent l'ha gia' riconosciuto come VM Hyper-V (hyperv_state
+    // presente dallo snapshot dell'host), precompiliamo i campi cosi' l'utente
+    // non deve riscrivere tutto a mano. Restano modificabili.
+    const persistedVirt = device?.virtualization || "";
+    const detectedHV = !!device?.hyperv_state;
+    const effVirt = persistedVirt || (detectedHV ? "hyperv" : "");
+    setVirtualization(effVirt);
+    setHypervVmName(
+      device?.hyperv_vm_name || (effVirt === "hyperv" ? (device?.name || "") : "")
+    );
+    setHypervHostHint(
+      device?.hyperv_host_hint || (effVirt === "hyperv" ? (device?.hyperv_host || "") : "")
+    );
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name]);
+
+  // Cambio "tipo macchina" con AUTOFILL: scegliendo Hyper-V precompila il nome
+  // VM (col nome device) e l'host (se rilevato) quando i campi sono vuoti.
+  const handleVirtChange = (v) => {
+    setVirtualization(v);
+    if (v === "hyperv") {
+      setHypervVmName((prev) => prev || device?.name || "");
+      setHypervHostHint((prev) => prev || device?.hyperv_host || "");
+    }
+  };
+
+  // AUTOFILL SNMP: quando il device non ha ancora una community/versione
+  // configurata (o usa il default generico), proponiamo i valori PIU' USATI
+  // tra i dispositivi gia' configurati dello STESSO cliente. Resta modificabile.
+  const [snmpSuggest, setSnmpSuggest] = useState(null);
+  useEffect(() => {
+    if (!open || !clientId) return;
+    let cancelled = false;
+    axios.get(`${API}/clients/${clientId}/snmp-defaults`).then(({ data }) => {
+      if (cancelled || !data) return;
+      setSnmpSuggest(data);
+      const neverConfiguredComm = !device?.snmp_community && !device?.community;
+      const communityIsDefault = (device?.snmp_community || device?.community || "public").toLowerCase() === "public";
+      if (data.community && (neverConfiguredComm || communityIsDefault)) {
+        setCommunity((prev) => (!prev || prev.toLowerCase() === "public" ? data.community : prev));
+      }
+      if (data.snmp_version && !device?.snmp_version) {
+        setSnmpVersion((prev) => prev || data.snmp_version);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, clientId, device?.id, device?.snmp_community, device?.community, device?.snmp_version]);
 
   const buildOptimistic = () => ({
     ...device,
@@ -330,6 +373,12 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
                   <p className="text-[9px] text-[var(--text-muted)] italic">
                     Case-sensitive. Deve corrispondere esattamente alla community configurata sul dispositivo.
                   </p>
+                  {snmpSuggest && snmpSuggest.community && snmpSuggest.community === community && (
+                    <p className="text-[9px] text-cyan-400 flex items-center gap-1" data-testid="snmp-autofill-hint">
+                      <Lightning size={9} weight="fill" />
+                      Precompilato: {snmpSuggest.community_count} dispositivi di questo cliente usano «{snmpSuggest.community}»
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2 border border-amber-500/30 bg-amber-500/5 rounded p-2">
@@ -455,7 +504,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
             </label>
             <select
               value={virtualization}
-              onChange={(e) => setVirtualization(e.target.value)}
+              onChange={(e) => handleVirtChange(e.target.value)}
               className="w-full bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-white focus:border-cyan-500 outline-none"
               data-testid="virtualization-select"
             >

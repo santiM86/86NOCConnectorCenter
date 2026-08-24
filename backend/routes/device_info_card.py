@@ -1234,9 +1234,21 @@ async def set_device_virtualization(
     }
 
     if md:
-        # Aggiorna il documento esistente tramite la chiave STABILE `id`.
-        # Evita definitivamente i duplicati causati dal mismatch ip/ip_address.
-        await db.managed_devices.update_one({"id": md["id"]}, {"$set": set_fields})
+        # v2026-06 FIX PERSISTENZA "salvo ma non mantiene": in produzione, accanto
+        # al doc canonico possono esistere doc LEGACY duplicati dello stesso IP
+        # (solo `ip_address`, senza `ip`) — l'indice unico (client_id, ip) li
+        # tollera perche' `ip` e' assente/null. La scrittura aggiornava il doc
+        # canonico ma la lettura /api/devices (last-wins) pescava il legacy stale
+        # e la UI tornava vuota. Soluzione: scegli il doc canonico (quello con
+        # ip==device_ip se esiste), ELIMINA i duplicati legacy, poi aggiorna il
+        # canonico (settando `ip` normalizzato senza rischio di duplicate-key).
+        siblings = await db.managed_devices.find(md_query, {"_id": 0, "id": 1, "ip": 1}).to_list(50)
+        canonical = next((d for d in siblings if d.get("ip") == device_ip), None) or siblings[0]
+        dup_ids = [d["id"] for d in siblings if d.get("id") and d["id"] != canonical["id"]]
+        if dup_ids:
+            await db.managed_devices.delete_many({"id": {"$in": dup_ids}})
+        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": set_fields})
+        md = {**md, "id": canonical["id"]}
     else:
         # Device poll-only (es. server iLO/redfish presenti solo in
         # device_poll_status) senza doc in managed_devices → creiamo un doc
@@ -1352,8 +1364,15 @@ async def set_device_vm_alert(
     }
 
     if md:
-        # Aggiorna via chiave STABILE `id` (niente duplicati da mismatch ip/ip_address)
-        await db.managed_devices.update_one({"id": md["id"]}, {"$set": set_fields})
+        # v2026-06 FIX PERSISTENZA: elimina duplicati legacy dello stesso IP e
+        # aggiorna solo il doc canonico (vedi set_device_virtualization).
+        siblings = await db.managed_devices.find(md_query, {"_id": 0, "id": 1, "ip": 1}).to_list(50)
+        canonical = next((d for d in siblings if d.get("ip") == device_ip), None) or siblings[0]
+        dup_ids = [d["id"] for d in siblings if d.get("id") and d["id"] != canonical["id"]]
+        if dup_ids:
+            await db.managed_devices.delete_many({"id": {"$in": dup_ids}})
+        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": set_fields})
+        md = {**md, "id": canonical["id"]}
     else:
         # Device poll-only (iLO/redfish in device_poll_status) senza doc in
         # managed_devices → upsert di un doc minimale, cosi' l'impostazione persiste.

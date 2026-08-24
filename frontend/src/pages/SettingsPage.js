@@ -3,7 +3,7 @@ import axios from "axios";
 import { API, useAuth } from "@/App";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon, Ghost, Trash, ArrowClockwise, Tag } from "@phosphor-icons/react";
+import { Gear, ShieldCheck, Bell, Key, BellRinging, BellSlash, Moon, Ghost, Trash, ArrowClockwise, Tag, DeviceMobile } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -145,6 +145,22 @@ export default function SettingsPage() {
                 className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
                 data-testid="manage-2fa-btn">
                 {user?.two_factor_enabled ? "Gestisci" : "Attiva"}
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium flex items-center gap-1.5">
+                  <DeviceMobile size={13} className="text-teal-400" /> Accesso Mobile (QR)
+                </p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Aggancia il tuo telefono con un QR e monitora tutte le aziende in tempo reale, senza reinserire la password.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/mobile-access")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-mobile-access-btn">
+                Gestisci
               </Button>
             </div>
             <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
