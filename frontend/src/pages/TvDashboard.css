@@ -330,3 +330,17 @@
 .tvx-roster-item.crit { border-left-color: #ef4444; color: #fecaca; background: rgba(239,68,68,.06); }
 .tvx-roster-item.crit .dot { background: #ef4444; animation: tvxpulse 1.4s infinite; }
 .tvx-roster-item.crit .tag { color: #fecaca; background: rgba(239,68,68,.16); }
+
+/* ISP outage persistent banner */
+.tvx-isp-banner { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
+.tvx-isp-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-radius: 10px;
+  background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45);
+  box-shadow: 0 0 22px rgba(239,68,68,.18) inset;
+}
+.tvx-isp-dot { width: 12px; height: 12px; border-radius: 50%; background: #ef4444; animation: tvxpulse 1.2s infinite; flex: none; }
+.tvx-isp-tag { font-size: 12px; font-weight: 800; letter-spacing: .12em; color: #fff; background: #dc2626; padding: 3px 10px; border-radius: 6px; }
+.tvx-isp-name { font-size: 18px; font-weight: 800; color: #fecaca; }
+.tvx-isp-clients { font-size: 15px; font-weight: 600; color: #fde68a; }
+
