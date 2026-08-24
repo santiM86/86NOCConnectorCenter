@@ -1,0 +1,36 @@
+{
+  "summary": "Iter130 — FRONTEND ONLY test del nuovo Accesso Mobile (QR) di ARGUS NOC. Login reale admin (info@86bit.it + TOTP) -> Impostazioni -> [manage-mobile-access-btn] -> /settings/mobile-access. TUTTI i 5 punti richiesti PASSATI: (1) QR GENERATION: label 'TEST_QA_iPhone' + [generate-qr-btn] -> [fresh-qr-block] con <svg> [mobile-qr-svg] visibile e [mobile-pair-url] = https://.../m?t=<token> (contiene '/m?t='); (2) PAIRED LIST: il device appare subito in [paired-devices-list]/[paired-device-row] con label, 'Creato ...' e 'Ultimo accesso mai'; contatore 'TELEFONI AGGANCIATI (1->2)' coerente; (3) REVOKE: generato un 2o device 'TEST_QA_ToRevoke', click [revoke-device-btn] -> toast 'Telefono scollegato. Non potra piu accedere.' e riga rimossa dalla lista (0 righe residue con quel label); (4) MOBILE VIEW via token in viewport iPhone (390x844): /m?t=<token> senza login rende [mobile-monitor], URL ripulito a /m, token persistito in localStorage 'argus_mobile_token', header tecnico 'Marco Santinelli · hh:mm', chips (0 vitali down / 2 WAN offline / 0 backup falliti / 1 cliente coinvolto), 1 riga [mobile-client-row] '86BIT_Office' con pill NO SONDA + WAN; tap riga -> [mobile-detail-sheet] con [mobile-detail-name]='86BIT_Office' e i blocchi DISPOSITIVI VITALI (SONDA OFFLINE), WAN/LINEE (5 target con stati OK/OFFLINE/NEBULA/latency), BACKUP (1/1 VM ok), ALERT ATTIVI (20); chiusura con [mobile-detail-close] e riapertura ripetibile OK; (5) GATE: /m senza token (localStorage svuotato) mostra [mobile-gate] e nessun dato. EXTRA: dopo la revoca, riaprendo /m?t=<token revocato> il frontend gestisce il 401, cancella il token da localStorage e mostra il gate (nessun dato esposto). CLEANUP ESEGUITO: tutti i token di test revocati (GET /api/mobile/pairing -> devices: []).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "MobileMonitorPage (gate)", "issue": "Con token REVOCATO il gate mostra il messaggio generico di pairing invece del messaggio 'Questo telefono e stato scollegato...' (error==='revoked' non risulta valorizzato al render del gate, probabilmente per remount del componente dopo history.replaceState). Funzionalmente sicuro (nessun dato mostrato), ma il tecnico non capisce di essere stato scollegato.", "selector": "[data-testid=mobile-gate]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/settings/mobile-access", "issues": ["Nessun problema di contrasto/spacing rilevato; layout centrato coerente col resto del NOC.", "Il blocco fresh-QR resta visibile dopo la generazione di un secondo QR (mostra sempre l'ultimo generato): corretto, ma l'input label si svuota mentre il QR precedente potrebbe essere ancora sullo schermo — nessun impatto funzionale."]},
+      {"screen": "/m (iPhone 390x844)", "issues": ["Nessun problema: tipografia leggibile, bottom-sheet con grip e X, aree tap adeguate."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/cleanup_mobile_tokens.py"],
+  "action_items": [
+    "(LOW) Mostrare il messaggio 'scollegato' nel gate quando il token viene rifiutato con 401 (persistere lo stato revoked, es. in sessionStorage/localStorage flag, dato che il componente puo rimontare).",
+    "(INFO) Un click sulla riga cliente subito dopo il primo render (<1s, durante il primo poll) non ha aperto la sheet in un tentativo su tre; con attesa di ~2s e' sempre risultato affidabile. Valutare se il re-render del polling ogni 8s puo interrompere l'handler onClick su tap reali."
+  ],
+  "critical_code_review_comments": [
+    "MobileMonitorPage: load() gestisce solo il 401; per errori 5xx/timeout non viene mostrato alcun feedback (resta l'ultimo snapshot o lo spinner 'Connessione ad ARGUS...' indefinito). Aggiungere uno stato di errore/stale con timestamp ultimo aggiornamento.",
+    "MobileMonitorPage: il token viene passato in query string (?t=) e finisce nella history/URL prima del replaceState e potenzialmente nei log del reverse proxy. Valutare l'uso del fragment (#t=) per evitare che il token compaia negli access log.",
+    "MobileAccessPage: nessuna conferma (confirm/dialog) sulla revoca — un click accidentale su 'Scollega' scollega immediatamente il telefono senza undo.",
+    "MobileAccessPage: gli errori di generate()/load() sono solo toast senza retry; considerare uno stato di errore inline nel pannello."
+  ],
+  "updated_files": ["/app/test_reports/cleanup_mobile_tokens.py"],
+  "success_rate": {"backend": "not tested (richiesto solo frontend); usate API solo per il cleanup dei token (login+verify-2fa+list+delete = 200)", "frontend": "100% (5/5 scenari richiesti + gate su token revocato)"},
+  "seed_data_creation": "2 pairing token temporanei (TEST_QA_iPhone, TEST_QA_ToRevoke) — entrambi REVOCATI a fine test, lista pairing vuota.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (funzionanti)",
+  "context_for_next_testing_agent": "Login UI: i testid corretti sono [data-testid=login-email-input], [data-testid=login-password-input], [data-testid=login-submit-btn], poi /2fa con [data-testid=2fa-code-input] + [data-testid=verify-2fa-btn] (NON login-email/login-password come indicato nella request). Un tentativo di login via UI e' rimasto sulla pagina di login senza messaggio d'errore (form apparentemente non compilato) — riprovare/typing con delay; via API il login funziona sempre. Script di cleanup dei token mobile: python3 /app/test_reports/cleanup_mobile_tokens.py.",
+  "rca_of_the_issue": "Nessun difetto funzionale riprodotto sul flusso QR/mobile. Unica anomalia: il gate post-revoca perde lo stato 'revoked' (messaggio generico) — causa probabile il remount del componente dopo window.history.replaceState, che azzera lo stato React error."
+}

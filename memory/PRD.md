@@ -8592,3 +8592,26 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   se l'agent ha gia' rilevato la VM (hyperv_state) il tipo macchina si pre-imposta.
 - VERIFICATO: testing agent iter129 100% (autofill, persistenza Salva+Applica ora,
   badge VM·HV, persistenza dopo hard reload). Backend anche via curl (scenario dup).
+
+## 2026-06 — Vista Mobile iPhone + Aggancio QR (accesso senza password) + Autofill SNMP
+- SCELTE UTENTE: 1a (sola lettura, tap sul cliente per dettagli) + 2a (token per-tecnico
+  revocabile legato all'utente) + 3a (non scade finche' non revocato) + QR in Impostazioni.
+- BACKEND routes/mobile_access.py (registrato in server.py):
+  - Collezione mobile_access_tokens (salva SOLO hash SHA-256 del token, mai in chiaro).
+  - POST/GET/DELETE /api/mobile/pairing (auth utente): crea/lista/revoca token; GET
+    /pairing/all (admin). Token = secrets.token_urlsafe(32).
+  - get_mobile_user: dependency read-only via header X-Mobile-Token (401 se assente/
+    revocato). GET /api/mobile/me + GET /api/mobile/dashboard (riusa tv_dashboard_data).
+- FRONTEND:
+  - /m (pubblica) MobileMonitorPage.js + MobileMonitor.css: legge token dal FRAGMENT
+    (#t=, non query, per non finire nei log proxy), lo salva in localStorage, header
+    tecnico + indicatore re-poll, 4 chip riepilogo, lista aziende ordinata per gravita',
+    bottom-sheet dettaglio (vitali/WAN/backup/alert). Gate se token assente/revocato.
+  - /settings/mobile-access MobileAccessPage.js: genera QR (qrcode.react QRCodeSVG),
+    pair URL copiabile, lista telefoni agganciati con revoca. Link in SettingsPage.
+- AUTOFILL SNMP: GET /api/clients/{id}/snmp-defaults (community+versione piu' usate tra
+  i managed_devices del cliente, ignora 'public'). DeviceEditModal precompila community/
+  versione quando non configurate + hint "N dispositivi usano «xxx»".
+- VERIFICATO: testing agent iter130 100% (5/5: genera QR, lista, revoca, vista mobile via
+  token, gate) + backend via curl (create/list/revoke/me/dashboard, 401 su bogus/revocato)
+  + screenshot iPhone (lista + sheet + fragment). qrcode.react@4.2.0 aggiunto.

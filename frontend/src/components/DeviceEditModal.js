@@ -83,6 +83,28 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     }
   };
 
+  // AUTOFILL SNMP: quando il device non ha ancora una community/versione
+  // configurata (o usa il default generico), proponiamo i valori PIU' USATI
+  // tra i dispositivi gia' configurati dello STESSO cliente. Resta modificabile.
+  const [snmpSuggest, setSnmpSuggest] = useState(null);
+  useEffect(() => {
+    if (!open || !clientId) return;
+    let cancelled = false;
+    axios.get(`${API}/clients/${clientId}/snmp-defaults`).then(({ data }) => {
+      if (cancelled || !data) return;
+      setSnmpSuggest(data);
+      const neverConfiguredComm = !device?.snmp_community && !device?.community;
+      const communityIsDefault = (device?.snmp_community || device?.community || "public").toLowerCase() === "public";
+      if (data.community && (neverConfiguredComm || communityIsDefault)) {
+        setCommunity((prev) => (!prev || prev.toLowerCase() === "public" ? data.community : prev));
+      }
+      if (data.snmp_version && !device?.snmp_version) {
+        setSnmpVersion((prev) => prev || data.snmp_version);
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [open, clientId, device?.id, device?.snmp_community, device?.community, device?.snmp_version]);
+
   const buildOptimistic = () => ({
     ...device,
     alerts_silenced: alertsSilenced,
@@ -351,6 +373,12 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
                   <p className="text-[9px] text-[var(--text-muted)] italic">
                     Case-sensitive. Deve corrispondere esattamente alla community configurata sul dispositivo.
                   </p>
+                  {snmpSuggest && snmpSuggest.community && snmpSuggest.community === community && (
+                    <p className="text-[9px] text-cyan-400 flex items-center gap-1" data-testid="snmp-autofill-hint">
+                      <Lightning size={9} weight="fill" />
+                      Precompilato: {snmpSuggest.community_count} dispositivi di questo cliente usano «{snmpSuggest.community}»
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2 border border-amber-500/30 bg-amber-500/5 rounded p-2">
