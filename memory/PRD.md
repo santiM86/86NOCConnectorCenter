@@ -8530,3 +8530,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - TvDashboardPage.js: banner persistente ciano NUOVO DISPOSITIVO + popup transitorio (kind=new)
   + suono, alla comparsa di un MAC mai visto. CSS tvx-new-row/tv-popup-new in TvDashboard.css.
 - Verificato con rogue sintetico + screenshot: banner mostra MAC, vendor, cliente.
+
+## 2026-08-24 — Tendina "Configura profilo" allineata al catalogo
+- BUG: il select di ProfileConfig (ClientOverviewPage) usava familyOrder hardcoded e
+  SCARTAVA le famiglie non elencate -> DrayTek (router) e Hyper-V (vm) non comparivano.
+- FIX: aggiunte router/vm a familyOrder+familyLabels; inoltre displayFamilies include
+  in coda QUALSIASI famiglia extra presente nel catalogo (future-proof). 
+- DeviceProfilesPage FAMILY_META: aggiunti label/icona per router e vm.

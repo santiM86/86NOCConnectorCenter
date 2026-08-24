@@ -3928,12 +3928,14 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
     acc[f].push(p);
     return acc;
   }, {});
-  // v2026-06-02: aggiunti "printer" (6 profili HP/Epson/Kyocera/Xerox/
-  // Brother/Canon) e "generic" all'elenco visibile — prima erano filtrati
-  // perche' non presenti in familyOrder, anche se esistevano nei seed
-  // backend. UX bug segnalato via screenshot utente.
-  const familyOrder = ["switch", "firewall", "access-point", "nas", "ups", "server_oob", "printer", "unifi", "generic"];
-  const familyLabels = { switch: "Switch", firewall: "Firewall", "access-point": "Access Point", nas: "NAS", ups: "UPS", server_oob: "Server OOB (iLO/iDRAC)", printer: "Stampante", unifi: "UniFi", generic: "Generico" };
+  // v2026-08: aggiunti "router" (DrayTek) e "vm" (Hyper-V). Inoltre qualsiasi
+  // famiglia NON elencata viene comunque mostrata in fondo (vedi extraFamilies),
+  // cosi' la tendina resta SEMPRE allineata al catalogo Device Profiles.
+  const familyOrder = ["switch", "router", "firewall", "access-point", "nas", "ups", "server_oob", "vm", "printer", "unifi", "generic"];
+  const familyLabels = { switch: "Switch", router: "Router", firewall: "Firewall", "access-point": "Access Point", nas: "NAS", ups: "UPS", server_oob: "Server OOB (iLO/iDRAC)", vm: "Virtual Machine", printer: "Stampante", unifi: "UniFi", generic: "Generico" };
+  // Famiglie presenti nel catalogo ma non ancora in familyOrder → in coda.
+  const extraFamilies = Object.keys(byFamily).filter(f => !familyOrder.includes(f)).sort();
+  const displayFamilies = [...familyOrder.filter(f => byFamily[f]), ...extraFamilies];
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -3965,7 +3967,7 @@ function DeviceProfileModal({ device, onClose, onApplied }) {
               data-testid="profile-select"
             >
               <option value="">— scegli un profilo —</option>
-              {familyOrder.filter(f => byFamily[f]).map(f => (
+              {displayFamilies.map(f => (
                 <optgroup key={f} label={familyLabels[f] || f}>
                   {byFamily[f].map(p => (
                     <option key={p.key} value={p.key}>
