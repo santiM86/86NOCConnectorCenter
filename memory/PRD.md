@@ -8559,3 +8559,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   source_type=pre_down_warning (dedup, Telegram), auto-resolve su recupero o su down pieno.
   Salta clienti senza sonda online. Rispetta manutenzione (insert_alert_if_emit+notify).
 - Verificato: A (vitale off 140s vs non-vitale on), C (95s->prealarm, recupero->resolved).
+
+## 2026-08-24 — Ripoll forzato CONTINUO di tutti i vitali (ogni 2 min)
+- vital_freshness.py: nuovo flag always_repoll (default TRUE). Quando attivo, ogni ciclo
+  (scheduler 2 min) forza il re-poll di TUTTI i vitali dei clienti con sonda online
+  (non solo gli stale). Re-poll eseguiti CONCORRENTI a blocchi di 12 (asyncio.gather).
+- Verificato: repoll_targets=3 su 3 vitali con sonda online (repolled reale solo in prod
+  con agent WS). Config db.settings key vital_freshness_config.always_repoll per on/off.
