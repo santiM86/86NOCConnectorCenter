@@ -748,6 +748,11 @@ function DeviceCard({ target: t, result: r, onDelete, onEdit }) {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] text-[var(--text-muted)] font-mono">{t.public_ip}</span>
+            {t.isp && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/12 text-violet-300 font-semibold flex items-center gap-1" data-testid={`isp-chip-${t.id}`} title={`ISP ricavato dall'IP pubblico${t.asn ? ` · ${t.asn}` : ""}`}>
+                <Globe size={9} weight="bold" /> {t.isp}
+              </span>
+            )}
             {t.nebula?.sn && <span className="text-[9px] text-[var(--text-muted)] font-mono">S/N {t.nebula.sn}</span>}
             {t.nebula?.ports_total > 0 && (
               <span className="text-[9px] font-mono text-emerald-400/80">porte {t.nebula.ports_up}/{t.nebula.ports_total}</span>

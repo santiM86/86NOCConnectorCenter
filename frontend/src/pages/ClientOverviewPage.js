@@ -715,6 +715,7 @@ function OverviewTab({ devices, wanTargets, alerts, connector, printers, backups
                     {t.device_type === "firewall" ? <ShieldCheck size={14} weight="bold" style={{ color: sc }} /> : <HardDrives size={14} weight="bold" style={{ color: sc }} />}
                     <span className="font-bold text-[var(--text-primary)]">{t.label}</span>
                     <span className="font-mono text-[var(--text-muted)] text-[10px]">{t.public_ip}</span>
+                    {t.isp && <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/12 text-violet-300 font-semibold" title={t.asn || "ISP dal­l'IP pubblico"}>{t.isp}</span>}
                     <span className="ml-auto font-mono font-bold" style={{ color: sc }}>{r?.status?.toUpperCase() || "..."}</span>
                     {r?.ping?.latency_ms != null && <span className="font-mono text-[var(--text-muted)] text-[10px]">{r.ping.latency_ms}ms</span>}
                     {r?.gateway_ping && (

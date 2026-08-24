@@ -8505,3 +8505,21 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   kev_exposure/osint esistente viene AUTO-RISOLTO. Esposizione salvata resta completa.
 - routes/osint.py: aggiunto date_added alla proiezione/match KEV.
 - Verificato: CVE QNAP 2018-2021 filtrate, CVE 2024/2025 mantenute.
+
+## 2026-08-24 — Profilo Hyper-V VM + ISP da Nebula
+- device_profiles: aggiunto profilo hyperv_vm (Microsoft Hyper-V VM, guest Windows via SNMP
+  HOST-RESOURCES: CPU hrProcessorLoad, RAM hrMemorySize, dischi hrStorageTable, uptime).
+  Fingerprint enterprise Microsoft 1.3.6.1.4.1.311 + sysDescr windows/hyper-v. SEED_VERSION=8.
+  Totale profili ora 26. Classificatore verificato.
+- ISP da Nebula: la Nebula API (interface-settings) da IP pubblico + tipo (dhcp/static/pppoe)
+  ma NON il nome ISP. routes/zyxel_nebula.py: arricchito il record WAN con isp/isp_org/asn/
+  asn_name/geo_country_code risolti dallIP pubblico via _geoip_cached (ip-api, cache 30gg).
+  Verificato resolver (8.8.8.8 -> Google LLC AS15169). Da mostrare in UI WAN/Nebula (opzionale).
+
+## 2026-08-24 — ISP in UI (WAN) da IP pubblico
+- external_monitor.list_targets: nuovo _attach_isp() arricchisce ogni wan_target con
+  isp/asn/asn_name/geo_country_code + backup_isp (da _geoip_cached, dedup per IP).
+- UI: ExternalMonitorPage (chip ISP viola accanto a public_ip, testid isp-chip-<id>),
+  ClientOverviewPage tab WAN (nome ISP dopo public_ip), NebulaFirewalls.jsx (chip ISP
+  nel firewall usando fw.isp dal sync). Verificato: 8.8.8.8->Google, 1.1.1.1->Cloudflare.
+- ATTENZIONE fix: nel chip Nebula usato solo fw.isp (geo era fuori scope in FirewallDetail).

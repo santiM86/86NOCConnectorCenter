@@ -1093,6 +1093,33 @@ async def _attach_nebula(targets: list) -> list:
     return targets
 
 
+async def _attach_isp(targets: list) -> list:
+    """Aggiunge isp/asn a ogni target risolvendo dal public_ip (geo-IP, cache 30gg).
+    Deduplica gli IP per non ripetere lookup. Nebula NON espone l'ISP nativamente:
+    lo ricaviamo dall'IP pubblico."""
+    ips = {t.get("public_ip") for t in targets if t.get("public_ip")}
+    ips |= {t.get("backup_public_ip") for t in targets if t.get("backup_public_ip")}
+    geo_by_ip = {}
+    for ip in ips:
+        try:
+            g = await _geoip_cached(ip)
+            if g and not g.get("error"):
+                geo_by_ip[ip] = g
+        except Exception:
+            pass
+    for t in targets:
+        g = geo_by_ip.get(t.get("public_ip"))
+        if g:
+            t["isp"] = g.get("isp") or g.get("asn_name")
+            t["asn_name"] = g.get("asn_name")
+            t["asn"] = g.get("asn")
+            t["geo_country_code"] = g.get("country_code")
+        gb = geo_by_ip.get(t.get("backup_public_ip"))
+        if gb:
+            t["backup_isp"] = gb.get("isp") or gb.get("asn_name")
+    return targets
+
+
 @router.get("/targets")
 async def list_targets(client_id: str = None, current_user: dict = Depends(get_current_user)):
     query = {}
@@ -1100,6 +1127,7 @@ async def list_targets(client_id: str = None, current_user: dict = Depends(get_c
         query["client_id"] = client_id
     targets = await db.wan_targets.find(query, {"_id": 0}).to_list(500)
     targets = await _attach_nebula(targets)
+    targets = await _attach_isp(targets)
     return {"targets": targets}
 
 

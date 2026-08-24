@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 7  # v2026-08: aggiunto profilo DrayTek Vigor (router/firewall, enterprise 1.3.6.1.4.1.7367)
+SEED_VERSION = 8  # v2026-08: aggiunto profilo Hyper-V VM (Windows guest via SNMP HOST-RESOURCES)
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -708,6 +708,42 @@ PROFILES: list[dict[str, Any]] = [
         },
         "polling_interval_seconds": 60,
         "capabilities": ["snmp_basic", "interface_traffic", "cpu_memory"],
+    },
+
+    # ---------------- Microsoft Hyper-V VM (Windows guest via SNMP) ----------------
+    {
+        "key": "hyperv_vm",
+        "vendor": "Microsoft",
+        "family": "vm",
+        "label": "Hyper-V VM (Windows guest, SNMP)",
+        "description": "Macchina virtuale su Microsoft Hyper-V con guest Windows e servizio SNMP attivo. Monitoraggio via HOST-RESOURCES-MIB (CPU, RAM, dischi, processi) + MIB-II per le interfacce. NB: richiede il servizio 'SNMP Service' abilitato nel guest Windows con la community configurata. Le metriche a livello di HOST Hyper-V (checkpoint, replica, stato VM) richiedono invece WMI/agent sull'host, non SNMP.",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.311."],  # Microsoft enterprise (Windows SNMP)
+            "sysdescr_patterns": [r"hyper-?v", r"virtual machine", r"windows", r"microsoft"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "web_console": {"port": 3389, "scheme": "rdp", "path": "/", "alt_ports": [443, 5985], "notes": "Nessuna web console nativa: accesso via RDP (3389) o console Hyper-V dell'host. WinRM su 5985/5986 se si usa gestione remota."},
+        "oids": {
+            **COMMON_OIDS,
+            # HOST-RESOURCES-MIB (guest Windows)
+            "hrSystemUptime":         "1.3.6.1.2.1.25.1.1.0",     # uptime OS (piu' preciso di sysUpTime)
+            "hrSystemProcesses":      "1.3.6.1.2.1.25.1.6.0",     # numero processi
+            "hrSystemNumUsers":       "1.3.6.1.2.1.25.1.5.0",     # utenti loggati
+            "hrProcessorLoad":        "1.3.6.1.2.1.25.3.3.1.2",   # CPU % (per-core, table → media)
+            "hrMemorySize":           "1.3.6.1.2.1.25.2.2.0",     # RAM totale (KB)
+            "hrStorageDescr":         "1.3.6.1.2.1.25.2.3.1.3",   # table: RAM/Virtual/C:/D:
+            "hrStorageAllocationUnit":"1.3.6.1.2.1.25.2.3.1.4",   # byte per unita'
+            "hrStorageSize":          "1.3.6.1.2.1.25.2.3.1.5",   # dimensione (in unita')
+            "hrStorageUsed":          "1.3.6.1.2.1.25.2.3.1.6",   # usato (in unita')
+            "ifSpeed":                "1.3.6.1.2.1.2.2.1.5",      # bps per interfaccia (table)
+        },
+        "thresholds": {
+            "cpu_warn_pct": 80, "cpu_crit_pct": 95,
+            "mem_warn_pct": 85, "mem_crit_pct": 95,
+            "disk_warn_pct": 85, "disk_crit_pct": 95,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "cpu_memory", "disk_usage", "interface_traffic"],
     },
 
     # ---------------- APC UPS (PowerNet) ----------------
