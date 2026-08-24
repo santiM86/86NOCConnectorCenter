@@ -8415,3 +8415,50 @@ Dashboard dedicata `/channel-health` per visualizzare in un colpo d'occhio lo st
   renderizza correttamente (VITALI DOWN=0 quando tutti gli agent sono stale).
 - Nota comportamentale: i device "stale"/"pending" NON contano come offline
   (scelta confermata dall'utente, come Overview).
+
+## 2026-08-24 — 5 nuove funzionalità NOC/NDR (tutte testate)
+Richieste utente: manutenzione, root-cause LAN, soglia dinamica, rogue/NAC, syslog anomaly.
+
+### Fase 1 — Finestre di manutenzione (ENFORCEMENT + ricorrenza + Silenzia ora)
+- NUOVO `backend/maintenance_gate.py`: `is_in_maintenance(db, client_id, device_ip)` con
+  cache 15s e supporto ricorrenza (daily/weekly, gestione midnight-wrap).
+- Agganciato in `alert_filter.insert_alert_if_emit` (blocca creazione alert) e in
+  `alert_engine._dispatch_notification` + `notify_alert_telegram` (blocca push/Telegram).
+  Copre motore correlazione, cascade, e alert esterni (rogue/C2/traffic/syslog).
+- `routes/advanced_features.py`: nuovo POST `/maintenance/{client_id}/silence-now`
+  (Pydantic `SilenceNowReq`, 404 se client inesistente), `recurrence_type`, invalidazione
+  cache su create/update/delete, auth aggiunta su GET `/maintenance/active/{client_id}`.
+- `MaintenancePage.js`: barra "Silenzia ora" (1h/2h/fino a domani), checkbox Ricorrente +
+  selettore giornaliera/settimanale, badge RICORRENTE, isActive/isPast ricorrenza-aware.
+- Verificato: soppressione alert+notifica durante finestra (semplice+ricorrente), 422 su body
+  invalido, 404 client, 403 active senza auth.
+
+### Fase 2 — Root-cause "+N impatti"
+- `alert_engine.py`: per gli anchor `switch_down` / `site_isolated` / `site_power_down`
+  calcola i device figli soppressi (`impacts_by_anchor`) e aggiunge al titolo/messaggio
+  "· N dispositivi a valle impattati" + campi `impacted_count` / `impacted_devices` sull'alert.
+
+### Fase 3 — Soglia dinamica latenza (NUOVO)
+- NUOVO `services/latency_baseline.py`: baseline media+σ di ping_ms per (client,ip) e fascia
+  oraria su `metrics_history` (lookback 14g, min 20 campioni); alert `latency_anomaly`
+  (dedup) quando cur > media + 3σ e deviazione ≥ floor; auto-resolve al rientro.
+- Scheduler OSINT: job `latency_baseline_tick` ogni 10m. Config `dynamic_threshold_config`.
+- Verificato: rileva 300ms vs baseline ~10ms e auto-risolve.
+
+### Fase 4 — Rogue/NAC: azione "Indaga"
+- Telegram su nuovo MAC ERA GIÀ presente (`rogue_detection._emit_rogue_alert`).
+- NUOVO POST `/api/security/rogue/investigate` + `rogue_detection.investigate()` (tag
+  investigating/investigated_by/at/note, alert resta attivo).
+- `RogueDevicesPage.js`: pulsante "Indaga" + badge "IN INDAGINE".
+
+### Fase 5 — Syslog anomaly (NUOVO)
+- NUOVO `services/syslog_anomaly.py`: correlazione su finestra (default 10m) di
+  `syslog_events`: brute-force (≥5 auth/login fail per device → `syslog_bruteforce`) e
+  port-scan (≥15 porte distinte su log deny/drop → `syslog_portscan`), alert dedup + Telegram.
+- Scheduler OSINT: job `syslog_anomaly_tick` ogni 3m. Config `syslog_anomaly_config`.
+- Verificato: rileva brute-force + port-scan da dati sintetici.
+
+Testing: iteration_128.json — 7/7 backend, 5/5 UI. Nessun bug funzionale.
+Config toggle (enabled) per ogni servizio in db.settings (default ON); UI toggle rogue/traffic
+già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog).
+

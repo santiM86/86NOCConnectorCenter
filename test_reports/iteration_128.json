@@ -1,0 +1,43 @@
+{
+  "summary": "Iter128 — Validati end-to-end (ingress pubblico) i due NUOVI endpoint (POST /api/maintenance/{client_id}/silence-now, POST /api/security/rogue/investigate) e le UI Manutenzione + Rogue con login admin 2FA reale. 7/7 test backend pytest PASSED. Tutti i flussi UI richiesti superati: silence-now 1h crea finestra con badge 'IN CORSO' + toast, creazione finestra ricorrente con selettore recurrence_type e badge 'RICORRENTE · Giornaliera', pagina Rogue carica con KPI e toggle funzionante (nessuna riga rogue presente in ambiente, atteso). Nessun errore console bloccante.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Manutenzione", "issues": ["Una finestra RICORRENTE creata per domani 10:33-12:33 viene mostrata subito come 'IN CORSO' perche isActive() per le ricorrenti valuta solo l'ora del giorno: comportamento coerente col modello ricorrente ma potenzialmente confondente accanto alla data futura mostrata in riga. Valutare di mostrare 'Ogni giorno 10:33-12:33' invece della data assoluta per le finestre ricorrenti."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_new_endpoints_iter128.py",
+    "/app/test_reports/pytest/iter128.xml",
+    "/app/backend/tests/probe_2fa_refresh_iter128.py",
+    "/app/backend/tests/cleanup_iter128.py"
+  ],
+  "action_items": [
+    "Nessun bug funzionale da correggere. Opzionale: label 'Ogni giorno HH:MM-HH:MM' per finestre ricorrenti in lista (chiarezza UX).",
+    "Opzionale: risolvere 2 warning eslint pre-esistenti react/no-unescaped-entities in MaintenancePage.js (righe 153, 222)."
+  ],
+  "critical_code_review_comments": [
+    "silence-now e investigate non validano il body con Pydantic (Request raw in advanced_features.silence_now): un body {\"hours\": \"abc\"} provoca ValueError -> 500. Consigliato un modello Pydantic (hours: float = 1, until_tomorrow: bool = False).",
+    "silence-now non verifica l'esistenza del client_id: un client_id inesistente crea comunque una finestra orfana (200). Aggiungere lookup su db.clients -> 404.",
+    "advanced_features.py e ~600 righe con responsabilita multiple (thresholds/maintenance/bandwidth/discovery/correlation/portal): candidato allo split in moduli.",
+    "GET /api/maintenance/active/{client_id} e senza autenticazione (nessun Depends(get_current_user)) e accetta qualunque client_id: leak informativo del titolo/descrizione finestra a chiamanti non autenticati."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/MaintenancePage.js (aggiunti data-testid maint-edit-{id} e maint-delete-{id} mancanti sui pulsanti Modifica/Elimina)",
+    "/app/backend/tests/test_new_endpoints_iter128.py (nuovo)",
+    "/app/backend/tests/probe_2fa_refresh_iter128.py (nuovo)",
+    "/app/backend/tests/cleanup_iter128.py (nuovo)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (5/5 flussi richiesti)"},
+  "seed_data_creation": "Create e poi eliminate: finestra 'TEST_Ricorrente_QA' e finestre 'Silenziato ora per 1h/fino a domani' sul client 86BIT_Office. DB ripulito via /app/backend/tests/cleanup_iter128.py.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (flusso login -> verify-2fa funzionante, credenziali NON modificate)",
+  "context_for_next_testing_agent": "Login 2FA via API: POST /api/auth/login -> {token(pre-2FA), requires_2fa:true, refresh_token:null} poi POST /api/auth/verify-2fa {code} con Bearer pre-token -> token pieno. UI: /login -> /2fa (data-testid 2fa-code-input, verify-2fa-btn) -> /. Il 403 su /api/auth/me visto in console e ATTESO (token pre-2FA, detail '2FA verification required'), non un bug. Ambiente ha 1 solo client (86BIT_Office) e 0 alert rogue attivi, quindi il pulsante 'Indaga' (rogue-investigate-{mac}) non e testabile via UI senza seed di un alert source_type=rogue_device; l'endpoint e stato validato via API. Riusare /app/backend/tests/test_new_endpoints_iter128.py come regressione.",
+  "rca_of_the_issue": "Nessun difetto riprodotto. Verificato che il refresh_token pre-2FA e null (nessun bypass 2FA possibile) e che l'unico errore console 403 deriva dalla chiamata /api/auth/me con token ristretto pre-verifica, per design."
+}

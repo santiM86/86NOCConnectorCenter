@@ -70,6 +70,17 @@ export default function RogueDevicesPage() {
     } catch (e) { toast.error("Errore remediation"); }
   };
 
+  const investigate = async (a) => {
+    const note = window.prompt("Nota indagine (opzionale):", a.investigation_note || "");
+    if (note === null) return;
+    try {
+      await axios.post(`${API}/api/security/rogue/investigate`,
+        { client_id: a.client_id, mac: a.raw_data, note }, { headers });
+      toast.success("Segnato in indagine");
+      await reload();
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore"); }
+  };
+
   const removeAllow = async (item) => {
     if (!window.confirm(`Rimuovere ${item.mac} dall'allow-list?`)) return;
     try {
@@ -154,6 +165,11 @@ export default function RogueDevicesPage() {
                         {a.rogue_device_class ? ` · ${a.rogue_device_class}` : ""}
                         {a.rogue_mac_type ? ` · ${a.rogue_mac_type}` : ""}
                       </div>
+                      {a.investigating && (
+                        <span className="inline-block mt-1 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/40" data-testid={`rogue-investigating-${a.raw_data}`}>
+                          in indagine{a.investigated_by ? ` · ${a.investigated_by}` : ""}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2"><RiskBadge risk={a.rogue_risk} rep={a.rogue_ip_reputation} /></td>
                     <td className="px-3 py-2 text-[10px] max-w-[320px] truncate" title={a.message}>{a.message}</td>
@@ -164,6 +180,11 @@ export default function RogueDevicesPage() {
                           className="h-6 text-[10px] gap-1 bg-emerald-600 hover:bg-emerald-700"
                           data-testid={`rogue-authorize-${a.raw_data}`}>
                           <CheckCircle size={11} /> Autorizza
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => investigate(a)}
+                          className="h-6 text-[10px] gap-1 border-sky-500/40 text-sky-300 hover:bg-sky-500/10"
+                          data-testid={`rogue-investigate-${a.raw_data}`}>
+                          <Warning size={11} /> Indaga
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => showRemediation(a)}
                           className="h-6 text-[10px] gap-1 border-orange-500/40 text-orange-300 hover:bg-orange-500/10"

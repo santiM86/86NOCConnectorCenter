@@ -24,6 +24,12 @@ class AuthorizeReq(BaseModel):
     note: str = ""
 
 
+class InvestigateReq(BaseModel):
+    client_id: str
+    mac: str = Field(..., min_length=6)
+    note: str = ""
+
+
 class AllowlistDelReq(BaseModel):
     client_id: str
     mac: str
@@ -74,6 +80,13 @@ async def scan_now(current_user: dict = Depends(get_current_user)):
 async def authorize(req: AuthorizeReq, current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
     res = await rogue.authorize(req.client_id, req.mac, current_user.get("email", ""), req.note)
+    return {"ok": True, **res}
+
+
+@router.post("/investigate")
+async def investigate(req: InvestigateReq, current_user: dict = Depends(get_current_user)):
+    require_admin(current_user)
+    res = await rogue.investigate(req.client_id, req.mac, current_user.get("email", ""), req.note)
     return {"ok": True, **res}
 
 

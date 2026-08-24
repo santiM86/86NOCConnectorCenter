@@ -1080,6 +1080,18 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=200),
             max_instances=1, coalesce=True,
         )
+        from services.syslog_anomaly import scan_all as syslog_anomaly_scan
+        osint_scheduler.add_job(
+            syslog_anomaly_scan, trigger=_OsTrig(minutes=3), id="syslog_anomaly_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=210),
+            max_instances=1, coalesce=True,
+        )
+        from services.latency_baseline import scan_all as latency_baseline_scan
+        osint_scheduler.add_job(
+            latency_baseline_scan, trigger=_OsTrig(minutes=10), id="latency_baseline_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=240),
+            max_instances=1, coalesce=True,
+        )
         osint_scheduler.add_job(
             kev_asset_alert_tick, trigger=_OsTrig(minutes=360), id="kev_asset_alert_tick",
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
@@ -1104,7 +1116,7 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
         )
         osint_scheduler.start()
-        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, kev-alert: 6h, tg-digest: 5m, morning: tick 1m @ configurabile)")
+        logger.info("OSINT schedulers started (feeds: 5m, exposure: 30m, c2: 2m, rogue: 3m, traffic: 5m, syslog-anomaly: 3m, latency-baseline: 10m, kev-alert: 6h, tg-digest: 5m, morning: tick 1m @ configurabile)")
     except Exception as e:
         logger.error(f"Failed to start OSINT scheduler: {e}")
 

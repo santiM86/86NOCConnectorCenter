@@ -351,6 +351,19 @@ async def authorize(client_id: str, mac: str, added_by: str, note: str = "") -> 
     return {"authorized": mac, "resolved_alerts": res.modified_count}
 
 
+async def investigate(client_id: str, mac: str, by: str, note: str = "") -> dict:
+    """Segna gli alert rogue attivi di un MAC come 'in indagine' (restano attivi,
+    ma taggati con chi/quando/nota) per il workflow consenti/blocca/indaga."""
+    mac = _norm_mac(mac)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    res = await db.alerts.update_many(
+        {"client_id": client_id, "source_type": "rogue_device", "raw_data": mac, "status": "active"},
+        {"$set": {"investigating": True, "investigated_by": by or "",
+                  "investigated_at": now_iso, "investigation_note": note or ""}},
+    )
+    return {"mac": mac, "updated": res.modified_count}
+
+
 async def get_status() -> dict:
     cfg = await get_config()
     active = await db.alerts.count_documents({"source_type": "rogue_device", "status": "active"})
