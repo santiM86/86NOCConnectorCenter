@@ -114,6 +114,16 @@ export default function TvDashboardPage() {
       .sort((a, b) => b._i.score - a._i.score);
   }, [data]);
 
+  const allClients = useMemo(() => {
+    if (!data?.clients) return [];
+    const rank = { crit: 0, warn: 1, ok: 2 };
+    return data.clients.map(c => {
+      const i = issues(c);
+      const lvl = i.crit ? "crit" : i.warn ? "warn" : "ok";
+      return { ...c, _i: i, _lvl: lvl };
+    }).sort((a, b) => (rank[a._lvl] - rank[b._lvl]) || a.name.localeCompare(b.name));
+  }, [data]);
+
   const totals = useMemo(() => {
     let vital = 0, wanOff = 0, bkFail = 0, bkMiss = 0;
     (data?.clients || []).forEach(c => {
@@ -170,7 +180,30 @@ export default function TvDashboardPage() {
         </div>
       </header>
 
-      {/* Grid */}
+      {/* Roster: TUTTE le aziende (verde=ok, rosso=down, giallo=warning) */}
+      <section className="tvx-roster" data-testid="tv-roster">
+        <div className="tvx-roster-h">
+          <span>TUTTE LE AZIENDE ({allClients.length})</span>
+          <span className="tvx-legend">
+            <i className="ok" /> OK <i className="warn" /> Warning <i className="crit" /> Down
+          </span>
+        </div>
+        <ul className="tvx-roster-list">
+          {allClients.map(c => (
+            <li key={c.id} className={`tvx-roster-item ${c._lvl}`} data-testid="tv-roster-item" title={c.name}>
+              <span className="dot" />
+              <span className="nm">{c.name}</span>
+              {c._lvl !== "ok" && (
+                <span className="tag">
+                  {c._i.vital.length ? `${c._i.vital.length} vitali` : c._i.wanOffline.length ? "WAN" : c._i.bkFail ? `${c._i.bkFail} backup` : c._i.bkMiss ? "backup" : "warn"}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {/* Grid dettaglio problemi */}
       {clients.length === 0 ? (
         <div className="tvx-empty">
           <div className="tvx-empty-icon">✓</div>

@@ -6086,3 +6086,8 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - TvDashboardPage.js riscritto con design system coerente (nuove classi tvx-* dark, denso per 45"). Ogni card mostra SOLO: Dispositivi Vitali down, WAN (pill con colore stato + badge NEBULA + latenza), Backup (chip falliti/mancanti/warning o OK). Mostrati solo i clienti con almeno un problema; ordinati per gravità.
 - Header: statistiche (vitali down, WAN offline, backup falliti/mancanti, clienti coinvolti), stato live, sound/test, orologio. Popup+audio ora innescati su VITALI down e BACKUP falliti nuovi.
 - Testato: screenshot 1920x1080 → card 86BIT_Office con vitali OK, WAN (Zyxel NEBULA OK + 2 OFFLINE rossi), backup 1/1 ok. Badge NEBULA confermato (auto-link+nebula funzionanti). Compila OK.
+
+## 2026-06 (sexdecies) — TV Dashboard: roster elenco puntato tutte le aziende
+- Aggiunta sezione "TUTTE LE AZIENDE (N)" in cima: elenco puntato di TUTTI i clienti con pallino colorato — verde=tutto ok, rosso=qualcosa down (vitali/WAN offline/backup falliti), giallo=warning. Tag sintetico sul problema (vitali/WAN/backup). Legenda inclusa. Ordinati crit>warn>ok, poi alfabetico. Griglia multi-colonna densa per 45".
+- allClients memo (tutti i clienti, non solo quelli con problemi). Card di dettaglio restano sotto per i soli clienti con problemi.
+- Testato: screenshot → roster con 86BIT_Office rosso (tag WAN) + legenda; card dettaglio sotto. Compila OK.
