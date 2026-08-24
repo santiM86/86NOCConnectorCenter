@@ -6074,3 +6074,9 @@ Risultato: diagnosi backend, WanClientTab, SLA, lista clienti e StatBox ora conc
 - FIX: aggiunto notify_alert_telegram() sull'emit di WAN offline (probe cycle) e su failover/isolato. Aggiunti "external_monitor"/"wan" a _TG_INSTANT_KEYWORDS → istantanei anche in quiet hours notturne.
 - Confermato che vitali down, situazioni, ISP outage, Hyper-V VM down già inviavano real-time.
 - Testato: _is_instant_source('external_monitor')=True, backup=False; notify_alert_telegram invia il doc WAN OFFLINE (non accodato) fuori quiet hours.
+
+## 2026-06 (quaterdecies) — Digest mattutino: SOLO down della NOTTE (no storico)
+- morning_status_digest ora filtra i down per la FINESTRA NOTTURNA: da telegram_quiet_start (default 22:00) di ieri sera fino all'ora del digest. Esclusi i down storici dei giorni precedenti.
+- Query active filtra created_at >= night_start; "Rientrati" filtra resolved_at >= night_start.
+- Titoli aggiornati: "Andato DOWN durante la notte — Dalle HH:MM di ieri sera"; se nulla: "Nessun nuovo DOWN durante la notte (dalle HH:MM). ✅".
+- Testato: item notturno (2h fa) incluso, item storico (20 giorni) escluso.
