@@ -8738,3 +8738,14 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   pubblico: distingue carrier vs ultimo miglio.
 - VERIFICATO: logica reached su dati screenshot -> reached=False (NON RAGGIUNTA), verdetto
   punta all'hop 11 (nodo privato). Backend healthy, frontend compila.
+
+## 2026-06 — Hop più specifici: resolver inventario + etichette private intelligenti
+- Nuovo POST /api/path-trace/resolve-hops: incrocia gli IP degli hop con managed_devices,
+  devices/CMDB, device_poll_status, managed_agents → ritorna {ip:{name,type,vendor,client_name}}.
+  Così un hop PRIVATO mostra il device reale (es. "SRVDATI86B · endpoint · 86BIT_Office")
+  invece di "Rete locale / privata".
+- Frontend NetworkPathDiagnosisPage: resolveHops() dopo il trace; colonna Località prioritizza
+  device conosciuto > geo pubblica (ISP/ASN) > etichetta privata intelligente (privLabel:
+  LAN 192.168, 10/8, 172.16/12=MPLS/VPN, CGNAT 100.64/10, link-local). Verdetto include il
+  nome device dell'ultimo hop che risponde.
+- VERIFICATO: resolve-hops via curl (10.10.1.10 -> SRVDATI86B/86BIT_Office); compila; healthy.

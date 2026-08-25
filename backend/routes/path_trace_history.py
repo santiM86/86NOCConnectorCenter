@@ -57,7 +57,61 @@ async def last_good(probe: str, target: str, current_user: dict = Depends(get_cu
     return {"found": bool(doc), "trace": doc}
 
 
-@router.get("/active-isp-outages")
+@router.post("/resolve-hops")
+async def resolve_hops(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Arricchisce gli hop di un traceroute incrociando gli IP col NOSTRO inventario
+    (managed_devices, devices, device_poll_status, agent) così un hop privato non è
+    più solo 'Rete privata' ma mostra il device reale: nome, tipo, vendor, cliente.
+    Body: {ips: ["10.0.0.1", ...]}."""
+    ips = [str(x) for x in (payload.get("ips") or []) if x][:64]
+    if not ips:
+        return {"resolved": {}}
+    resolved: dict = {}
+
+    def _put(ip, name, dtype, vendor, client_id, source):
+        if not ip or ip in resolved:
+            return
+        resolved[ip] = {"name": name or "", "type": dtype or "", "vendor": vendor or "",
+                        "client_id": client_id or "", "source": source}
+
+    # managed_devices (fonte più ricca)
+    async for d in db.managed_devices.find(
+        {"$or": [{"ip": {"$in": ips}}, {"ip_address": {"$in": ips}}]},
+        {"_id": 0, "ip": 1, "ip_address": 1, "name": 1, "device_type": 1, "vendor": 1, "client_id": 1},
+    ):
+        _put(d.get("ip") or d.get("ip_address"), d.get("name"), d.get("device_type"),
+             d.get("vendor"), d.get("client_id"), "managed")
+    # devices manuali / CMDB
+    async for d in db.devices.find(
+        {"ip_address": {"$in": ips}},
+        {"_id": 0, "ip_address": 1, "name": 1, "hostname": 1, "device_type": 1, "vendor": 1, "client_id": 1},
+    ):
+        _put(d.get("ip_address"), d.get("name") or d.get("hostname"), d.get("device_type"),
+             d.get("vendor"), d.get("client_id"), "cmdb")
+    # device_poll_status (scoperti dall'agent)
+    async for d in db.device_poll_status.find(
+        {"device_ip": {"$in": ips}},
+        {"_id": 0, "device_ip": 1, "device_name": 1, "device_type": 1, "vendor": 1, "client_id": 1},
+    ):
+        _put(d.get("device_ip"), d.get("device_name"), d.get("device_type"),
+             d.get("vendor"), d.get("client_id"), "discovered")
+    # agent/sonde (hostname)
+    async for a in db.managed_agents.find(
+        {"$or": [{"ip": {"$in": ips}}, {"lan_ip": {"$in": ips}}]},
+        {"_id": 0, "ip": 1, "lan_ip": 1, "hostname": 1, "client_id": 1},
+    ):
+        _put(a.get("ip") or a.get("lan_ip"), a.get("hostname"), "agent/sonda", "", a.get("client_id"), "agent")
+
+    # Nomi cliente
+    cids = list({v["client_id"] for v in resolved.values() if v.get("client_id")})
+    cmap = {}
+    if cids:
+        async for c in db.clients.find({"id": {"$in": cids}}, {"_id": 0, "id": 1, "name": 1}):
+            cmap[c["id"]] = c.get("name", "")
+    for v in resolved.values():
+        v["client_name"] = cmap.get(v.get("client_id"), "")
+    return {"resolved": resolved}
+
 async def active_isp_outages(current_user: dict = Depends(get_current_user)):
     """Outage operatore ATTIVI (ASN + nomi) per correlazione col carrier del trace."""
     rows = await db.alerts.find(
