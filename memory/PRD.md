@@ -8723,3 +8723,18 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   Scelta preset (non campo libero) per restare sempre dentro il budget timeout.
 - runTrace usa maxHops; command timeout 100s, axios 110s (ordine: send_command 100 <
   middleware 105 < axios 110; agent cappa tool a 90s → anche 30 hop sicuri, mai timeout secco).
+
+## 2026-06 — FIX verdetto trace errato ("reached" falso positivo)
+- BUG: nettrace.go (agent) marca Reached se ESISTE un hop che risponde → falso
+  positivo quando il target non compare mai (path muore in * * *). Nello screenshot
+  Barcella: 11 hop privati rispondono, target 95.231.155.211 mai raggiunto, ma badge
+  diceva "DESTINAZIONE RAGGIUNTA / LINEA OK".
+- FIX (senza ricompilare l'agent): reached ricalcolato lato backend
+  (run_net_trace_via_probe) e frontend (runTrace) = TRUE solo se l'ultimo hop che
+  risponde ha IP == destinazione.
+- Verdetto frontend migliorato: usa l'ultimo hop che risponde (pubblico O privato/MPLS).
+  Caso tutto-privato (VPN/MPLS): indica "guasto a valle del nodo interno vicino alla sede
+  = accesso sede giù / router/apparati senza corrente, NON dorsale operatore". Caso
+  pubblico: distingue carrier vs ultimo miglio.
+- VERIFICATO: logica reached su dati screenshot -> reached=False (NON RAGGIUNTA), verdetto
+  punta all'hop 11 (nodo privato). Backend healthy, frontend compila.
