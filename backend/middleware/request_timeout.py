@@ -30,6 +30,11 @@ DEFAULT_TIMEOUT = 20
 
 
 def _get_timeout(path: str) -> int:
+    # Comandi agent long-running (net_trace/traceroute/MTR verso sedi isolate):
+    # l'agent può impiegare fino a ~90s. Il default 20s uccideva il traceroute con
+    # "Timeout della richiesta" (Diagnosi Percorso su sede DOWN sempre fallita).
+    if path.startswith("/api/agents/") and path.endswith("/command"):
+        return 105
     for prefixes, timeout in TIMEOUT_RULES:
         if any(path.startswith(p) for p in prefixes):
             return timeout
