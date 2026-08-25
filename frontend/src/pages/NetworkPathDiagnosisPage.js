@@ -419,7 +419,7 @@ export default function NetworkPathDiagnosisPage() {
               tone = "rose";
               title = "SEDE NON RAGGIUNTA — PERCORSO INTERROTTO";
               const devLast = deviceByIp[lastResp.ip];
-              const devStr = devLast && (devLast.name || devLast.type)
+              const devStr = lastIsPublic && devLast && (devLast.name || devLast.type)
                 ? ` [${devLast.name || devLast.type}${devLast.client_name ? " · " + devLast.client_name : ""}]` : "";
               const where = lastIsPublic
                 ? `nodo PUBBLICO ${lastResp.ip}${devStr}${isp ? ` (${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""}`
@@ -504,15 +504,15 @@ export default function NetworkPathDiagnosisPage() {
                     <td className="py-1.5 px-2 font-mono text-[var(--text-secondary)]">{h.hop}</td>
                     <td className="py-1.5 px-2 font-mono">{h.timeout ? <span className="text-rose-400">* * * (nessuna risposta)</span> : (h.ip || h.host || "—")}</td>
                     <td className="py-1.5 px-2 text-[11px]" data-testid={`path-trace-hop-geo-${h.hop}`}>
-                      {h.timeout ? "—" : dev && (dev.name || dev.type) ? (
+                      {h.timeout ? "—" : priv ? <span className="text-[var(--text-muted)]">{privLabel(h.ip)}</span>
+                        : dev && (dev.name || dev.type) ? (
                         <span>
                           <span className="text-emerald-300 font-semibold">{dev.name || dev.type}</span>
                           {dev.type && dev.name && <span className="text-[var(--text-muted)]"> · {dev.type}</span>}
                           {dev.vendor && <span className="text-[var(--text-muted)]"> · {dev.vendor}</span>}
                           {dev.client_name && <span className="text-cyan-300"> · {dev.client_name}</span>}
                         </span>
-                      ) : priv ? <span className="text-[var(--text-muted)]">{privLabel(h.ip)}</span>
-                        : g ? (
+                      ) : g ? (
                           <span>
                             {g.city ? `${g.city}${g.country ? ", " + g.country : ""}` : (g.country || "—")}
                             {g.isp && <span className="text-cyan-300"> · {g.isp}</span>}
