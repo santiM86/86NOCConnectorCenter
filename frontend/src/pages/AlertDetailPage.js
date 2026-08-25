@@ -86,7 +86,27 @@ export default function AlertDetailPage() {
               <span className={`text-[10px] uppercase tracking-wider status-${alert.status}`} data-testid="alert-status">{alert.status}</span>
             </div>
             <h1 className="font-heading text-base font-bold text-[var(--text-primary)] mb-1.5" data-testid="alert-title">{alert.title}</h1>
-            <p className="text-[var(--text-secondary)] text-xs mb-4">{alert.message}</p>
+            <p className="text-[var(--text-secondary)] text-xs mb-4 whitespace-pre-line">{alert.message}</p>
+            {alert.net_trace && (() => {
+              const nt = alert.net_trace;
+              const cv = nt.combined_verdict || nt.verdict || {};
+              const blame = cv.blame || (nt.verdict || {}).blame;
+              const tone = blame === "Cliente" ? "rose" : blame === "ISP" ? "amber" : blame === "OK" ? "emerald" : "slate";
+              const cls = { rose: "border-rose-500/40 bg-rose-500/10 text-rose-200", amber: "border-amber-500/40 bg-amber-500/10 text-amber-200", emerald: "border-emerald-500/40 bg-emerald-500/10 text-emerald-200", slate: "border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-secondary)]" }[tone];
+              return (
+                <div className={`rounded-lg border ${cls} px-3 py-2.5 mb-4`} data-testid="alert-nettrace-verdict">
+                  <div className="text-[11px] font-extrabold tracking-wide">🧭 DIAGNOSI PERCORSO AUTOMATICA{blame ? ` — COLPA: ${blame}` : ""}</div>
+                  {cv.headline && <div className="text-[11px] font-semibold mt-1">{cv.headline}</div>}
+                  <div className="text-[11px] leading-relaxed mt-1 text-[var(--text-secondary)]">{cv.verdict || (nt.verdict || {}).verdict}</div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-[var(--text-muted)]">
+                    <span>Sonda → {nt.target}: <b className={nt.reached ? "text-emerald-300" : "text-rose-300"}>{nt.reached ? "raggiunta" : "NON raggiunta"}</b></span>
+                    {nt.controprova && <span>Controprova 1.1.1.1: <b className={nt.controprova.reached ? "text-emerald-300" : "text-rose-300"}>{nt.controprova.reached ? "OK (sonda naviga)" : "KO (uscita sonda giù)"}</b></span>}
+                    <span>{nt.tool} · {(nt.hops || []).length} hop</span>
+                    {nt.ran_at && <span>{new Date(nt.ran_at).toLocaleString("it-IT")}</span>}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="flex gap-2">
               {alert.status === "active" && (
                 <Button onClick={handleAck} className="rounded-md bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] text-xs h-8 gap-1.5" data-testid="ack-btn">

@@ -48,6 +48,10 @@ type Args struct {
 	Port     int    `json:"port"`   // default 443 per tcp
 	MaxHops  int    `json:"max_hops"`
 	Count    int    `json:"count"`  // cicli per hop (mtr)
+	// Continuous: se true, su Windows usa `pathping` (nativo) per misurare la
+	// PERDITA per hop nel tempo (MTR-like), utile per linee "ballerine". Piu'
+	// lento del tracert one-shot. PENDING: da validare prima del rollout.
+	Continuous bool `json:"continuous,omitempty"`
 }
 
 func (a *Args) normalize() {
@@ -88,6 +92,19 @@ func Run(ctx context.Context, a Args) Result {
 	var err error
 	switch runtime.GOOS {
 	case "windows":
+		if a.Continuous {
+			// MTR-like nativo via pathping: perdita per hop nel tempo. -q query
+			// per hop, -p periodo(ms). PENDING: parser da validare al rollout.
+			res.Tool = "pathping"
+			out, err = runCmd(ctx, "pathping", "-n", "-h", itoa(a.MaxHops), "-q", "50", "-p", "100", a.Target)
+			res.Raw = out
+			if err != nil && out == "" {
+				res.Error = err.Error()
+				return res
+			}
+			res.Hops = ParsePathping(out)
+			break
+		}
 		res.Tool = "tracert"
 		// -w 800ms (era 1500): su una sede DOWN ogni hop morto costa 3 probe ×
 		// timeout; abbassando l'attesa il trace su percorso isolato scende da
@@ -149,6 +166,37 @@ func Run(ctx context.Context, a Args) Result {
 		}
 	}
 	return res
+}
+
+// ParsePathping normalizza l'output di Windows `pathping -n` (sezione statistiche).
+// PENDING: coperto da unit test minimi, da validare su output reale prima del rollout.
+func ParsePathping(out string) []Hop {
+	// Riga tipo: "  1   2ms     0/ 100 =  0%     0/ 100 =  0%  10.0.0.1"
+	// oppure senza RTT: "  5  ---      100/ 100 =100%    100/ 100 =100%  93.40.1.2"
+	re := regexp.MustCompile(`^\s*(\d+)\s+(?:(\d+)ms|---)\s+(\d+)/\s*(\d+)\s*=\s*(\d+)%\s+\d+/\s*\d+\s*=\s*\d+%\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+	var hops []Hop
+	for _, line := range strings.Split(out, "\n") {
+		m := re.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		if n == 0 {
+			continue // hop 0 = sorgente
+		}
+		h := Hop{Hop: n, IP: m[6]}
+		if m[2] != "" {
+			avg, _ := strconv.ParseFloat(m[2], 64)
+			h.AvgMs = avg
+		}
+		loss, _ := strconv.ParseFloat(m[5], 64)
+		h.LossPct = loss
+		if loss >= 100 {
+			h.Timeout = true
+		}
+		hops = append(hops, h)
+	}
+	return hops
 }
 
 func runCmd(ctx context.Context, name string, args ...string) (string, error) {

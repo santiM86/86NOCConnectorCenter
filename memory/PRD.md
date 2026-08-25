@@ -8644,3 +8644,40 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   LINEA/CARRIER (percorso interrotto a monte) vs INTERNO/ALIMENTAZIONE (router del cliente
   raggiunto). Onesto sul limite: traceroute da solo non distingue linea-giu' da sede-senza-
   corrente all'ultimo miglio -> suggerisce la controprova sul gateway operatore.
+
+## 2026-06 — Potenziamento Diagnosi Percorso (a,b,c,d,f; escluso doppio vantage point)
+- (b) ASN per hop: NetworkPathDiagnosisPage mostra AS{num} + asn_name accanto a ISP
+  (geo-ip espone gia' asn/asn_name) -> confine "tua rete -> carrier del cliente" visibile.
+- (c) Storico + diff: backend routes/path_trace_history.py (POST /api/path-trace/history,
+  GET /history/last-good, ritenzione 50 per probe+target). Il frontend salva ogni trace e,
+  su trace fallito, mostra il confronto con l'ultimo percorso OK.
+- (f) Correlazione outage: GET /api/path-trace/active-isp-outages; banner se un ASN del
+  percorso coincide con un outage_watch attivo -> "operatore in guasto diffuso ora".
+- (a) Controprova gateway: su trace fallito, follow-up net_trace verso l'ultimo hop
+  pubblico (gateway operatore); se raggiungibile -> problema sede/ultimo miglio, altrimenti
+  -> guasto operatore a monte. Riusa il comando net_trace (nessuna modifica agent).
+- (d) MTR-like su Windows via `pathping` nativo: nettrace.go Args.Continuous (opt-in, default
+  OFF) + ParsePathping. PENDING: richiede REBUILD+ROLLOUT agent e validazione output reale
+  (nessun Go toolchain nel pod).
+- ESCLUSO su richiesta utente: doppio vantage point (2a sonda su ISP diverso).
+- VERIFICATO: endpoint history/last-good/active-outages via curl (200, diff corretto);
+  frontend compila; pagina rende. NON esercitabile end-to-end in preview (0 agent live).
+
+## 2026-06 — Auto-trace su SITO GIÙ (trace + controprova + verdetto → incidente)
+- Watchdog run_site_down_autotrace (routes/external_monitor.py), agganciato all'AlertEngine
+  dopo run_site_blackout_watchdog. Scansiona alert attivi source_type in
+  [site_blackout, corr_site_power_down, corr_site_isolated] senza net_trace; claim atomico
+  (autotrace_status=running + autotrace_at, ri-tentabile dopo 10 min); risolve l'IP pubblico
+  del cliente da db.wan_targets; lancia in background _auto_trace_on_wan_down(..., with_controprova=True).
+- _auto_trace_on_wan_down esteso con CONTROPROVA multi-ancora: traccia anche 1.1.1.1 dalla
+  STESSA sonda e usa fault_attribution.combined_verdict per distinguere: guasto lato CLIENTE
+  (sonda naviga ma sede no) vs guasto uscita/carrier della SONDA/NOC vs operatore a monte.
+  Allega all'alert: net_trace{target,hops,reached,verdict,controprova,combined_verdict,
+  baseline_diff}, autotrace_status=done, e appende il riepilogo al message.
+- Riuso totale infrastruttura esistente: run_net_trace_via_probe (preferisce sonda globale),
+  attribute_fault, combined_verdict, _enrich_hops_geo, _baseline_diff, check_isp_outage.
+- Frontend AlertDetailPage.js: card prominente "DIAGNOSI PERCORSO AUTOMATICA" (COLPA + headline
+  + verdetto + raggiunta/controprova + tool/hop/ora); message reso con whitespace-pre-line.
+- VERIFICATO: watchdog claima l'alert e risolve il target (real, no sonda live in preview);
+  pipeline attach completa con sonda SIMULATA (net_trace+controprova+combined "Guasto lato
+  CLIENTE" + summary nel message); frontend compila. NON esercitato con agent live reale.

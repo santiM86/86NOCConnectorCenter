@@ -21,10 +21,16 @@ import uuid
 logger = logging.getLogger("external_monitor")
 
 
-async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str, label: str) -> None:
+async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str, label: str,
+                                  with_controprova: bool = False) -> None:
     """v2026-06: alla caduta della WAN esegue un net_trace automatico verso l'IP
     pubblico del cliente (via sonda live) e lo ALLEGA all'alert (campo net_trace +
-    riepilogo nel messaggio). Non blocca il ciclo di probe (gira in background)."""
+    riepilogo nel messaggio). Non blocca il ciclo di probe (gira in background).
+
+    with_controprova=True (usato per il SITO GIU'): traccia anche un'ANCORA
+    pubblica (1.1.1.1) dalla STESSA sonda e produce un verdetto combinato che
+    distingue "guasto lato CLIENTE (linea/CPE)" da "guasto sull'uscita della
+    sonda/NOC" da "guasto operatore a monte"."""
     if not public_ip:
         return
     try:
@@ -47,6 +53,25 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
         verdict = attribute_fault(hops, reached, target=public_ip, is_client_target=True)
     except Exception as e:  # noqa: BLE001
         logger.debug("fault attribution failed: %s", e)
+    # CONTROPROVA multi-ancora (SITO GIU'): traccia un'ancora pubblica dalla stessa
+    # sonda per capire se è il CLIENTE o l'uscita/carrier della SONDA a essere giù.
+    controprova = None
+    combined = None
+    if with_controprova:
+        try:
+            from routes.agent_ws import run_net_trace_via_probe as _rnt
+            anchor = await _rnt("1.1.1.1", client_id=client_id, mode="icmp")
+            anchor_reached = bool(anchor and anchor.get("reached"))
+            controprova = {"anchor": "1.1.1.1", "reached": anchor_reached,
+                           "tool": (anchor or {}).get("tool"),
+                           "probe_agent_id": (anchor or {}).get("_probe_agent_id")}
+            from fault_attribution import combined_verdict
+            combined = combined_verdict([
+                {"target": public_ip, "is_client": True, "reached": reached, "verdict": verdict or {}},
+                {"target": "1.1.1.1", "is_client": False, "reached": anchor_reached},
+            ])
+        except Exception as e:  # noqa: BLE001
+            logger.debug("controprova (site-down) failed: %s", e)
     last_ok, first_break = None, None
     for h in hops:
         if h.get("timeout") or (h.get("loss_pct") or 0) >= 100:
@@ -90,28 +115,82 @@ async def _auto_trace_on_wan_down(alert_id: str, client_id: str, public_ip: str,
                     lines.append(ext["summary"])
         except Exception as e:  # noqa: BLE001
             logger.debug("wan-down external outage correlation failed: %s", e)
+    # Riepilogo CONTROPROVA (verdetto combinato multi-ancora) per il SITO GIU'.
+    if combined and combined.get("headline"):
+        lines.append(f"🔀 CONTROPROVA: {combined['headline']} — {combined.get('verdict', '')}")
+    elif controprova is not None:
+        lines.append("🔀 CONTROPROVA: ancora pubblica 1.1.1.1 "
+                     + ("RAGGIUNGIBILE dalla sonda → il guasto è lato cliente/operatore a valle."
+                        if controprova.get("reached")
+                        else "NON raggiungibile dalla sonda → problema sull'uscita/carrier della TUA sonda/NOC."))
     summary = "\n".join(lines)
     try:
         await db.alerts.update_one(
             {"id": alert_id},
             [{"$set": {
                 "net_trace": {
-
-
-
                     "target": public_ip, "tool": tool, "reached": reached, "hops": hops,
                     "probe_agent_id": res.get("_probe_agent_id"),
                     "baseline_diff": baseline_diff,
                     "verdict": verdict,
+                    "controprova": controprova,
+                    "combined_verdict": combined,
                     "ran_at": datetime.now(timezone.utc).isoformat(),
                 },
+                "autotrace_status": "done",
                 "message": {"$concat": [{"$ifNull": ["$message", ""]}, "\n\n", summary]},
             }}],
         )
-        logger.info("[auto-trace] allegato all'alert %s (%s, %d hop, reached=%s)",
-                    alert_id, tool, len(hops), reached)
+        logger.info("[auto-trace] allegato all'alert %s (%s, %d hop, reached=%s, controprova=%s)",
+                    alert_id, tool, len(hops), reached,
+                    (controprova or {}).get("reached") if controprova else "n/a")
     except Exception as e:  # noqa: BLE001
         logger.warning("auto-trace: update alert failed: %s", e)
+
+
+SITE_DOWN_SOURCES = ["site_blackout", "corr_site_power_down", "corr_site_isolated"]
+
+
+async def run_site_down_autotrace(db) -> int:
+    """Per ogni alert di SITO GIU' attivo e non ancora tracciato, lancia in
+    background trace + controprova dalla sonda globale e allega il verdetto.
+    Idempotente: 'net_trace' presente = gia' fatto; claim 'running' con timestamp
+    (ri-tentabile dopo 10 min se la sonda non era disponibile)."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=10)).isoformat()
+    base_q = {
+        "status": "active",
+        "source_type": {"$in": SITE_DOWN_SOURCES},
+        "net_trace": {"$exists": False},
+        "$or": [{"autotrace_status": {"$ne": "running"}}, {"autotrace_at": {"$lt": cutoff}}],
+    }
+    alerts = await db.alerts.find(base_q, {"_id": 0, "id": 1, "client_id": 1}).to_list(50)
+    n = 0
+    for a in alerts:
+        cid = a.get("client_id")
+        if not cid:
+            continue
+        claim = await db.alerts.update_one(
+            {"id": a["id"], "net_trace": {"$exists": False},
+             "$or": [{"autotrace_status": {"$ne": "running"}}, {"autotrace_at": {"$lt": cutoff}}]},
+            {"$set": {"autotrace_status": "running", "autotrace_at": now.isoformat()}},
+        )
+        if claim.modified_count == 0:
+            continue
+        wt = await db.wan_targets.find_one(
+            {"client_id": cid, "public_ip": {"$nin": [None, ""]}},
+            {"_id": 0, "public_ip": 1, "label": 1},
+        )
+        if not wt or not wt.get("public_ip"):
+            await db.alerts.update_one({"id": a["id"]}, {"$set": {"autotrace_status": "no_target"}})
+            continue
+        asyncio.create_task(_auto_trace_on_wan_down(
+            a["id"], cid, wt["public_ip"], wt.get("label") or "Sito", with_controprova=True))
+        n += 1
+    if n:
+        logger.info("[site-down autotrace] avviati %d trace+controprova", n)
+    return n
+
 
 def _hop_ip(h: dict) -> Optional[str]:
     if not h or h.get("timeout") or (h.get("loss_pct") or 0) >= 100:
