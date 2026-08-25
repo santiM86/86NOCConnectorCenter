@@ -34,6 +34,7 @@ export default function NetworkPathDiagnosisPage() {
   const [target, setTarget] = useState(searchParams.get("target") || "");
   const [mode, setMode] = useState("tcp");
   const [port, setPort] = useState("443");
+  const [maxHops, setMaxHops] = useState(15);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [clientList, setClientList] = useState([]);
@@ -143,11 +144,11 @@ export default function NetworkPathDiagnosisPage() {
     setControprova(null);
     const tId = toast.loading("Traccia percorso in corso… (fino a ~90s su sedi isolate)");
     try {
-      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 15, count: 3 };
+      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: maxHops, count: 3 };
       const { data } = await axios.post(
         `${API}/api/agents/${probe}/command`,
-        { name: "net_trace", args, timeout: 90 },
-        { headers, timeout: 100000 },
+        { name: "net_trace", args, timeout: 100 },
+        { headers, timeout: 110000 },
       );
       // La reply dell'agent è AgentReply { ok, error?, result } → il vero esito
       // net_trace è dentro `result` (unwrap, con fallback per PascalCase legacy).
@@ -336,6 +337,21 @@ export default function NetworkPathDiagnosisPage() {
             <Label className="text-[10px] uppercase tracking-wider">Porta (TCP/UDP)</Label>
             <Input value={port} onChange={(e) => setPort(e.target.value)} disabled={mode === "icmp"}
               className="mt-1 h-9 text-xs font-mono" data-testid="path-trace-port-input" />
+          </div>
+          <div>
+            <Label className="text-[10px] uppercase tracking-wider flex items-center gap-1"><Radio size={11} /> Max hop</Label>
+            <Select value={String(maxHops)} onValueChange={(v) => setMaxHops(parseInt(v, 10))}>
+              <SelectTrigger className="mt-1 h-9 text-xs" data-testid="path-trace-maxhops-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="15" className="text-xs">15 · consigliato</SelectItem>
+                <SelectItem value="20" className="text-xs">20 · sedi lontane</SelectItem>
+                <SelectItem value="25" className="text-xs">25 · molto lontane</SelectItem>
+                <SelectItem value="30" className="text-xs">30 · massimo</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[9px] text-[var(--text-muted)] mt-1">
+              Alza solo per destinazioni <b>lontane ma raggiungibili</b>. Su una sede giù non serve: il trace si ferma da solo dove muore il percorso.
+            </p>
           </div>
         </div>
         <div className="mt-4">

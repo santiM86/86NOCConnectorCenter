@@ -8717,3 +8717,9 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - Catena coerente: axios 100s > middleware 105s > attesa backend 90s > tool ~67s (15 hop,
   binario agent con -w 1500). VERIFICATO: _get_timeout=105 sul command path (20s altrove),
   backend healthy, frontend compila. NON eseguito trace reale (serve agent live in prod).
+
+## 2026-06 — Max hop configurabile (preset sicuri) Diagnosi Percorso
+- Selettore "Max hop" in NetworkPathDiagnosisPage: 15(default/consigliato),20,25,30 con nota.
+  Scelta preset (non campo libero) per restare sempre dentro il budget timeout.
+- runTrace usa maxHops; command timeout 100s, axios 110s (ordine: send_command 100 <
+  middleware 105 < axios 110; agent cappa tool a 90s → anche 30 hop sicuri, mai timeout secco).
