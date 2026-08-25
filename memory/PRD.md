@@ -8696,3 +8696,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - VERIFICATO: curl PUT /datto/link 200 in 0.1s (era 504), device in background ~22s (7);
   testing agent iter131 100% (6/6 step del wizard, nessun 504/errore, 7 device importati,
   cliente di test creato e poi eliminato).
+
+## 2026-06 — Fix trace sede isolata (pickClient selezionava agent offline)
+- BUG: NetworkPathDiagnosisPage.pickClient impostava come sonda l'agent del cliente
+  stesso (offline su sede down) → trace non partiva. FIX: sceglie sempre una sonda
+  ESTERNA live (globale → altro agent live → propria se live); destinazione da
+  detected-public-ip con FALLBACK a wan_targets.public_ip (IP c'è anche a sede spenta).
+  Aggiunta nota guida per il caso sede isolata. NON testato con sonda live (preview 0 agent).

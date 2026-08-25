@@ -52,15 +52,29 @@ export default function NetworkPathDiagnosisPage() {
   const pickClient = async (cid) => {
     setTargetClient(cid);
     if (!cid) return;
-    const own = agents.find((a) => a.client_id === cid);
-    const glob = agents.find((a) => a.client_id === "__global__");
-    if (own) setProbe(own.agent_id);
-    else if (glob) setProbe(glob.agent_id);
+    // SONDA: il traceroute va SEMPRE eseguito da una sonda ESTERNA e LIVE verso
+    // l'IP pubblico del cliente. Per una sede DOWN l'agent del cliente è offline,
+    // quindi NON va usato. Priorità: sonda globale (NOC) → altro agent live →
+    // agent del cliente solo se live.
+    const liveGlobal = agents.find((a) => a.client_id === "__global__" && a.live);
+    const liveOther = agents.find((a) => a.live && a.client_id !== cid);
+    const liveOwn = agents.find((a) => a.client_id === cid && a.live);
+    const pick = liveGlobal || liveOther || liveOwn;
+    if (pick) setProbe(pick.agent_id);
+    else toast.error("Nessuna sonda ESTERNA online: installa la Sonda globale nel tuo NOC per tracciare le sedi isolate.");
+    // DESTINAZIONE: prima l'IP rilevato da un agent; se la sede è DOWN (nessun
+    // agent) ripiega sull'IP pubblico configurato nei target Monitor WAN.
     try {
       const { data } = await axios.get(`${API}/api/external-monitor/detected-public-ip/${encodeURIComponent(cid)}`, { headers });
-      if (data?.public_ip) { setTarget(data.public_ip); toast.success(`IP pubblico ${clients[cid] || ""}: ${data.public_ip}`); }
-      else toast.info("IP pubblico non ancora rilevato per questo cliente");
+      if (data?.public_ip) { setTarget(data.public_ip); toast.success(`IP pubblico ${clients[cid] || ""}: ${data.public_ip}`); return; }
     } catch { /* noop */ }
+    try {
+      const { data } = await axios.get(`${API}/api/external-monitor/targets`, { headers, params: { client_id: cid } });
+      const list = data?.targets || data || [];
+      const wt = (Array.isArray(list) ? list : []).find((t) => t.public_ip);
+      if (wt?.public_ip) { setTarget(wt.public_ip); toast.success(`IP pubblico (Monitor WAN): ${wt.public_ip}`); return; }
+    } catch { /* noop */ }
+    toast.info("IP pubblico non trovato: inseriscilo a mano o configura il Monitor WAN del cliente.");
   };
 
   const enrichGeo = async (hops) => {
@@ -276,6 +290,9 @@ export default function NetworkPathDiagnosisPage() {
               ))}
             </SelectContent>
           </Select>
+          <p className="text-[10px] text-[var(--text-muted)] mt-1">
+            Sede isolata (agent + WAN giù)? Nessun problema: si traccia da una <b>sonda ESTERNA</b> (la Sonda globale del NOC o un altro agent online) verso l'IP pubblico della sede. Se il percorso muore nel carrier → problema di <b>linea/operatore</b>; se arriva al gateway della sede ma non entra → <b>ultimo miglio o corrente/apparati</b> della sede.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
