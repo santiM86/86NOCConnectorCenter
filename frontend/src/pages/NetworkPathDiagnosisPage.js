@@ -43,6 +43,9 @@ export default function NetworkPathDiagnosisPage() {
   const [genBusy, setGenBusy] = useState(false);
   const [geoByIp, setGeoByIp] = useState({});
   const [targetClient, setTargetClient] = useState("");
+  const [lastGoodDiff, setLastGoodDiff] = useState(null);
+  const [activeOutages, setActiveOutages] = useState([]);
+  const [controprova, setControprova] = useState(null);
 
   const isPublicIp = (ip) => ip && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
 
@@ -122,6 +125,8 @@ export default function NetworkPathDiagnosisPage() {
     if (!target.trim()) { toast.error("Inserisci IP o host di destinazione"); return; }
     setRunning(true);
     setResult(null);
+    setLastGoodDiff(null);
+    setControprova(null);
     const tId = toast.loading("Traccia percorso in corso… (fino a ~90s su sedi isolate)");
     try {
       const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 20, count: 3 };
@@ -137,11 +142,52 @@ export default function NetworkPathDiagnosisPage() {
       const replyErr = reply.error || reply.Error || r.error;
       setResult(r);
       enrichGeo(r.hops || []);
+      // Storico + diff + correlazione outage + controprova gateway
+      postTraceAnalysis(r);
       if (replyErr) toast.error(`Trace: ${replyErr}`, { id: tId });
       else toast.success(`Trace completato (${r.tool || "?"}, ${r.hops?.length || 0} hop)`, { id: tId });
     } catch (e) {
       toast.error(`Trace fallito: ${e.response?.data?.detail || e.message}`, { id: tId });
     } finally { setRunning(false); }
+  };
+
+  // Dopo un trace: salva lo storico, correla con gli outage operatore attivi e,
+  // se la sede NON è raggiunta, esegue una CONTROPROVA verso il gateway operatore.
+  const postTraceAnalysis = async (r) => {
+    const tgt = target.trim();
+    try {
+      await axios.post(`${API}/api/path-trace/history`,
+        { probe, target: tgt, mode, reached: !!r.reached, hops: r.hops || [] }, { headers });
+    } catch { /* best effort */ }
+    try {
+      const [lg, ou] = await Promise.all([
+        axios.get(`${API}/api/path-trace/history/last-good`, { headers, params: { probe, target: tgt } }),
+        axios.get(`${API}/api/path-trace/active-isp-outages`, { headers }),
+      ]);
+      setActiveOutages(ou.data?.outages || []);
+      if (!r.reached && lg.data?.found && lg.data.trace) {
+        const good = lg.data.trace;
+        setLastGoodDiff({ goodHops: good.hop_count, when: good.created_at });
+      }
+    } catch { /* best effort */ }
+    if (!r.reached) runControprova(r);
+  };
+
+  const runControprova = async (r) => {
+    const pub = (r.hops || []).filter((h) => !h.timeout && (h.loss_pct ?? 0) < 100 && h.ip && isPublicIp(h.ip));
+    const gw = pub[pub.length - 1];
+    if (!gw) return;
+    setControprova({ loading: true, gw: gw.ip });
+    try {
+      const { data } = await axios.post(`${API}/api/agents/${probe}/command`,
+        { name: "net_trace", args: { target: gw.ip, mode: "icmp", max_hops: 20, count: 2 }, timeout: 60 },
+        { headers, timeout: 70000 });
+      const reply = data.reply || {};
+      const rr = reply.result || reply.Result || reply;
+      setControprova({ loading: false, gw: gw.ip, reached: !!rr.reached });
+    } catch {
+      setControprova({ loading: false, gw: gw.ip, reached: null, error: true });
+    }
   };
 
   const genProbeToken = async () => {
@@ -327,6 +373,46 @@ export default function NetworkPathDiagnosisPage() {
               </div>
             );
           })()}
+          {/* (f) Correlazione outage operatore: se il carrier trovato nel trace è in guasto diffuso ora */}
+          {(() => {
+            if (!result.hops?.length || !activeOutages.length) return null;
+            const asnsInTrace = new Set(
+              result.hops.map((h) => geoByIp[h.ip]?.asn).filter(Boolean)
+                .map((a) => `AS${String(a).replace(/^AS/i, "")}`)
+            );
+            const matched = activeOutages.filter((o) => o.asn && asnsInTrace.has(`AS${String(o.asn).replace(/^AS/i, "")}`));
+            if (!matched.length) return null;
+            return (
+              <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-200 px-3 py-2.5 mb-3" data-testid="path-trace-outage-match">
+                <div className="text-[11px] font-extrabold tracking-wide">⚠ OPERATORE IN GUASTO DIFFUSO ORA</div>
+                {matched.map((o) => (
+                  <div key={o.id} className="text-[11px] mt-1">{o.isp_name || o.asn} — {o.summary || o.title}</div>
+                ))}
+                <div className="text-[10px] text-[var(--text-secondary)] mt-1">Un hop del percorso attraversa questo operatore: il down è molto probabilmente causato dal guasto del carrier, non dalla sede.</div>
+              </div>
+            );
+          })()}
+          {/* (a) Controprova gateway operatore */}
+          {controprova && (
+            <div className={`rounded-lg border px-3 py-2 mb-3 text-[11px] ${controprova.loading ? "border-[var(--bg-border)] text-[var(--text-secondary)]" : controprova.reached ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-rose-500/40 bg-rose-500/10 text-rose-200"}`} data-testid="path-trace-controprova">
+              {controprova.loading ? (
+                <span>Controprova in corso: ping al gateway operatore {controprova.gw}…</span>
+              ) : controprova.reached ? (
+                <span><b>Gateway operatore {controprova.gw} RAGGIUNGIBILE.</b> L'operatore è su: il problema è all'ultimo miglio o nella sede → <b>linea locale giù o sede senza corrente</b> (router spento).</span>
+              ) : controprova.error ? (
+                <span>Controprova non eseguibile (gateway {controprova.gw}).</span>
+              ) : (
+                <span><b>Gateway operatore {controprova.gw} NON raggiungibile.</b> Il guasto è a monte → <b>problema dell'operatore/linea</b>, non della sede.</span>
+              )}
+            </div>
+          )}
+          {/* (c) Diff con l'ultimo percorso buono */}
+          {lastGoodDiff && (
+            <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-panel)] px-3 py-2 mb-3 text-[11px] text-[var(--text-secondary)]" data-testid="path-trace-diff">
+              Confronto storico: l'ultimo percorso <b className="text-emerald-300">OK</b> raggiungeva la destinazione in <b>{lastGoodDiff.goodHops}</b> hop
+              ({lastGoodDiff.when ? new Date(lastGoodDiff.when).toLocaleString("it-IT") : "—"}). Ora il percorso si interrompe prima: confronta gli hop qui sotto per vedere dove è cambiato.
+            </div>
+          )}
           {result.hops?.length > 0 && (
             <table className="w-full text-xs">
               <thead className="text-[var(--text-secondary)] text-[10px] uppercase tracking-wider">
@@ -352,6 +438,7 @@ export default function NetworkPathDiagnosisPage() {
                           <span>
                             {g.city ? `${g.city}${g.country ? ", " + g.country : ""}` : (g.country || "—")}
                             {g.isp && <span className="text-cyan-300"> · {g.isp}</span>}
+                            {g.asn && <span className="text-amber-300"> · AS{String(g.asn).replace(/^AS/i, "")}{g.asn_name ? ` ${g.asn_name}` : ""}</span>}
                             {g.org && g.org !== g.isp && <span className="text-[var(--text-muted)]"> · {g.org}</span>}
                           </span>
                         ) : <span className="text-[var(--text-muted)]">…</span>}

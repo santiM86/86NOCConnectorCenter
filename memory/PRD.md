@@ -8644,3 +8644,21 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   LINEA/CARRIER (percorso interrotto a monte) vs INTERNO/ALIMENTAZIONE (router del cliente
   raggiunto). Onesto sul limite: traceroute da solo non distingue linea-giu' da sede-senza-
   corrente all'ultimo miglio -> suggerisce la controprova sul gateway operatore.
+
+## 2026-06 — Potenziamento Diagnosi Percorso (a,b,c,d,f; escluso doppio vantage point)
+- (b) ASN per hop: NetworkPathDiagnosisPage mostra AS{num} + asn_name accanto a ISP
+  (geo-ip espone gia' asn/asn_name) -> confine "tua rete -> carrier del cliente" visibile.
+- (c) Storico + diff: backend routes/path_trace_history.py (POST /api/path-trace/history,
+  GET /history/last-good, ritenzione 50 per probe+target). Il frontend salva ogni trace e,
+  su trace fallito, mostra il confronto con l'ultimo percorso OK.
+- (f) Correlazione outage: GET /api/path-trace/active-isp-outages; banner se un ASN del
+  percorso coincide con un outage_watch attivo -> "operatore in guasto diffuso ora".
+- (a) Controprova gateway: su trace fallito, follow-up net_trace verso l'ultimo hop
+  pubblico (gateway operatore); se raggiungibile -> problema sede/ultimo miglio, altrimenti
+  -> guasto operatore a monte. Riusa il comando net_trace (nessuna modifica agent).
+- (d) MTR-like su Windows via `pathping` nativo: nettrace.go Args.Continuous (opt-in, default
+  OFF) + ParsePathping. PENDING: richiede REBUILD+ROLLOUT agent e validazione output reale
+  (nessun Go toolchain nel pod).
+- ESCLUSO su richiesta utente: doppio vantage point (2a sonda su ISP diverso).
+- VERIFICATO: endpoint history/last-good/active-outages via curl (200, diff corretto);
+  frontend compila; pagina rende. NON esercitabile end-to-end in preview (0 agent live).
