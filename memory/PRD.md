@@ -8749,3 +8749,15 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   LAN 192.168, 10/8, 172.16/12=MPLS/VPN, CGNAT 100.64/10, link-local). Verdetto include il
   nome device dell'ultimo hop che risponde.
 - VERIFICATO: resolve-hops via curl (10.10.1.10 -> SRVDATI86B/86BIT_Office); compila; healthy.
+
+## 2026-06 — FIX persistenza community/SNMP/monitor-type (modal Diagnostica)
+- BUG (video utente): la community SNMP v2 impostata nel modal non veniva salvata.
+  CAUSE: (1) gli endpoint PUT /connector/{cid}/managed-devices/{did}/snmp e
+  /monitor-type facevano update_one({"ip":device_ip}) mancando i doc legacy con solo
+  ip_address; (2) i device CMDB (db.devices) vengono letti dal proprio doc mentre il
+  salvataggio scriveva solo in managed_devices → community mai mostrata al riapri.
+- FIX (connector.py): update_many su {"$or":[{ip},{ip_address}]} (senza toccare `ip`,
+  niente collisione indice unico) SIA per snmp SIA per monitor-type; inoltre si scrive
+  anche in db.devices (snmp_community/snmp_version/monitor_type) per i device CMDB.
+- VERIFICATO via curl end-to-end sugli stessi endpoint del modal: community ZTACOPW +
+  v2c + snmp+http riletti da /api/devices (PERSISTED=True). Backend healthy.
