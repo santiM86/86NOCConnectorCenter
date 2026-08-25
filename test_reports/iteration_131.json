@@ -1,0 +1,34 @@
+{
+  "summary": "Iter131 — FRONTEND ONLY E2E test del wizard 'Nuovo Cliente' (ARGUS NOC) dopo il fix del 504 su PUT /clients/{id}/datto/link. Login reale admin (info@86bit.it + TOTP) -> /clients -> [add-client-btn] -> [new-client-wizard]. TUTTI i 6 step PASSATI senza alcun errore: (1) STEP 1 Cliente: nome unico 'QA Wizard 85736' -> [wizard-create-client] -> toast 'Cliente \"QA Wizard 85736\" creato' e avanzamento a step 2. (2) STEP 2 Datto (lo step precedentemente rotto): [wizard-datto-site] popolato con 159 siti ('27 Padel', '86BIT', ...), selezionato '27 Padel', [wizard-datto-seed] checked -> 'Collega e continua': toast immediato 'Importazione dispositivi da Datto in corso…' (NESSUN 504/timeout), poi dopo 25.2s toast 'Sito Datto collegato' + '7 dispositivi importati da Datto' e avanzamento a step 3. NESSUN toast 'Link Datto fallito'. (3) STEP 3 Backup: 44 tenant chip Hornetsecurity, selezionato il primo -> [wizard-next-hornet] -> toast 'Backup mappato al cliente' -> step 4. (4) STEP 4 Monitor WAN: IP inserito 8.8.4.4 -> [wizard-next-wan] -> toast 'Target WAN aggiunto' -> step 5. (5) STEP 5 Agent: [wizard-agent-key] valorizzata (36 char) e [wizard-agent-cmd] valido (389 char, contiene install-noc-agent.ps1) -> [wizard-to-summary] -> step 6. (6) STEP 6 Riepilogo: [wizard-step-summary] mostra Datto RMM · 27 Padel, Backup · 1 tenant, Monitor WAN · 8.8.4.4, Agent · chiave & comando pronti; [wizard-finish] chiude il dialog e il cliente appare nella lista. Nessuna risposta HTTP >=400 durante il flusso del wizard (unico 403 su /api/auth/me durante la fase pre-2FA, atteso).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "NewClientWizard footer", "issue": "Allo step 5 (Agent) il bottone di sinistra e' etichettato 'Fine' (condizione step===5) mentre il flusso continua ancora verso il Riepilogo: cliccarlo chiude il wizard saltando lo step 6. Etichetta incoerente ('Chiudi' sarebbe corretta, 'Fine' solo allo step 6).", "selector": "[data-testid=wizard-close]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Wizard Nuovo Cliente (step 1-6)", "issues": ["Nessun problema di contrasto/spacing rilevato; stepper leggibile con stati completato/attivo/futuro coerenti.", "Step 2: durante il polling (fino a 60s) l'unico feedback e' il toast loading; il bottone 'Collega e continua' resta disabilitato ma senza spinner/progress nel dialog — l'utente potrebbe pensare che sia bloccato. Consigliato un indicatore inline nello step con countdown/stato."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/cleanup_qa_wizard_client.py"],
+  "action_items": [
+    "(LOW) Correggere l'etichetta del bottone di sinistra del wizard: 'Fine' solo allo step 6, 'Chiudi' allo step 5.",
+    "(LOW/UX) Aggiungere feedback inline nello step 2 durante il polling del sync Datto (es. 'Attendo i dispositivi… Xs') invece del solo toast."
+  ],
+  "critical_code_review_comments": [
+    "NewClientWizard.linkDatto(): il polling e' un loop di 30 iterazioni x 2s senza AbortController — se l'utente chiude il dialog durante l'attesa il loop continua e chiama setStep/toast su un componente smontato (state update su unmounted + step forzato). Aggiungere un flag/AbortController collegato a `open`.",
+    "NewClientWizard: nessuna gestione di errore differenziata su timeout/504 lato axios (nessun timeout configurato): se il backend torna a rispondere lentamente l'utente resta senza feedback fino al fallimento del proxy.",
+    "NewClientWizard.linkDatto(): il fallback 'Sync Datto ancora in corso' avanza comunque a step 3 marcando done.datto come collegato anche se i device non sono stati importati; nel riepilogo non c'e' distinzione tra 'collegato+importato' e 'collegato, import pendente'."
+  ],
+  "updated_files": ["/app/test_reports/cleanup_qa_wizard_client.py"],
+  "success_rate": {"backend": "not tested (richiesto solo frontend)", "frontend": "100% (6/6 step del wizard, nessun errore/504)"},
+  "seed_data_creation": "Cliente di test 'QA Wizard 85736' (Datto site 27 Padel, 7 device importati, 1 tenant Hornet, target WAN 8.8.4.4) — ELIMINATO a fine test via DELETE /api/clients/{id} -> 200.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (funzionanti)",
+  "context_for_next_testing_agent": "Login UI: [data-testid=login-email-input], [login-password-input], [login-submit-btn] -> /2fa con [2fa-code-input] + [verify-2fa-btn] (TOTP calcolabile in-script con hmac/base64 senza pyotp). Wizard: /clients -> [add-client-btn] -> [new-client-wizard]. Step 2 Datto richiede ~25s di polling: attendere fino a 80s la comparsa di [wizard-step-hornet]. Cleanup clienti di test: python3 /app/test_reports/cleanup_qa_wizard_client.py (elimina tutti i clienti con nome che inizia per 'QA Wizard').",
+  "rca_of_the_issue": "Il fix e' confermato: PUT /clients/{id}/datto/link torna subito (sync Datto in background) e il wizard esegue il polling di GET /clients/{id}/datto/link fino a device_count>0 (25.2s nel test, 7 device) prima di POST /datto/seed-managed. Nessun 504 ne' toast di errore riprodotti; l'intero onboarding a 6 step si completa correttamente."
+}

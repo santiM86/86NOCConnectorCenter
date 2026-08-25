@@ -8681,3 +8681,18 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - VERIFICATO: watchdog claima l'alert e risolve il target (real, no sonda live in preview);
   pipeline attach completa con sonda SIMULATA (net_trace+controprova+combined "Guasto lato
   CLIENTE" + summary nel message); frontend compila. NON esercitato con agent live reale.
+
+## 2026-06 — Fix wizard "Nuovo Cliente" (errore step 2 Datto = 504)
+- ROOT CAUSE: PUT /api/clients/{id}/datto/link eseguiva _refresh_sites_cache() in modo
+  SINCRONO (fetch device + audit MAC via API Datto per TUTTI i client) → minuti → 504
+  sul proxy → step 2 del wizard falliva ("Link Datto fallito").
+- FIX backend datto_rmm.py set_datto_link: salva il link e lancia _refresh_sites_cache()
+  in BACKGROUND (asyncio.create_task), ritorna subito con sync_started:true. GET
+  /datto/link espone device_count per il polling.
+- FIX frontend NewClientWizard.js linkDatto: dopo il link fa polling di GET /datto/link
+  (max ~60s) finché device_count>0, poi POST /datto/seed-managed + preset; fallback pulito
+  se il sync tarda. Aggiunto guard pollAbort (annulla se il dialog si chiude) e corretta
+  l'etichetta del bottone (Fine solo allo step 6, altrimenti Chiudi).
+- VERIFICATO: curl PUT /datto/link 200 in 0.1s (era 504), device in background ~22s (7);
+  testing agent iter131 100% (6/6 step del wizard, nessun 504/errore, 7 device importati,
+  cliente di test creato e poi eliminato).
