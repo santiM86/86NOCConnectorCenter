@@ -8627,3 +8627,20 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   60s (alcuni profili 120s, concorrenza max 16, unicast), discovery LAN 5m, SNMP ports
   ~12m, topology ~40m, re-poll vitali 2m. API cloud (Hornet/Datto/Zyxel/OSINT) dal
   Center, ZERO traffico su LAN cliente. ~40 Kbps medi per 100 device = trascurabile.
+
+## 2026-06 — Fix Diagnosi Percorso (traceroute/MTR): agent mancanti + timeout
+- BUG "mancano tanti clienti" nel menù AGENT-SONDA: NetworkPathDiagnosisPage filtrava
+  .filter(a=>a.live) -> gli agent offline (o connessi ad altro worker) sparivano. FIX:
+  mostra TUTTI gli agent (dedup per agent_id, ordine globale->live->offline), gli offline
+  visibili ma disabilitati. Verificato: 37 agent mostrati vs 0 prima (preview).
+- BUG timeout "time" sul trace di sedi DOWN: il frontend abortiva a 45s mentre Windows
+  tracert su percorso morto (3 probe/hop x -w 1500 x 20 hop) arriva a ~90s. FIX immediato:
+  budget timeout trace alzato 45->90s (command timeout) + axios 100s; l'agent concede gia'
+  90s internamente. Ora il trace completa e ritorna gli hop invece di fallire.
+- PERFORMANCE agent (sorgente noc-agent/internal/nettrace/nettrace.go): tracert -w 1500->800;
+  traceroute aggiunto -q 2 -N 32 -w 1 (era -w 2, 3 probe). ~2-4x piu' veloce su sedi isolate.
+  NOTA: richiede REBUILD + rollout dell'agent (nessun Go toolchain nel pod: non compilato qui).
+- NUOVO "Verdetto diagnostico" nel risultato: legge hop+geo e indica se il down e' probabile
+  LINEA/CARRIER (percorso interrotto a monte) vs INTERNO/ALIMENTAZIONE (router del cliente
+  raggiunto). Onesto sul limite: traceroute da solo non distingue linea-giu' da sede-senza-
+  corrente all'ultimo miglio -> suggerisce la controprova sul gateway operatore.
