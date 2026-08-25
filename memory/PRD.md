@@ -8761,3 +8761,15 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   anche in db.devices (snmp_community/snmp_version/monitor_type) per i device CMDB.
 - VERIFICATO via curl end-to-end sugli stessi endpoint del modal: community ZTACOPW +
   v2c + snmp+http riletti da /api/devices (PERSISTED=True). Backend healthy.
+
+## 2026-06 — FIX "Aggiungi a Home" iPhone richiede l'accesso ogni volta
+- CAUSA: su iOS la web-app in standalone (aggiunta alla Home) ha storage SEPARATO da
+  Safari → il token salvato in Safari non c'è → gate/richiesta accesso a ogni avvio.
+  Inoltre stripavamo l'hash #t= dall'URL, quindi l'icona Home catturava /m senza token.
+- FIX MobileMonitorPage: NON si rimuove più l'hash #t= (così l'icona Home salva
+  /m#t=TOKEN e la web-app parte autenticata anche con storage isolato); il token è
+  salvato anche in un COOKIE a 1 anno (condiviso Safari↔web-app) oltre a localStorage;
+  lettura hash→localStorage→cookie; su 401 si pulisce anche il cookie. Testo A2HS
+  aggiornato ("Aggiungi a Home da questa pagina").
+- VERIFICATO (screenshot): URL mantiene #t=, cookie impostato, relaunch /m senza hash
+  mostra il monitor (non il gate). Compila.

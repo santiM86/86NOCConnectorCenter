@@ -44,27 +44,30 @@ export default function MobileMonitorPage() {
     if (isIos && !isStandalone && !dismissed) setShowA2HS(true);
   }, []);
 
-  // 1) Cattura il token dall'URL e lo persiste; poi ripulisce l'URL.
-  //    Sicurezza: preferiamo il FRAGMENT (#t=...) alla query (?t=...) cosi' il
-  //    token NON compare negli access log del reverse proxy. Manteniamo il
-  //    fallback su ?t= per compatibilita' coi vecchi QR.
+  // 1) Cattura il token dall'URL e lo persiste. Su iOS la web-app "aggiunta alla
+  //    Home" (standalone) ha memoria SEPARATA da Safari: per non richiedere
+  //    l'accesso a ogni avvio teniamo il token in 3 posti — hash dell'URL (così
+  //    l'icona in Home lo cattura), localStorage e un COOKIE a lunga durata
+  //    (condiviso tra Safari e la web-app). Lettura: hash → localStorage → cookie.
   useEffect(() => {
+    const getCookie = (k) => {
+      const m = document.cookie.match(new RegExp("(?:^|; )" + k + "=([^;]+)"));
+      return m ? decodeURIComponent(m[1]) : null;
+    };
     let t = null;
-    const hash = window.location.hash || "";
-    const hm = hash.match(/[#&]t=([^&]+)/);
+    const hm = (window.location.hash || "").match(/[#&]t=([^&]+)/);
     if (hm) t = decodeURIComponent(hm[1]);
-    if (!t) {
-      const params = new URLSearchParams(window.location.search);
-      t = params.get("t");
-    }
+    if (!t) t = new URLSearchParams(window.location.search).get("t");
     if (t) {
       localStorage.setItem(TOKEN_KEY, t);
       localStorage.removeItem(REVOKED_KEY);
+      document.cookie = `${TOKEN_KEY}=${encodeURIComponent(t)}; path=/; max-age=31536000; SameSite=Lax`;
       setError(null);
-      window.history.replaceState({}, "", "/m");
+      // NON rimuoviamo l'hash: se l'utente aggiunge alla Home ora, l'icona
+      // salverà /m#t=TOKEN e la web-app partirà già autenticata.
       setTokenState(t);
     } else {
-      setTokenState(localStorage.getItem(TOKEN_KEY));
+      setTokenState(localStorage.getItem(TOKEN_KEY) || getCookie(TOKEN_KEY));
     }
   }, []);
 
@@ -81,6 +84,7 @@ export default function MobileMonitorPage() {
       if (e.response?.status === 401) {
         localStorage.removeItem(TOKEN_KEY);
         localStorage.setItem(REVOKED_KEY, "1");
+        document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
         setError("revoked");
         setTokenState(null);
       }
@@ -215,7 +219,7 @@ export default function MobileMonitorPage() {
         <div className="mm-a2hs" data-testid="mobile-a2hs">
           <span className="mm-a2hs-ic">A</span>
           <span className="mm-a2hs-txt">
-            Aggiungi ARGUS alla Home: tocca <b>Condividi</b> <span className="mm-a2hs-share">⬆</span> e poi <b>«Aggiungi a Home»</b>. Si aprirà a schermo intero come un'app.
+            Aggiungi ARGUS alla Home: tocca <b>Condividi</b> <span className="mm-a2hs-share">⬆</span> e poi <b>«Aggiungi a Home»</b> <u>da questa pagina</u>. Resterai connesso senza reinserire l'accesso.
           </span>
           <button className="mm-a2hs-x" data-testid="mobile-a2hs-dismiss"
             onClick={() => { localStorage.setItem("argus_mobile_a2hs_dismissed", "1"); setShowA2HS(false); }}>×</button>
