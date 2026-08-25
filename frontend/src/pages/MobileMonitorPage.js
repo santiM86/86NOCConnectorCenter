@@ -241,7 +241,7 @@ export default function MobileMonitorPage() {
               <div className="mm-block">
                 <div className="mm-stat-grid">
                   <div className="mm-stat"><div className="n" style={{ color: "var(--mm-ok)" }}>{sel.online}</div><div className="l">Online</div></div>
-                  <div className="mm-stat"><div className="n" style={{ color: sel.offline ? "var(--mm-crit)" : "var(--mm-txt)" }}>{sel.offline}</div><div className="l">Offline</div></div>
+                  <div className="mm-stat"><div className="n" style={{ color: sel._i.vital.length ? "var(--mm-crit)" : "var(--mm-txt)" }}>{sel._i.vital.length}</div><div className="l">Vitali giù</div></div>
                   <div className="mm-stat"><div className="n" style={{ color: sel.alert_count ? "var(--mm-warn)" : "var(--mm-txt)" }}>{sel.alert_count || 0}</div><div className="l">Alert</div></div>
                   <div className="mm-stat"><div className="n">{sel.health_pct ?? 0}%</div><div className="l">Salute</div></div>
                 </div>

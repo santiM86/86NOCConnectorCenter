@@ -8773,3 +8773,10 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   aggiornato ("Aggiungi a Home da questa pagina").
 - VERIFICATO (screenshot): URL mantiene #t=, cookie impostato, relaunch /m senza hash
   mostra il monitor (non il gate). Compila.
+
+## 2026-06 — Mobile: OFFLINE conta solo i vitali + conferma PWA standalone
+- MobileMonitorPage dettaglio: la card "Offline" (contava TUTTI i device offline,
+  incoerente con "Tutti i vitali operativi") ora mostra "Vitali giù" = solo vitali down
+  (sel._i.vital.length). ONLINE resta il totale device online.
+- PWA: manifest già "display":"standalone" → aggiunta alla Home parte a schermo intero
+  senza barra browser (in Safari la barra è normale finché non la aggiungi alla Home).
