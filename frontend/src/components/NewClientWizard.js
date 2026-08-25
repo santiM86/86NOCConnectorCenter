@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
@@ -16,6 +16,10 @@ const STEPS = ["Cliente", "Datto RMM", "Backup", "Monitor WAN", "Agent", "Riepil
 export const NewClientWizard = ({ open, onClose, onCreated }) => {
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
+  // Annulla il polling del sync Datto se il dialog viene chiuso durante l'attesa
+  // (evita setState/toast su componente smontato).
+  const pollAbort = useRef(false);
+  useEffect(() => { if (!open) pollAbort.current = true; }, [open]);
   // Step 1
   const [form, setForm] = useState({ name: "", description: "", contact_email: "" });
   const [client, setClient] = useState(null); // {id, api_key, name}
@@ -85,21 +89,44 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       await axios.put(`${API}/clients/${client.id}/datto/link`, { site_id: siteId });
       let presetApplied = null;
       if (seedDevices) {
-        try { await axios.post(`${API}/clients/${client.id}/datto/seed-managed`, {}); } catch { /* opzionale */ }
-        // Applica il preset ai device appena importati (onboarding one-shot)
-        if (presetId && presetId !== "__none__") {
+        // Il sync dei device Datto gira in BACKGROUND (evita il timeout 504 sul
+        // link). Attendiamo che i dispositivi compaiano (max ~60s) prima di
+        // importarli; se tardano, si potranno importare dopo dalla scheda cliente.
+        pollAbort.current = false;
+        const tId = toast.loading("Importazione dispositivi da Datto in corso…");
+        let count = 0;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          if (pollAbort.current) { toast.dismiss(tId); return; }  // dialog chiuso
           try {
-            const p = presets.find(x => x.id === presetId);
-            const dev = await axios.get(`${API}/devices`, { params: { client_id: client.id } });
-            const list = dev.data?.devices || dev.data || [];
-            const ips = list.map(d => d.ip_address || d.ip).filter(Boolean);
-            if (p && ips.length) {
-              await axios.post(`${API}/devices/bulk-apply-settings`, {
-                client_id: client.id, ips, apply: p.apply || {}, vm_only: !!p.vm_only,
-              });
-              presetApplied = p.name;
-            }
-          } catch { toast.error("Preset non applicato (device non ancora pronti)"); }
+            const lk = await axios.get(`${API}/clients/${client.id}/datto/link`);
+            count = lk.data?.device_count || 0;
+            if (count > 0) break;
+          } catch { /* retry */ }
+        }
+        if (pollAbort.current) { toast.dismiss(tId); return; }
+        if (count > 0) {
+          try {
+            await axios.post(`${API}/clients/${client.id}/datto/seed-managed`, {});
+            toast.success(`${count} dispositivi importati da Datto`, { id: tId });
+          } catch { toast.error("Import dispositivi non riuscito (riprova dalla scheda cliente)", { id: tId }); }
+          // Applica il preset ai device appena importati (onboarding one-shot)
+          if (presetId && presetId !== "__none__") {
+            try {
+              const p = presets.find(x => x.id === presetId);
+              const dev = await axios.get(`${API}/devices`, { params: { client_id: client.id } });
+              const list = dev.data?.devices || dev.data || [];
+              const ips = list.map(d => d.ip_address || d.ip).filter(Boolean);
+              if (p && ips.length) {
+                await axios.post(`${API}/devices/bulk-apply-settings`, {
+                  client_id: client.id, ips, apply: p.apply || {}, vm_only: !!p.vm_only,
+                });
+                presetApplied = p.name;
+              }
+            } catch { toast.error("Preset non applicato (device non ancora pronti)"); }
+          }
+        } else {
+          toast.message("Sync Datto ancora in corso: i dispositivi verranno importati a breve (potrai importarli dalla scheda cliente).", { id: tId });
         }
       }
       toast.success("Sito Datto collegato");
@@ -286,7 +313,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
         {/* Footer navigazione */}
         <div className="flex justify-between items-center pt-2 border-t border-[var(--bg-border)]">
           <Button type="button" variant="ghost" size="sm" className="text-xs text-[var(--text-muted)]" onClick={onClose} data-testid="wizard-close">
-            {step === 5 ? "Fine" : "Chiudi"}
+            {step === 6 ? "Fine" : "Chiudi"}
           </Button>
           <div className="flex gap-2">
             {step === 1 && (

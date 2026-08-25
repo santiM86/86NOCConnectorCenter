@@ -1520,14 +1520,21 @@ async def set_datto_link(
         upsert=True,
     )
     audit.info(f"datto_link client={client_id} -> site={payload.site_id} by={current_user.get('email')}")
-    try:
-        await _refresh_sites_cache()
-    except Exception as e:
-        logger.warning(f"datto immediate sync failed: {type(e).__name__}")
+    # v2026-06 FIX 504: il refresh completo (fetch device Datto + audit MAC via API
+    # per TUTTI i client linkati) può durare minuti e superava il timeout del proxy,
+    # facendo fallire lo step 2 del wizard "Nuovo Cliente". Il link è già salvato
+    # sopra; eseguiamo il sync in BACKGROUND e ritorniamo subito. I device compaiono
+    # a breve (il wizard fa polling prima di importarli).
+    async def _bg_sync_after_link():
+        try:
+            await _refresh_sites_cache()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("datto background sync after link failed: %s", type(e).__name__)
+    asyncio.create_task(_bg_sync_after_link())
     link = await db.datto_client_links.find_one({"client_id": client_id}, {"_id": 0})
     device_count = await db.datto_devices.count_documents({"client_id": client_id})
     matched_count = await db.datto_devices.count_documents({"client_id": client_id, "matched": True})
-    return {"linked": True, **(link or {}),
+    return {"linked": True, "sync_started": True, **(link or {}),
             "device_count": device_count, "matched_count": matched_count}
 
 
