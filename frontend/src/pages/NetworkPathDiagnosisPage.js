@@ -43,6 +43,7 @@ export default function NetworkPathDiagnosisPage() {
   const [genToken, setGenToken] = useState(null);
   const [genBusy, setGenBusy] = useState(false);
   const [geoByIp, setGeoByIp] = useState({});
+  const [deviceByIp, setDeviceByIp] = useState({});
   const [targetClient, setTargetClient] = useState("");
   const [lastGoodDiff, setLastGoodDiff] = useState(null);
   const [activeOutages, setActiveOutages] = useState([]);
@@ -86,6 +87,28 @@ export default function NetworkPathDiagnosisPage() {
       catch { return [ip, null]; }
     }));
     setGeoByIp(Object.fromEntries(entries));
+  };
+
+  // Incrocia gli IP degli hop col nostro inventario → nome device reale anche per
+  // gli hop PRIVATI (firewall/router/switch del cliente, agent, ecc.).
+  const resolveHops = async (hops) => {
+    const ips = [...new Set((hops || []).map((h) => h.ip).filter(Boolean))];
+    if (!ips.length) { setDeviceByIp({}); return; }
+    try {
+      const { data } = await axios.post(`${API}/api/path-trace/resolve-hops`, { ips }, { headers });
+      setDeviceByIp(data?.resolved || {});
+    } catch { setDeviceByIp({}); }
+  };
+
+  // Etichetta intelligente per gli IP privati (quando non abbiamo il device).
+  const privLabel = (ip) => {
+    if (!ip) return "Rete privata";
+    if (ip.startsWith("192.168.")) return "LAN privata (192.168/16)";
+    if (ip.startsWith("10.")) return "Rete privata (10/8)";
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return "Rete privata 172.16/12 (spesso dorsale MPLS/VPN)";
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)) return "CGNAT operatore (100.64/10)";
+    if (ip.startsWith("169.254.")) return "Link-local (169.254/16)";
+    return "Rete privata";
   };
 
   useEffect(() => {
@@ -163,6 +186,7 @@ export default function NetworkPathDiagnosisPage() {
       r.reached = !!(_resp.length && _resp[_resp.length - 1].ip === _tgt);
       setResult(r);
       enrichGeo(r.hops || []);
+      resolveHops(r.hops || []);
       // Storico + diff + correlazione outage + controprova gateway
       postTraceAnalysis(r);
       if (replyErr) toast.error(`Trace: ${replyErr}`, { id: tId });
@@ -394,9 +418,12 @@ export default function NetworkPathDiagnosisPage() {
             } else if (lastResp) {
               tone = "rose";
               title = "SEDE NON RAGGIUNTA — PERCORSO INTERROTTO";
+              const devLast = deviceByIp[lastResp.ip];
+              const devStr = devLast && (devLast.name || devLast.type)
+                ? ` [${devLast.name || devLast.type}${devLast.client_name ? " · " + devLast.client_name : ""}]` : "";
               const where = lastIsPublic
-                ? `nodo PUBBLICO ${lastResp.ip}${isp ? ` (${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""}`
-                : `nodo interno/privato ${lastResp.ip} (probabile router MPLS/VPN vicino alla sede)`;
+                ? `nodo PUBBLICO ${lastResp.ip}${devStr}${isp ? ` (${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""}`
+                : `nodo interno/privato ${lastResp.ip}${devStr || " (probabile router MPLS/VPN vicino alla sede)"}`;
               detail = `Il percorso si ferma all'hop ${lastResp.hop} — ${where} — e NON raggiunge ${result.target} (gli hop successivi non rispondono). Il guasto è A VALLE di questo nodo. ` +
                 (lastIsPublic
                   ? `Se è un nodo dell'OPERATORE → problema di LINEA/CARRIER a monte; se è l'ultimo miglio vicino alla sede → LINEA GIÙ o SEDE SENZA CORRENTE (router/apparati spenti).`
@@ -470,13 +497,21 @@ export default function NetworkPathDiagnosisPage() {
               <tbody>
                 {result.hops.map((h) => {
                   const g = geoByIp[h.ip];
+                  const dev = deviceByIp[h.ip];
                   const priv = h.ip && !isPublicIp(h.ip);
                   return (
                   <tr key={h.hop} className="border-b border-[var(--bg-border)]/40" data-testid={`path-trace-hop-${h.hop}`}>
                     <td className="py-1.5 px-2 font-mono text-[var(--text-secondary)]">{h.hop}</td>
                     <td className="py-1.5 px-2 font-mono">{h.timeout ? <span className="text-rose-400">* * * (nessuna risposta)</span> : (h.ip || h.host || "—")}</td>
                     <td className="py-1.5 px-2 text-[11px]" data-testid={`path-trace-hop-geo-${h.hop}`}>
-                      {h.timeout ? "—" : priv ? <span className="text-[var(--text-muted)]">Rete locale / privata</span>
+                      {h.timeout ? "—" : dev && (dev.name || dev.type) ? (
+                        <span>
+                          <span className="text-emerald-300 font-semibold">{dev.name || dev.type}</span>
+                          {dev.type && dev.name && <span className="text-[var(--text-muted)]"> · {dev.type}</span>}
+                          {dev.vendor && <span className="text-[var(--text-muted)]"> · {dev.vendor}</span>}
+                          {dev.client_name && <span className="text-cyan-300"> · {dev.client_name}</span>}
+                        </span>
+                      ) : priv ? <span className="text-[var(--text-muted)]">{privLabel(h.ip)}</span>
                         : g ? (
                           <span>
                             {g.city ? `${g.city}${g.country ? ", " + g.country : ""}` : (g.country || "—")}
