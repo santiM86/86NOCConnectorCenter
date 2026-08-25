@@ -143,7 +143,7 @@ export default function NetworkPathDiagnosisPage() {
     setControprova(null);
     const tId = toast.loading("Traccia percorso in corso… (fino a ~90s su sedi isolate)");
     try {
-      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 20, count: 3 };
+      const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 15, count: 3 };
       const { data } = await axios.post(
         `${API}/api/agents/${probe}/command`,
         { name: "net_trace", args, timeout: 90 },
@@ -194,7 +194,7 @@ export default function NetworkPathDiagnosisPage() {
     setControprova({ loading: true, gw: gw.ip });
     try {
       const { data } = await axios.post(`${API}/api/agents/${probe}/command`,
-        { name: "net_trace", args: { target: gw.ip, mode: "icmp", max_hops: 20, count: 2 }, timeout: 60 },
+        { name: "net_trace", args: { target: gw.ip, mode: "icmp", max_hops: 15, count: 2 }, timeout: 60 },
         { headers, timeout: 70000 });
       const reply = data.reply || {};
       const rr = reply.result || reply.Result || reply;

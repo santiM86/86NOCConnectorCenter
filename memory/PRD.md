@@ -8703,3 +8703,17 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   ESTERNA live (globale → altro agent live → propria se live); destinazione da
   detected-public-ip con FALLBACK a wan_targets.public_ip (IP c'è anche a sede spenta).
   Aggiunta nota guida per il caso sede isolata. NON testato con sonda live (preview 0 agent).
+
+## 2026-06 — ROOT CAUSE trace "Timeout della richiesta": middleware globale 20s
+- CAUSA VERA: middleware/request_timeout.py dava DEFAULT_TIMEOUT=20s a
+  /api/agents/{id}/command (usato da net_trace). Qualsiasi traceroute >20s (sempre,
+  su sede DOWN) veniva ucciso con 504 "Timeout della richiesta. Riprova più tardi.".
+  Spiega perché gli aumenti precedenti di timeout frontend/backend (90s) non bastavano.
+- FIX: _get_timeout ora ritorna 105s per path che iniziano con /api/agents/ e finiscono
+  con /command (chirurgico: resto invariato a 20s, protezione slowloris intatta).
+- Allineati anche i budget per affidabilità su sedi isolate:
+  - Frontend NetworkPathDiagnosisPage: max_hops 20->15 (trace + controprova).
+  - Backend run_net_trace_via_probe: max_hops 20->15, timeout 45->95s (auto-trace site-down).
+- Catena coerente: axios 100s > middleware 105s > attesa backend 90s > tool ~67s (15 hop,
+  binario agent con -w 1500). VERIFICATO: _get_timeout=105 sul command path (20s altrove),
+  backend healthy, frontend compila. NON eseguito trace reale (serve agent live in prod).
