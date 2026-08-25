@@ -1688,6 +1688,11 @@ class AlertEngine:
         except Exception as e:  # noqa: BLE001
             logger.warning("site-blackout watchdog error: %s", e, exc_info=True)
         try:
+            from routes.external_monitor import run_site_down_autotrace
+            await run_site_down_autotrace(self.db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("site-down autotrace error: %s", e, exc_info=True)
+        try:
             await run_new_device_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("new-device watchdog error: %s", e, exc_info=True)
