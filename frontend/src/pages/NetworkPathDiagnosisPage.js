@@ -77,8 +77,28 @@ export default function NetworkPathDiagnosisPage() {
           axios.get(`${API}/api/agents`, { headers }),
           axios.get(`${API}/api/clients`, { headers }),
         ]);
-        const live = (Array.isArray(ag.data) ? ag.data : ag.data.agents || []).filter((a) => a.live);
-        setAgents(live);
+        const raw = (Array.isArray(ag.data) ? ag.data : ag.data.agents || []);
+        // Dedup per agent_id (in DB possono esistere righe duplicate/stale per
+        // lo stesso host): teniamo la piu' "viva"/recente.
+        const byId = {};
+        raw.forEach((a) => {
+          const cur = byId[a.agent_id];
+          if (!cur || (a.live && !cur.live) ||
+              ((a.last_heartbeat_at || "") > (cur.last_heartbeat_at || ""))) {
+            byId[a.agent_id] = a;
+          }
+        });
+        // Mostriamo TUTTI gli agent (non solo i live): gli offline restano
+        // visibili ma disabilitati, cosi' non "spariscono" clienti dalla lista.
+        // Ordine: sonda globale prima, poi i live, poi per nome.
+        const allAgents = Object.values(byId).sort((a, b) => {
+          const ga = a.client_id === "__global__" ? 0 : 1;
+          const gb = b.client_id === "__global__" ? 0 : 1;
+          if (ga !== gb) return ga - gb;
+          if (!!b.live !== !!a.live) return (b.live ? 1 : 0) - (a.live ? 1 : 0);
+          return (a.hostname || "").localeCompare(b.hostname || "");
+        });
+        setAgents(allAgents);
         const cmap = {};
         const list = (Array.isArray(cl.data) ? cl.data : cl.data.clients || []);
         list.forEach((c) => { cmap[c.id] = c.name; });
@@ -86,7 +106,10 @@ export default function NetworkPathDiagnosisPage() {
         setClientList(list);
         // default sonda: GLOBALE (una sola sonda per tutti i clienti)
         setProbeClient("__global__");
-        if (live.length) setProbe(live[0].agent_id);
+        // default probe: sonda globale live > prima live > primo disponibile.
+        const pick = allAgents.find((a) => a.client_id === "__global__" && a.live)
+          || allAgents.find((a) => a.live) || allAgents[0];
+        if (pick) setProbe(pick.agent_id);
       } catch (e) {
         toast.error(`Caricamento agent fallito: ${e.response?.data?.detail || e.message}`);
       }
@@ -99,13 +122,13 @@ export default function NetworkPathDiagnosisPage() {
     if (!target.trim()) { toast.error("Inserisci IP o host di destinazione"); return; }
     setRunning(true);
     setResult(null);
-    const tId = toast.loading("Traccia percorso in corso… (fino a ~45s)");
+    const tId = toast.loading("Traccia percorso in corso… (fino a ~90s su sedi isolate)");
     try {
       const args = { target: target.trim(), mode, port: parseInt(port, 10) || 443, max_hops: 20, count: 3 };
       const { data } = await axios.post(
         `${API}/api/agents/${probe}/command`,
-        { name: "net_trace", args, timeout: 45 },
-        { headers, timeout: 60000 },
+        { name: "net_trace", args, timeout: 90 },
+        { headers, timeout: 100000 },
       );
       // La reply dell'agent è AgentReply { ok, error?, result } → il vero esito
       // net_trace è dentro `result` (unwrap, con fallback per PascalCase legacy).
@@ -217,10 +240,14 @@ export default function NetworkPathDiagnosisPage() {
                 <SelectValue placeholder="Seleziona agent…" />
               </SelectTrigger>
               <SelectContent>
-                {agents.length === 0 && <SelectItem value="__none__" disabled>Nessun agent connesso</SelectItem>}
+                {agents.length === 0 && <SelectItem value="__none__" disabled>Nessun agent registrato</SelectItem>}
                 {agents.map((a) => (
-                  <SelectItem key={a.agent_id} value={a.agent_id} className="text-xs">
-                    {a.hostname || a.agent_id?.slice(0, 8)} · {a.client_id === "__global__" ? "🌐 Sonda globale" : (clients[a.client_id] || "—")}
+                  <SelectItem key={a.agent_id} value={a.agent_id} className="text-xs" disabled={!a.live}>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${a.live ? "bg-emerald-400" : "bg-slate-500"}`} />
+                      {a.hostname || a.agent_id?.slice(0, 8)} · {a.client_id === "__global__" ? "🌐 Sonda globale" : (clients[a.client_id] || "—")}
+                      {!a.live && <span className="text-[9px] text-slate-500 ml-1">(offline)</span>}
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -267,6 +294,39 @@ export default function NetworkPathDiagnosisPage() {
             </span>
           </div>
           {result.error && <div className="text-xs text-rose-300 mb-2">{result.error}</div>}
+          {result.hops?.length > 0 && (() => {
+            const hops = result.hops;
+            const publicOk = hops.filter((h) => !h.timeout && (h.loss_pct ?? 0) < 100 && h.ip && isPublicIp(h.ip));
+            const lastOk = publicOk[publicOk.length - 1];
+            const lastGeo = lastOk ? geoByIp[lastOk.ip] : null;
+            const isp = lastGeo?.isp || lastGeo?.org || "";
+            let tone, title, detail;
+            if (result.reached) {
+              tone = "emerald";
+              title = "IL ROUTER DEL CLIENTE RISPONDE — LINEA OK";
+              detail = `Il percorso Internet arriva a destinazione (${result.target}). La connettività verso la sede è attiva: il down è quasi certamente INTERNO (switch/apparati o alimentazione degli apparati interni) oppure del singolo servizio, NON della linea/operatore.`;
+            } else if (lastOk) {
+              tone = "rose";
+              title = "SEDE IRRAGGIUNGIBILE — PERCORSO INTERROTTO";
+              detail = `Il percorso si ferma all'hop ${lastOk.hop}${isp ? ` (rete di ${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""} e non raggiunge ${result.target}. ` +
+                `Se questo ultimo nodo è nella rete dell'OPERATORE, il guasto è a monte = problema di LINEA/CARRIER. ` +
+                `Se invece è l'ultimo miglio vicino alla sede, allora la sede non risponde: LINEA GIÙ oppure SEDE SENZA CORRENTE (router spento). ` +
+                `Controprova rapida: se il gateway pubblico dell'operatore risponde ancora → è alimentazione/linea locale della sede; se non risponde nemmeno quello → guasto operatore.`;
+            } else {
+              tone = "rose";
+              title = "NESSUN HOP PUBBLICO RAGGIUNTO";
+              detail = "Il trace non è uscito verso Internet: verifica che la sonda (agent nel tuo NOC) sia online e che l'IP pubblico di destinazione sia corretto.";
+            }
+            const cls = tone === "emerald"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-200";
+            return (
+              <div className={`rounded-lg border ${cls} px-3 py-2.5 mb-3`} data-testid="path-trace-verdict">
+                <div className="text-[11px] font-extrabold tracking-wide">{title}</div>
+                <div className="text-[11px] leading-relaxed mt-1 text-[var(--text-secondary)]">{detail}</div>
+              </div>
+            );
+          })()}
           {result.hops?.length > 0 && (
             <table className="w-full text-xs">
               <thead className="text-[var(--text-secondary)] text-[10px] uppercase tracking-wider">

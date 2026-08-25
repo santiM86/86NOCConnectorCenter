@@ -89,7 +89,10 @@ func Run(ctx context.Context, a Args) Result {
 	switch runtime.GOOS {
 	case "windows":
 		res.Tool = "tracert"
-		out, err = runCmd(ctx, "tracert", "-d", "-h", itoa(a.MaxHops), "-w", "1500", a.Target)
+		// -w 800ms (era 1500): su una sede DOWN ogni hop morto costa 3 probe ×
+		// timeout; abbassando l'attesa il trace su percorso isolato scende da
+		// ~90s a ~40s. -d evita il reverse-DNS (piu' veloce).
+		out, err = runCmd(ctx, "tracert", "-d", "-h", itoa(a.MaxHops), "-w", "800", a.Target)
 		res.Raw = out
 		if err != nil && out == "" {
 			res.Error = err.Error()
@@ -115,7 +118,10 @@ func Run(ctx context.Context, a Args) Result {
 			res.Hops = ParseMTR(out)
 		} else if hasTool("traceroute") {
 			res.Tool = "traceroute"
-			args := []string{"-n", "-m", itoa(a.MaxHops), "-w", "2"}
+			// Performance su sede isolata: -N 32 (32 sonde in parallelo, era 16),
+			// -q 2 (2 query/hop invece di 3), -w 1 (1s di attesa invece di 2).
+			// Cosi' un percorso morto termina in pochi secondi invece di minuti.
+			args := []string{"-n", "-m", itoa(a.MaxHops), "-w", "1", "-q", "2", "-N", "32"}
 			if a.Mode == "tcp" {
 				args = append(args, "-T", "-p", itoa(a.Port))
 			} else if a.Mode == "udp" {
