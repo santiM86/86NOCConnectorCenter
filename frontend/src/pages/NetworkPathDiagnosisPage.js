@@ -155,6 +155,12 @@ export default function NetworkPathDiagnosisPage() {
       const reply = data.reply || {};
       const r = reply.result || reply.Result || reply;
       const replyErr = reply.error || reply.Error || r.error;
+      // FIX reached: l'agent lo marca se ESISTE un hop che risponde → sbagliato se
+      // il target non compare mai (path che muore in * * *). Raggiunto SOLO se
+      // l'ultimo hop che risponde ha l'IP == destinazione.
+      const _tgt = r.target || target.trim();
+      const _resp = (r.hops || []).filter((h) => !h.timeout && (h.loss_pct ?? 0) < 100 && h.ip);
+      r.reached = !!(_resp.length && _resp[_resp.length - 1].ip === _tgt);
       setResult(r);
       enrichGeo(r.hops || []);
       // Storico + diff + correlazione outage + controprova gateway
@@ -375,26 +381,30 @@ export default function NetworkPathDiagnosisPage() {
           {result.error && <div className="text-xs text-rose-300 mb-2">{result.error}</div>}
           {result.hops?.length > 0 && (() => {
             const hops = result.hops;
-            const publicOk = hops.filter((h) => !h.timeout && (h.loss_pct ?? 0) < 100 && h.ip && isPublicIp(h.ip));
-            const lastOk = publicOk[publicOk.length - 1];
-            const lastGeo = lastOk ? geoByIp[lastOk.ip] : null;
+            const respAll = hops.filter((h) => !h.timeout && (h.loss_pct ?? 0) < 100 && h.ip);
+            const lastResp = respAll[respAll.length - 1];
+            const lastGeo = lastResp ? geoByIp[lastResp.ip] : null;
             const isp = lastGeo?.isp || lastGeo?.org || "";
+            const lastIsPublic = lastResp && isPublicIp(lastResp.ip);
             let tone, title, detail;
             if (result.reached) {
               tone = "emerald";
               title = "IL ROUTER DEL CLIENTE RISPONDE — LINEA OK";
-              detail = `Il percorso Internet arriva a destinazione (${result.target}). La connettività verso la sede è attiva: il down è quasi certamente INTERNO (switch/apparati o alimentazione degli apparati interni) oppure del singolo servizio, NON della linea/operatore.`;
-            } else if (lastOk) {
+              detail = `Il percorso arriva fino a destinazione (${result.target}) che risponde. La connettività verso la sede è attiva: il down è quasi certamente INTERNO (switch/apparati o alimentazione degli apparati interni) oppure del singolo servizio, NON della linea/operatore.`;
+            } else if (lastResp) {
               tone = "rose";
-              title = "SEDE IRRAGGIUNGIBILE — PERCORSO INTERROTTO";
-              detail = `Il percorso si ferma all'hop ${lastOk.hop}${isp ? ` (rete di ${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""} e non raggiunge ${result.target}. ` +
-                `Se questo ultimo nodo è nella rete dell'OPERATORE, il guasto è a monte = problema di LINEA/CARRIER. ` +
-                `Se invece è l'ultimo miglio vicino alla sede, allora la sede non risponde: LINEA GIÙ oppure SEDE SENZA CORRENTE (router spento). ` +
-                `Controprova rapida: se il gateway pubblico dell'operatore risponde ancora → è alimentazione/linea locale della sede; se non risponde nemmeno quello → guasto operatore.`;
+              title = "SEDE NON RAGGIUNTA — PERCORSO INTERROTTO";
+              const where = lastIsPublic
+                ? `nodo PUBBLICO ${lastResp.ip}${isp ? ` (${isp}${lastGeo?.city ? ", " + lastGeo.city : ""})` : ""}`
+                : `nodo interno/privato ${lastResp.ip} (probabile router MPLS/VPN vicino alla sede)`;
+              detail = `Il percorso si ferma all'hop ${lastResp.hop} — ${where} — e NON raggiunge ${result.target} (gli hop successivi non rispondono). Il guasto è A VALLE di questo nodo. ` +
+                (lastIsPublic
+                  ? `Se è un nodo dell'OPERATORE → problema di LINEA/CARRIER a monte; se è l'ultimo miglio vicino alla sede → LINEA GIÙ o SEDE SENZA CORRENTE (router/apparati spenti).`
+                  : `Essendo un router INTERNO/MPLS a ridosso della sede, l'accesso della sede è giù: molto probabile LINEA dell'accesso interrotta oppure ROUTER/APPARATI della sede spenti (assenza corrente). Non è un guasto della dorsale/operatore pubblico.`);
             } else {
               tone = "rose";
-              title = "NESSUN HOP PUBBLICO RAGGIUNTO";
-              detail = "Il trace non è uscito verso Internet: verifica che la sonda (agent nel tuo NOC) sia online e che l'IP pubblico di destinazione sia corretto.";
+              title = "NESSUN HOP HA RISPOSTO";
+              detail = "Il trace non ha ottenuto risposta da alcun nodo: verifica che la sonda (agent) sia online e che l'IP/host di destinazione sia corretto.";
             }
             const cls = tone === "emerald"
               ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"

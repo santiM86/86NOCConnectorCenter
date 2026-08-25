@@ -158,6 +158,12 @@ async def run_net_trace_via_probe(target: str, client_id: Optional[str] = None,
     if isinstance(res, dict):
         res["_probe_agent_id"] = pick.agent_id
         res["_probe_client_id"] = pick.client_id
+        # FIX reached: l'agent marca reached se ESISTE un hop che risponde; è errato
+        # quando il target non compare mai (path che muore in * * *). Raggiunto solo
+        # se l'ULTIMO hop che risponde ha l'IP == destinazione.
+        _hops = res.get("hops") or []
+        _resp = [h for h in _hops if not h.get("timeout") and (h.get("loss_pct") or 0) < 100 and h.get("ip")]
+        res["reached"] = bool(_resp and _resp[-1].get("ip") == target)
     return res
 
 
