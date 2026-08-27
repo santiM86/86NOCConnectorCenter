@@ -1,5 +1,21 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Wizard Nuovo Cliente — step Backup ora include anche VM Backup (Altaro)
+**Richiesta utente**: nel wizard "Nuovo Cliente" step 3 (Backup) comparivano SOLO i tenant 365 Total
+Backup → mancavano moltissimi clienti (quelli su VM Backup/Altaro), impossibili da mappare.
+**Fix** (`frontend/src/components/NewClientWizard.js`):
+- Aggiunto fetch `GET /api/admin/hornetsecurity-vm/customers` (49 clienti VM in prod) accanto a
+  `GET /api/admin/hornetsecurity/tenants` (44 tenant 365).
+- Step 3 ora mostra DUE gruppi di chip selezionabili: "365 Total Backup" (ciano) e
+  "VM Backup (Altaro)" (viola). Stato `selVmCustomers`, handler `toggleVm`, testid `wizard-vm-<name>`.
+- `saveHornet()` salva ora entrambe le mappe in parallelo: PUT `/clients/{id}/backup/hornetsecurity/mapping`
+  (tenants) + PUT `/clients/{id}/backup/vmbackup/mapping` (customers). `done.hornet` = somma.
+**Testing**: endpoint verificati via curl (list 200 = 49 VM customers; PUT vmbackup/mapping 200, poi
+ripristinato). Frontend compila. La UI ricalca il pattern già funzionante dei tenant 365.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Digest mattutino Telegram (07:00) — riscritto per leggibilità
 **Richiesta utente**: il messaggio del buongiorno era un muro di testo — elencava OGNI flap dello
 stesso device (es. iLO GALVANSRV comparso ~38 volte in "Rientrati nella notte: 60"). Voleva qualcosa

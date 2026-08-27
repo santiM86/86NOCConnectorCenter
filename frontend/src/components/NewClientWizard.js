@@ -32,6 +32,8 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
   // Step 3 Hornet
   const [tenants, setTenants] = useState([]);
   const [selTenants, setSelTenants] = useState(new Set());
+  const [vmCustomers, setVmCustomers] = useState([]);
+  const [selVmCustomers, setSelVmCustomers] = useState(new Set());
   // Step 4 WAN
   const [wan, setWan] = useState({ label: "Firewall", device_type: "firewall", public_ip: "" });
   // Riepilogo: cosa è stato agganciato
@@ -44,6 +46,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       setClient(null);
       setSites([]); setSiteId(""); setSeedDevices(true); setPresetId("");
       setTenants([]); setSelTenants(new Set());
+      setVmCustomers([]); setSelVmCustomers(new Set());
       setWan({ label: "Firewall", device_type: "firewall", public_ip: "" });
       setDone({ datto: null, preset: null, hornet: 0, wan: null });
     }
@@ -58,6 +61,9 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     }
     if (step === 3 && tenants.length === 0) {
       axios.get(`${API}/admin/hornetsecurity/tenants`).then(r => setTenants(r.data?.tenants || r.data || [])).catch(() => {});
+    }
+    if (step === 3 && vmCustomers.length === 0) {
+      axios.get(`${API}/admin/hornetsecurity-vm/customers`).then(r => setVmCustomers(r.data?.customers || [])).catch(() => {});
     }
     if (step === 4 && !wan.public_ip) {
       axios.get(`${API}/external-monitor/detected-public-ip/${client.id}`)
@@ -138,12 +144,20 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
   };
 
   const saveHornet = async () => {
-    if (selTenants.size === 0) { setStep(4); return; }
+    if (selTenants.size === 0 && selVmCustomers.size === 0) { setStep(4); return; }
     setSaving(true);
     try {
-      await axios.put(`${API}/clients/${client.id}/backup/hornetsecurity/mapping`, { tenants: Array.from(selTenants) });
-      toast.success("Backup mappato al cliente");
-      setDone(d => ({ ...d, hornet: selTenants.size }));
+      const ops = [];
+      if (selTenants.size > 0) {
+        ops.push(axios.put(`${API}/clients/${client.id}/backup/hornetsecurity/mapping`, { tenants: Array.from(selTenants) }));
+      }
+      if (selVmCustomers.size > 0) {
+        ops.push(axios.put(`${API}/clients/${client.id}/backup/vmbackup/mapping`, { customers: Array.from(selVmCustomers) }));
+      }
+      await Promise.all(ops);
+      const tot = selTenants.size + selVmCustomers.size;
+      toast.success(`Backup mappato: ${selTenants.size} tenant 365 · ${selVmCustomers.size} VM`);
+      setDone(d => ({ ...d, hornet: tot }));
       setStep(4);
     } catch (e) {
       toast.error(`Mapping backup fallito: ${e.response?.data?.detail || e.message}`);
@@ -177,6 +191,9 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
 
   const toggleTenant = (t) => {
     setSelTenants(prev => { const n = new Set(prev); n.has(t) ? n.delete(t) : n.add(t); return n; });
+  };
+  const toggleVm = (c) => {
+    setSelVmCustomers(prev => { const n = new Set(prev); n.has(c) ? n.delete(c) : n.add(c); return n; });
   };
 
   return (
@@ -242,22 +259,40 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
           )}
 
           {step === 3 && (
-            <div className="space-y-2" data-testid="wizard-step-hornet">
-              <Label className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Tenant backup (Hornetsecurity / Altaro)</Label>
-              <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
-                {tenants.length === 0 && <span className="text-[11px] text-[var(--text-muted)]">Nessun tenant rilevato (backup globale non ancora popolato).</span>}
-                {tenants.map(t => {
-                  const name = t._id || t.tenant || t;
-                  const active = selTenants.has(name);
-                  return (
-                    <button key={name} type="button" onClick={() => toggleTenant(name)} data-testid={`wizard-tenant-${name}`}
-                      className={`px-2 py-1 rounded text-[11px] border ${active ? "bg-indigo-600 text-white border-indigo-500" : "bg-[var(--bg-card)] text-[var(--text-secondary)] border-[var(--bg-border)]"}`}>
-                      {active && <Check size={10} className="inline mr-1" />}{name}
-                    </button>
-                  );
-                })}
+            <div className="space-y-3" data-testid="wizard-step-hornet">
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase tracking-widest text-cyan-300/80">365 Total Backup</Label>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {tenants.length === 0 && <span className="text-[11px] text-[var(--text-muted)]">Nessun tenant 365 rilevato.</span>}
+                  {tenants.map(t => {
+                    const name = t._id || t.tenant || t;
+                    const active = selTenants.has(name);
+                    return (
+                      <button key={name} type="button" onClick={() => toggleTenant(name)} data-testid={`wizard-tenant-${name}`}
+                        className={`px-2 py-1 rounded text-[11px] border ${active ? "bg-cyan-600 text-white border-cyan-500" : "bg-[var(--bg-card)] text-[var(--text-secondary)] border-[var(--bg-border)]"}`}>
+                        {active && <Check size={10} className="inline mr-1" />}{name}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <p className="text-[10px] text-[var(--text-muted)]">Mappa il cliente a uno o più tenant già presenti sul vostro account Hornetsecurity.</p>
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase tracking-widest text-violet-300/80">VM Backup (Altaro)</Label>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                  {vmCustomers.length === 0 && <span className="text-[11px] text-[var(--text-muted)]">Nessun cliente VM Backup rilevato.</span>}
+                  {vmCustomers.map(c => {
+                    const name = c.customer_name;
+                    const active = selVmCustomers.has(name);
+                    return (
+                      <button key={name} type="button" onClick={() => toggleVm(name)} data-testid={`wizard-vm-${name}`}
+                        className={`px-2 py-1 rounded text-[11px] border ${active ? "bg-violet-600 text-white border-violet-500" : "bg-[var(--bg-card)] text-[var(--text-secondary)] border-[var(--bg-border)]"}`}>
+                        {active && <Check size={10} className="inline mr-1" />}{name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)]">Mappa il cliente ai suoi tenant 365 e/o ai suoi clienti VM Backup (Altaro) già presenti sull'account Hornetsecurity.</p>
             </div>
           )}
 
@@ -303,7 +338,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
               <p className="text-[11px] text-[var(--text-muted)]">Riepilogo onboarding di <b className="text-[var(--text-primary)]">{client.name}</b>. Completa gli step saltati quando vuoi.</p>
               <SummaryRow label="Datto RMM" ok={!!done.datto} okText={done.datto} onComplete={() => setStep(2)} />
               {done.preset && <div className="text-[10px] text-emerald-400 pl-6">↳ preset applicato: {done.preset}</div>}
-              <SummaryRow label="Backup (Hornetsecurity/Altaro)" ok={done.hornet > 0} okText={done.hornet ? `${done.hornet} tenant` : ""} onComplete={() => setStep(3)} />
+              <SummaryRow label="Backup (365 + VM Altaro)" ok={done.hornet > 0} okText={done.hornet ? `${done.hornet} mappati` : ""} onComplete={() => setStep(3)} />
               <SummaryRow label="Monitor WAN" ok={!!done.wan} okText={done.wan} onComplete={() => setStep(4)} />
               <SummaryRow label="Agent" ok={true} okText="chiave & comando pronti" onComplete={() => setStep(5)} completeLabel="Rivedi" />
             </div>
@@ -330,7 +365,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
             {step === 3 && (
               <>
                 <Button size="sm" variant="ghost" className="text-xs gap-1" onClick={() => setStep(4)} data-testid="wizard-skip-hornet"><SkipForward size={12} /> Salta</Button>
-                <Button size="sm" disabled={saving} onClick={saveHornet} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs" data-testid="wizard-next-hornet">{selTenants.size ? "Salva e continua" : "Continua"}</Button>
+                <Button size="sm" disabled={saving} onClick={saveHornet} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs" data-testid="wizard-next-hornet">{(selTenants.size || selVmCustomers.size) ? "Salva e continua" : "Continua"}</Button>
               </>
             )}
             {step === 4 && (
