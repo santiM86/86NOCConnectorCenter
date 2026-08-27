@@ -348,5 +348,29 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.post("/security/tamper-event")
+@limiter.limit("20/minute")
+async def tamper_event(request: Request, current_user: dict = Depends(get_current_user)):
+    """Registra un evento di manomissione client-side (es. apertura DevTools
+    sulla console admin). Deterrente: l'evento viene loggato come attività
+    sospetta di sicurezza per audit/alerting. Best-effort, non blocca l'utente."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    event = str(body.get("event", "unknown"))[:64]
+    method = str(body.get("method", ""))[:64]
+    path = str(body.get("path", ""))[:256]
+    await audit_logger.log(
+        AuditAction.TAMPER_DETECTED,
+        user_id=current_user["id"], user_email=current_user["email"],
+        ip_address=request.client.host if request.client else None,
+        details={"event": event, "method": method, "path": path,
+                 "user_agent": current_user.get("_user_agent", "")},
+        severity="warning",
+    )
+    return {"logged": True}
+
+
 # Need to import HTTPException at module level
 from fastapi import HTTPException

@@ -371,6 +371,16 @@ async def tv_dashboard_data():
 
         health = round((online / max(online + offline, 1)) * 100)
 
+        # Conteggio VITALI (per la vista mobile: metriche riferite ai soli vitali)
+        vital_total = 0
+        vital_online = 0
+        for u in client_units:
+            _md_u = u["md"] or {}
+            if (f"{cid}:{u['device_ip']}" in vital_map) or bool(_md_u.get("is_vital")):
+                vital_total += 1
+                if _u_online(u):
+                    vital_online += 1
+
         # Hardware Health Matrix (rollup worst-of across iLO servers of this client)
         ilo_docs = [d for d in client_devices
                     if d.get("device_class") == "hpe-ilo"

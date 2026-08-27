@@ -65,6 +65,7 @@ class AuditAction(str, Enum):
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     SUSPICIOUS_ACTIVITY = "suspicious_activity"
     IP_BLOCKED = "ip_blocked"
+    TAMPER_DETECTED = "tamper_detected"
 
 class AuditLogger:
     """Audit logger for tracking all security-relevant events."""

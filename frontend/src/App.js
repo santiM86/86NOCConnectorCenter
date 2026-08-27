@@ -8,6 +8,7 @@ import { PwaProvider } from "@/components/PwaProvider";
 import { WebConsoleTabsProvider } from "@/components/WebConsoleTabs";
 import { PwaInstallBanner, NotificationPermissionBanner, OfflineIndicator } from "@/components/PwaBanners";
 import { UpdateBanner, VersionProvider } from "@/components/AppVersion";
+import SecurityGuard from "@/components/SecurityGuard";
 
 // Pages
 import LoginPage from "@/pages/LoginPage";
@@ -309,6 +310,7 @@ function App() {
             <Route path="/2fa" element={<TwoFactorPage />} />
             <Route path="/2fa-setup" element={<TwoFactorSetupPage />} />
           </Routes>
+          <SecurityGuard />
           <PwaInstallBanner />
           <NotificationPermissionBanner />
         </BrowserRouter>

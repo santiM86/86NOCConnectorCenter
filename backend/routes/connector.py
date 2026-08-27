@@ -3347,9 +3347,15 @@ async def update_device_monitor_type_by_id(
             pass
     # Multi-source resolver: gestisce device-id da managed_devices/devices/poll_<ip>
     device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
-    await db.managed_devices.update_one(
-        {"client_id": client_id, "ip": device_ip},
+    # FIX persistenza: aggiorna TUTTI i doc dello stesso IP (canonico + eventuali
+    # duplicati legacy con solo ip_address) senza toccare il campo `ip` (nessuna
+    # collisione con l'indice unico). Evita che la lettura peschi un doc stale.
+    await db.managed_devices.update_many(
+        {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
         {"$set": update},
+    )
+    await db.devices.update_many(
+        {"client_id": client_id, "ip_address": device_ip}, {"$set": update}
     )
     return {"ok": True, "monitor_type": mt, "device_ip": device_ip}
 
@@ -3398,9 +3404,21 @@ async def update_device_snmp_config(client_id: str, device_id: str, request: Req
         update["snmpv3_security_level"] = body.get("snmpv3_security_level", "authPriv")
     # Multi-source resolver
     device_ip, _, _ = await _resolve_or_upsert_managed_device(client_id, device_id)
-    await db.managed_devices.update_one(
-        {"client_id": client_id, "ip": device_ip},
+    # FIX persistenza community/SNMP: aggiorna TUTTI i doc dello stesso IP (canonico
+    # + duplicati legacy con solo ip_address). Il set non include `ip`, quindi
+    # nessuna collisione con l'indice unico (client_id, ip). Prima l'update_one su
+    # {"ip": device_ip} mancava i doc legacy → la community non veniva salvata.
+    await db.managed_devices.update_many(
+        {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
         {"$set": update}
+    )
+    # I device CMDB (db.devices) vengono letti dal proprio doc: scriviamo anche lì
+    # (campo snmp_community) altrimenti la community non appare al riaprire il modal.
+    dev_update = {"snmp_version": snmp_version}
+    if snmp_version in ("v1", "v2c"):
+        dev_update["snmp_community"] = update.get("community", "")
+    await db.devices.update_many(
+        {"client_id": client_id, "ip_address": device_ip}, {"$set": dev_update}
     )
     await audit_logger.log(
         AuditAction.UPDATE_DEVICE,

@@ -1,5 +1,34 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🛡️ Hardening anti-manomissione console (F12/DevTools + source-map + CSP)
+Richiesta utente: "disabilitare F12 e tutto ciò che un hacker potrebbe usare per compromettere il NOC".
+Chiarito con l'utente (onestà tecnica: F12-block è solo deterrente client-side, aggirabile) → attivate:
+- **B1 Source-map OFF in produzione**: `frontend/.env` `GENERATE_SOURCEMAP=false` (nasconde il sorgente
+  React leggibile in chiaro nella build prod). In preview (dev-mode craco) nessun impatto.
+- **A Deterrente console (SOLO admin desktop)**: nuovo `frontend/src/components/SecurityGuard.js`
+  montato in `App.js` dentro `<BrowserRouter>` dopo `<Routes>`. Attivo SOLO se utente loggato +
+  path NON escluso + NON touch device. Esclusi: `/m`, `/mobile`, `/tv`, `/public`, `/portal`,
+  `/customer-portal`, `/shared-console`. Blocca F12, Ctrl+Shift+I/J/C, Ctrl+U, menu contestuale.
+  Rileva DevTools via SOLA euristica dimensioni finestra (outer-inner > 170px, 2 check consecutivi)
+  → overlay a schermo pieno (`data-testid=security-tamper-overlay`) + log evento + logout automatico
+  dopo 2.5s. ⚠️ NOTA: rimosso il metodo "console getter" (`console.debug('%c', bait)`) perché il
+  direttivo `%c` forza `toString()` ANCHE senza DevTools → falso positivo che disconnetteva ogni
+  admin. Tenuta solo l'euristica dimensioni (rileva DevTools docked = default F12; undocked non
+  rilevato, trade-off scelto per non lockare gli admin).
+- **B4 Log/alert manomissione**: `AuditAction.TAMPER_DETECTED` + endpoint `POST /api/security/tamper-event`
+  (auth richiesta, rate-limit 20/min) in `routes/auth.py` → audit severity warning con event/method/path/UA.
+- **B3 CSP più severo**: rimosso `'unsafe-eval'` dallo `script-src` del CSP non-web-console in
+  `server.py::SecurityHeadersMiddleware`. Sicuro: il CSP backend copre solo le risposte `/api` (JSON);
+  in prod il frontend è servito da nginx, in preview da craco:3000 → nessuna rottura dell'app.
+**Testing**: CSP header verificato via curl (no unsafe-eval); tamper-event E2E (login→2FA TOTP→POST
+= {"logged":true}); 403 senza auth; frontend compila + smoke screenshot login OK (nessun overlay falso).
+**In sospeso (scelta utente "aspetta")**: Auto-logout da inattività (B2). Passkey/WebAuthn: messe in
+sospeso dall'utente (playbook già pronto).
+⚠️ **PROD**: `GENERATE_SOURCEMAP=false` effettivo alla prossima build+deploy. CSP/backend attivi dopo
+Save to GitHub + redeploy.
+
+
+
 
 ## 2026-06 🔐 FIX P0 — "errore di autenticazione dopo redeploy" + pulsante Traccia percorso
 **Bug utente**: dopo un redeploy non riusciva più ad accedere ("errore di autenticazione").
@@ -8749,3 +8778,34 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   LAN 192.168, 10/8, 172.16/12=MPLS/VPN, CGNAT 100.64/10, link-local). Verdetto include il
   nome device dell'ultimo hop che risponde.
 - VERIFICATO: resolve-hops via curl (10.10.1.10 -> SRVDATI86B/86BIT_Office); compila; healthy.
+
+## 2026-06 — FIX persistenza community/SNMP/monitor-type (modal Diagnostica)
+- BUG (video utente): la community SNMP v2 impostata nel modal non veniva salvata.
+  CAUSE: (1) gli endpoint PUT /connector/{cid}/managed-devices/{did}/snmp e
+  /monitor-type facevano update_one({"ip":device_ip}) mancando i doc legacy con solo
+  ip_address; (2) i device CMDB (db.devices) vengono letti dal proprio doc mentre il
+  salvataggio scriveva solo in managed_devices → community mai mostrata al riapri.
+- FIX (connector.py): update_many su {"$or":[{ip},{ip_address}]} (senza toccare `ip`,
+  niente collisione indice unico) SIA per snmp SIA per monitor-type; inoltre si scrive
+  anche in db.devices (snmp_community/snmp_version/monitor_type) per i device CMDB.
+- VERIFICATO via curl end-to-end sugli stessi endpoint del modal: community ZTACOPW +
+  v2c + snmp+http riletti da /api/devices (PERSISTED=True). Backend healthy.
+
+## 2026-06 — FIX "Aggiungi a Home" iPhone richiede l'accesso ogni volta
+- CAUSA: su iOS la web-app in standalone (aggiunta alla Home) ha storage SEPARATO da
+  Safari → il token salvato in Safari non c'è → gate/richiesta accesso a ogni avvio.
+  Inoltre stripavamo l'hash #t= dall'URL, quindi l'icona Home catturava /m senza token.
+- FIX MobileMonitorPage: NON si rimuove più l'hash #t= (così l'icona Home salva
+  /m#t=TOKEN e la web-app parte autenticata anche con storage isolato); il token è
+  salvato anche in un COOKIE a 1 anno (condiviso Safari↔web-app) oltre a localStorage;
+  lettura hash→localStorage→cookie; su 401 si pulisce anche il cookie. Testo A2HS
+  aggiornato ("Aggiungi a Home da questa pagina").
+- VERIFICATO (screenshot): URL mantiene #t=, cookie impostato, relaunch /m senza hash
+  mostra il monitor (non il gate). Compila.
+
+## 2026-06 — Mobile: OFFLINE conta solo i vitali + conferma PWA standalone
+- MobileMonitorPage dettaglio: la card "Offline" (contava TUTTI i device offline,
+  incoerente con "Tutti i vitali operativi") ora mostra "Vitali giù" = solo vitali down
+  (sel._i.vital.length). ONLINE resta il totale device online.
+- PWA: manifest già "display":"standalone" → aggiunta alla Home parte a schermo intero
+  senza barra browser (in Safari la barra è normale finché non la aggiungi alla Home).
