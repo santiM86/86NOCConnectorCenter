@@ -1,5 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Mobile PWA passwordless su iPhone — FIX manifest dedicato (start_url)
+**Problema**: aggiungendo `/m` alla Home iOS chiedeva sempre la password. Causa: `manifest.json`
+globale con `start_url:"/"` + `scope:"/"` → su iOS 16.4+ l'icona ripartiva dalla ROOT (console admin
+con psw) scartando il token.
+**Fix**:
+- Backend `routes/mobile_access.py`: nuovo `GET /api/mobile/manifest?t=TOKEN` → manifest dedicato
+  (`application/manifest+json`) con `start_url:"/m?t=TOKEN"`, `scope:"/m"`, `display:standalone`,
+  name "ARGUS Mobile", icone. Token sanificato (alnum/-/_). Pubblico, no-store.
+- Frontend `MobileMonitorPage.js`: quando c'è un token, effetto che sostituisce
+  `<link rel="manifest">` href → `${API}/mobile/manifest?t=TOKEN` e `apple-mobile-web-app-title` →
+  "ARGUS Mobile" (ripristina all'unmount). Così iOS "Aggiungi a Home" salva start_url=/m?t=TOKEN.
+- La `capture()` legge il token sia da `#t=` (hash) sia da `?t=` (query) → copre lo start_url iOS.
+**Testing**: testing_agent (browser pulito, SW/cache purge) → PASS su tutti e 3: `/m?t=TOKEN` rende la
+dashboard in ~2s (1 client, tech Marco Santinelli); `link[rel=manifest]` → `/api/mobile/manifest?t=…`
+(200, start_url `/m?t=…`, scope `/m`, standalone; apple title "ARGUS Mobile"); `/m#t=TOKEN` regression OK.
+Nessun errore console.
+**IMPORTANTE per l'utente (dopo deploy)**: rimuovere la vecchia icona dalla Home, riaprire il link del
+QR (`/m#t=…`) su Safari, poi Condividi → Aggiungi a Home. La nuova icona ripartirà sempre autenticata.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Import LAN Scanner — configurazione completa del dispositivo in fase di import
 **Richiesta utente**: dal modal di import dello Scanner LAN poter dare TUTTE le impostazioni del
 dispositivo (profilo/tipo, assegnazione virtualizzazione, SNMP, ecc.) senza doverle rifare dopo nella

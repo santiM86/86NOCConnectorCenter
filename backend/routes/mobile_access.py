@@ -22,12 +22,45 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from database import db
 from deps import get_current_user, require_admin
 
 logger = logging.getLogger("mobile_access")
 router = APIRouter(prefix="/api/mobile", tags=["mobile-access"])
+
+
+@router.get("/manifest")
+async def mobile_manifest(t: str = ""):
+    """Web App Manifest DEDICATO alla vista mobile passwordless.
+
+    Perche': il manifest globale ha start_url="/" -> su iOS 16.4+ l'icona
+    aggiunta alla Home riparte dalla root (console admin con password) e perde
+    il token. Questo manifest imposta start_url="/m?t=<token>" e scope="/m",
+    cosi' la web-app parte SEMPRE gia' autenticata sulla vista mobile.
+    """
+    tok = "".join(c for c in (t or "") if c.isalnum() or c in "-_")[:200]
+    start = f"/m?t={tok}" if tok else "/m"
+    manifest = {
+        "short_name": "ARGUS Mobile",
+        "name": "ARGUS Mobile — Monitoraggio",
+        "description": "Vista mobile di monitoraggio in tempo reale (passwordless)",
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+        ],
+        "start_url": start,
+        "scope": "/m",
+        "display": "standalone",
+        "theme_color": "#0a0a0f",
+        "background_color": "#0a0a0f",
+        "orientation": "any",
+        "lang": "it",
+    }
+    return JSONResponse(manifest, media_type="application/manifest+json",
+                        headers={"Cache-Control": "no-store"})
 
 COLLECTION = "mobile_access_tokens"
 
