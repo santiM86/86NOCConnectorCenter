@@ -1,5 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Import LAN Scanner — configurazione completa del dispositivo in fase di import
+**Richiesta utente**: dal modal di import dello Scanner LAN poter dare TUTTE le impostazioni del
+dispositivo (profilo/tipo, assegnazione virtualizzazione, SNMP, ecc.) senza doverle rifare dopo nella
+scheda dispositivo. Confermato: parità totale con ciò che si fa singolarmente nella schermata device.
+**Implementazione**:
+- `frontend/src/pages/LanScannerPage.js`:
+  - Se selezioni ≤5 device (`PER_DEV_MAX`), il modal mostra un form **per-dispositivo**: Nome,
+    Tipo/Profilo (`device_type`), ⭐ Vitale (`is_vital`). Stato `perDev` (map per ip), `setPd`.
+  - Checkbox "Configura in dettaglio dopo l'import" (`configureAfter`, default on se ≤5).
+  - Dopo l'import, apre in **coda** il componente `DeviceEditModal` (RIUSO — stesso identico della
+    scheda dispositivo) per ogni device importato → SNMP v2c/v3, virtualizzazione + host (Hyper-V/
+    VMware/VM generica), silenzio allarmi. `editQueue`/`editIndex`, `advanceEdit` su onSaved/onClose.
+- `backend/routes/lan_scanner.py`: il doc nuovo device ora salva anche `is_vital` (da `d.get("is_vital")`).
+  L'endpoint restituiva già `items` con {id, ip, name, device_type} usati per la coda di config.
+**Testing**: backend verificato via script (scan sintetico → import con name/device_type/is_vital/
+monitor_type → managed_device creato con `{name:'TEST-SRV', device_type:'server', is_vital:True,
+monitor_type:'snmp'}`, poi pulito). Frontend compila; riusa `DeviceEditModal` già in produzione.
+⚠️ NON testato E2E nel browser: la preview non ha scansioni LAN reali (serve agent/connector).
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 🐞 FIX rinomina nel modal "Classifica dispositivi rilevati" (focus perso / cursore in fondo)
 **Bug utente**: nel modal Triage (aggancia Vitali), rinominando un dispositivo l'input perdeva il focus
 ad ogni carattere e il cursore "partiva sempre dal fondo".
