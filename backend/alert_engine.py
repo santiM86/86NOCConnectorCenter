@@ -594,46 +594,88 @@ async def morning_status_digest(db) -> dict:
             nm = t
         return nm
 
-    by_client = {}
+    # ---- Aggregazione per elemento (cliente, item): conta i flap notturni ----
+    FLAP_MIN = 3  # >= 3 eventi nella notte = instabile (flapping)
+
+    def _key(a):
+        return (_client_label(a), _item_label(a))
+
+    agg = {}
     for a in device_downs:
-        lbl = _client_label(a)
-        by_client.setdefault(lbl, []).append(a)
+        e = agg.setdefault(_key(a), {"down": 0, "rec": 0, "first_down": None, "last_rec": None, "vital": False})
+        e["down"] += 1
+        ca = a.get("created_at") or ""
+        if e["first_down"] is None or ca < e["first_down"]:
+            e["first_down"] = ca
+        if "vital" in (a.get("source_type") or "").lower():
+            e["vital"] = True
+    for a in recovered:
+        e = agg.setdefault(_key(a), {"down": 0, "rec": 0, "first_down": None, "last_rec": None, "vital": False})
+        e["rec"] += 1
+        ra = a.get("resolved_at") or ""
+        if e["last_rec"] is None or ra > e["last_rec"]:
+            e["last_rec"] = ra
+
+    still_down, unstable, recovered_stable = [], [], []
+    for (cli, item), e in agg.items():
+        total = e["down"] + e["rec"]
+        currently_down = e["down"] > 0
+        if total >= FLAP_MIN:
+            unstable.append((cli, item, total, currently_down, e))
+        elif currently_down:
+            still_down.append((cli, item, e))
+        else:
+            recovered_stable.append((cli, item))
 
     total_down = len(device_downs)
-    if not device_downs and not operator_outages:
-        body = ("☀️ <b>Buongiorno — ARGUS</b> (" + time_lbl + ")\n"
-                f"Nessun nuovo DOWN durante la notte (dalle {night_lbl}). Tutto tranquillo. ✅")
+    n_down = len(still_down) + len(operator_outages)
+    n_unstable = len(unstable)
+    n_rec = len(recovered_stable)
+    rec_clients = len({c for (c, _i) in recovered_stable})
+
+    if not still_down and not unstable and not operator_outages and not recovered_stable:
+        body = (f"☀️ <b>Buongiorno · ARGUS</b> ({time_lbl}) — notte dalle {night_lbl}\n"
+                "Tutto tranquillo, nessun evento nella notte. ✅")
     else:
-        lines = [f"☀️ <b>Buongiorno — Andato DOWN durante la notte</b> ({time_lbl})",
-                 f"Dalle {night_lbl} di ieri sera: {total_down} elementi giù su {len(by_client)} clienti\n"]
-        # ordina i clienti per numero di down desc
-        for cli in sorted(by_client, key=lambda c: -len(by_client[c]))[:80]:
-            lines.append(f"• <b>{cli}</b>")
-            for a in sorted(by_client[cli], key=lambda x: str(x.get("created_at") or "")):
-                hhmm, dur = _down_since(a.get("created_at"))
-                since = f" — giù da {hhmm} ({dur} fa)" if hhmm else ""
-                lines.append(f"   ◦ {_item_label(a)}{since}")
-        if operator_outages:
-            lines.append("\n🌐 <b>Guasti operatori</b>")
+        # TL;DR in cima per lettura in 5 secondi
+        tldr = []
+        if n_down:
+            tldr.append(f"🔴 {n_down} ancora giù")
+        if n_unstable:
+            tldr.append(f"⚠️ {n_unstable} instabile" + ("" if n_unstable == 1 else "/i"))
+        if n_rec:
+            tldr.append(f"✅ {n_rec} rientrati")
+        lines = [f"☀️ <b>Buongiorno · ARGUS</b> ({time_lbl}) — notte dalle {night_lbl}",
+                 " · ".join(tldr) if tldr else "Nessun problema in corso ✅"]
+
+        # 🔴 ANCORA GIÙ ADESSO (azionabile: i tecnici ci lavorano appena arrivati)
+        if still_down or operator_outages:
+            lines.append(f"\n🔴 <b>ANCORA GIÙ ADESSO ({len(still_down) + len(operator_outages)})</b>")
+            for (cli, item, e) in sorted(still_down, key=lambda x: str(x[2].get("first_down") or "")):
+                hhmm, dur = _down_since(e.get("first_down"))
+                since = f" · giù da {hhmm} ({dur})" if hhmm else ""
+                vital = " 🔴 <b>vitale</b>" if e.get("vital") else ""
+                lines.append(f"• <b>{cli}</b> — {item}{since}{vital}")
             for a in operator_outages:
                 hhmm, dur = _down_since(a.get("created_at"))
-                since = f" — da {hhmm} ({dur} fa)" if hhmm else ""
+                since = f" · da {hhmm} ({dur})" if hhmm else ""
                 who = (a.get("title") or "Operatore").replace("OUTAGE OPERATORE", "").strip()
                 aff = a.get("affected_clients") or []
-                names = ", ".join(c.get("name", "?") for c in aff[:8]) if aff else ""
-                lines.append(f"   ◦ {who}{since}" + (f" · clienti: {names}" if names else ""))
-        body = "\n".join(lines)
+                names = ", ".join(c.get("name", "?") for c in aff[:6]) if aff else ""
+                lines.append(f"• 🌐 <b>{who}</b>{since}" + (f" · clienti: {names}" if names else ""))
 
-    # Sezione: RIENTRATI nella notte (cosa era down ma è tornato su)
-    if recovered:
-        rec_lines = [f"\n✅ <b>Rientrati nella notte: {len(recovered)}</b>"]
-        for a in sorted(recovered, key=lambda x: str(x.get("resolved_at") or ""), reverse=True)[:15]:
-            when, _ = _down_since(a.get("resolved_at"))
-            t = f" (risolto {when})" if when else ""
-            rec_lines.append(f"   ◦ {_client_label(a)} · {_item_label(a)}{t}")
-        if len(recovered) > 15:
-            rec_lines.append(f"   … e altri {len(recovered) - 15}")
-        body = body + "\n" + "\n".join(rec_lines)
+        # ⚠️ INSTABILI (flapping): UNA riga per dispositivo, con il conteggio
+        if unstable:
+            lines.append(f"\n⚠️ <b>INSTABILI stanotte ({len(unstable)})</b>")
+            for (cli, item, total, currently_down, e) in sorted(unstable, key=lambda x: -x[2]):
+                state = "🔴 ora giù" if currently_down else "✅ ora OK"
+                lines.append(f"• <b>{cli}</b> — {item}: {total} disconnessioni · {state}")
+
+        # ✅ Rientrati stabili: solo il numero (niente muro di testo)
+        if recovered_stable:
+            lines.append(f"\n✅ <b>Rientrati stabili: {n_rec}</b> ({rec_clients} client{'e' if rec_clients == 1 else 'i'})")
+
+        body = "\n".join(lines)
 
     try:
         from telegram_notifier import send_telegram_text
@@ -642,8 +684,9 @@ async def morning_status_digest(db) -> dict:
     except Exception as e:  # noqa: BLE001
         logger.debug("morning digest send failed: %s", e)
         return {"sent": 0, "error": str(e)[:120]}
-    logger.info(f"[telegram] morning digest sent: {len(by_client)} clients, {total_down} down, {len(operator_outages)} operator outages")
-    return {"sent": 1, "clients": len(by_client), "down": total_down, "operator_outages": len(operator_outages)}
+    logger.info(f"[telegram] morning digest sent: down={n_down} unstable={n_unstable} recovered={n_rec}")
+    return {"sent": 1, "still_down": len(still_down), "unstable": n_unstable,
+            "operator_outages": len(operator_outages), "recovered_stable": n_rec}
 
 
 async def morning_digest_tick(db) -> dict:

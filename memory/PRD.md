@@ -1,5 +1,25 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Digest mattutino Telegram (07:00) — riscritto per leggibilità
+**Richiesta utente**: il messaggio del buongiorno era un muro di testo — elencava OGNI flap dello
+stesso device (es. iLO GALVANSRV comparso ~38 volte in "Rientrati nella notte: 60"). Voleva qualcosa
+di "più inciso, rapido nella lettura e chiaro"; ha chiesto cosa serve al tecnico al risveglio.
+**Ragionamento (priorità tecnico alle 07:00)**: 1) cosa è ANCORA GIÙ adesso (azionabile), 2) cosa è
+INSTABILE/flapping (in UNA riga con conteggio), 3) backup notturni falliti (proposto, non ancora
+implementato), 4) rientrati stabili = solo numero.
+**Implementazione** (`alert_engine.py::morning_status_digest`, blocco costruzione messaggio):
+- Aggregazione per (cliente, item): conta down+recovered nella finestra notturna.
+- FLAP_MIN=3 → item con ≥3 eventi = "INSTABILE" (una riga: "N disconnessioni · 🔴 ora giù / ✅ ora OK").
+- Sezioni: header + TL;DR ("🔴 X ancora giù · ⚠️ Y instabili · ✅ Z rientrati"),
+  "🔴 ANCORA GIÙ ADESSO" (stabili currently-down, con da-quando + tag 🔴 vitale + guasti operatori),
+  "⚠️ INSTABILI stanotte" (flapping collassati), "✅ Rientrati stabili: N (M clienti)" (solo conteggio).
+- Rimosso l'elenco riga-per-riga dei rientrati (era il muro di testo).
+**Testing**: script sintetico (38 flap GALVANSRV + 1 still-down vitale + 2 rientrati) → messaggio
+compatto corretto, `send_telegram_text` intercettato (non inviato). Nessuna regressione di sintassi.
+Backlog: sezione "💾 Backup falliti stanotte" (oggi i backup sono esclusi dal digest, `_EXCLUDE_KW`).
+
+
+
 ## 2026-06 🐞 FIX Mobile PWA (/m) bloccata su "Connessione ad ARGUS…" ("non funziona")
 **Bug utente**: dopo il pairing QR, la Mobile PWA `/m` restava all'infinito sullo spinner
 "Connessione ad ARGUS…" e non mostrava mai la dashboard.
