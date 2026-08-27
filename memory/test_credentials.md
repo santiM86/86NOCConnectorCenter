@@ -37,6 +37,12 @@ Per riportare l'admin allo stato pulito "enroll richiesto": unset `totp_secret`
 - Auto-Discovery aggregata: `GET /api/connector/discovery-results/{client_id}` (ritorna `device_count`, `scanner_endpoints_count`, `scanner_last_seen_at`)
 - Lista connectors: `GET /api/connector/list`
 
+## Mobile PWA passwordless (/m)
+- Genera token: `POST /api/mobile/pairing` (Bearer admin) → `{token}`
+- Usa il token: `GET /api/mobile/dashboard` e `/api/mobile/me` con header `X-Mobile-Token: <token>`
+- In UI: apri `/m#t=<token>` (token nell'hash). Per testare azzera SEMPRE prima service worker + caches (cache `noc-center-v18`) e naviga a documento fresco.
+- Token QA valido (2026-08): `jFdx6pqssnLsTIoxb2LM6rRHpFBTrcYSuvDRABISTu8` (tech Marco Santinelli)
+
 ## URL di riferimento
 - Preview env: `https://noc-alert-hub-2.preview.emergentagent.com`
 - Produzione cliente: `https://argus.86bit.it`

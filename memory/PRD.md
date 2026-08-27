@@ -1,5 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🐞 FIX Mobile PWA (/m) bloccata su "Connessione ad ARGUS…" ("non funziona")
+**Bug utente**: dopo il pairing QR, la Mobile PWA `/m` restava all'infinito sullo spinner
+"Connessione ad ARGUS…" e non mostrava mai la dashboard.
+**Root cause**: `MobileMonitorPage.js` usava l'istanza **axios globale** dell'app admin. La richiesta a
+`/api/mobile/dashboard` (risposta ~17KB gzip) **non si risolveva mai** nel browser (né resolve né
+timeout), mentre `/api/mobile/me` (piccola, non compressa) funzionava. Debug via console: si logga
+`load start` e `me resolved 200` ma mai `dash resolved`. Backend rispondeva 200 (verificato nei log
+d'accesso e via curl). curl funzionava perché non richiede gzip (nessun `Accept-Encoding`).
+**Fix**: `load()` in `MobileMonitorPage.js` ora usa la **`fetch()` nativa** (isolata dagli interceptor
+axios admin) con header `X-Mobile-Token` e `cache:'no-store'`. Rimosso import axios inutilizzato.
+Aggiunto listener `hashchange` per catturare il token se `/m` è già aperto e cambia solo l'hash.
+Bumpato `public/sw.js` CACHE_NAME `v17`→`v18` per invalidare bundle stale in cache (il service worker
+serviva codice vecchio, confondendo anche i test).
+**Testing**: testing_agent iteration_132 → PASS. `/m#t=<token>` carica la dashboard in <2s, chip riepilogo,
+1 client row (86BIT_Office), tech Marco Santinelli; `/mobile/me` 200 x3, `/mobile/dashboard` 200 x4;
+gate e persistenza token ok. Verificato dopo purge completo SW+cache.
+⚠️ **PROD** (argus.86bit.it): attivo dopo Save to GitHub + redeploy + rebuild frontend. Gli utenti che
+hanno già installato la PWA riceveranno il nuovo bundle grazie al bump CACHE_NAME v18 (SW cancella le
+cache vecchie all'activate).
+
+
+
 ## 2026-06 🐞 FIX discrepanza Backup Mobile/TV vs Desktop ("Non monitorato" falso)
 **Bug utente**: cliente Zitac (giambarinigroup.onmicrosoft.com → ZITACSRV, VM Backup Altaro 4 VM
 100% success) mostrava sul DESKTOP i backup gestiti, ma sulla **Mobile PWA** (`/m`) "BACKUP: Non

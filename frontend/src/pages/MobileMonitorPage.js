@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import axios from "axios";
 import "./MobileMonitor.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -54,40 +53,55 @@ export default function MobileMonitorPage() {
       const m = document.cookie.match(new RegExp("(?:^|; )" + k + "=([^;]+)"));
       return m ? decodeURIComponent(m[1]) : null;
     };
-    let t = null;
-    const hm = (window.location.hash || "").match(/[#&]t=([^&]+)/);
-    if (hm) t = decodeURIComponent(hm[1]);
-    if (!t) t = new URLSearchParams(window.location.search).get("t");
-    if (t) {
-      localStorage.setItem(TOKEN_KEY, t);
-      localStorage.removeItem(REVOKED_KEY);
-      document.cookie = `${TOKEN_KEY}=${encodeURIComponent(t)}; path=/; max-age=31536000; SameSite=Lax`;
-      setError(null);
-      // NON rimuoviamo l'hash: se l'utente aggiunge alla Home ora, l'icona
-      // salverà /m#t=TOKEN e la web-app partirà già autenticata.
-      setTokenState(t);
-    } else {
-      setTokenState(localStorage.getItem(TOKEN_KEY) || getCookie(TOKEN_KEY));
-    }
+    const capture = () => {
+      let t = null;
+      const hm = (window.location.hash || "").match(/[#&]t=([^&]+)/);
+      if (hm) t = decodeURIComponent(hm[1]);
+      if (!t) t = new URLSearchParams(window.location.search).get("t");
+      if (t) {
+        localStorage.setItem(TOKEN_KEY, t);
+        localStorage.removeItem(REVOKED_KEY);
+        document.cookie = `${TOKEN_KEY}=${encodeURIComponent(t)}; path=/; max-age=31536000; SameSite=Lax`;
+        setError(null);
+        // NON rimuoviamo l'hash: se l'utente aggiunge alla Home ora, l'icona
+        // salverà /m#t=TOKEN e la web-app partirà già autenticata.
+        setTokenState(t);
+      } else {
+        setTokenState(localStorage.getItem(TOKEN_KEY) || getCookie(TOKEN_KEY));
+      }
+    };
+    capture();
+    // Se l'utente ha gia' /m aperto (schermata di aggancio) e l'URL cambia solo
+    // nell'hash (#t=...), il documento non si ricarica: intercettiamo hashchange.
+    window.addEventListener("hashchange", capture);
+    return () => window.removeEventListener("hashchange", capture);
   }, []);
 
   const load = useCallback(async (tk) => {
+    // Usa la fetch nativa (NON axios): la pagina mobile passwordless deve restare
+    // isolata dagli interceptor/refresh-token dell'app admin. Inoltre axios si
+    // bloccava sulla risposta gzip di /mobile/dashboard (~17KB); fetch la gestisce
+    // correttamente.
+    const headers = { "X-Mobile-Token": tk };
     try {
-      const [dash, me] = await Promise.all([
-        axios.get(`${API}/mobile/dashboard`, { headers: { "X-Mobile-Token": tk } }),
-        tech ? Promise.resolve({ data: tech }) : axios.get(`${API}/mobile/me`, { headers: { "X-Mobile-Token": tk } }),
+      const [dashRes, meRes] = await Promise.all([
+        fetch(`${API}/mobile/dashboard`, { headers, cache: "no-store" }),
+        tech ? null : fetch(`${API}/mobile/me`, { headers, cache: "no-store" }),
       ]);
-      setData(dash.data);
-      if (!tech && me?.data) setTech(me.data);
-      setError(null);
-    } catch (e) {
-      if (e.response?.status === 401) {
+      if (dashRes.status === 401 || (meRes && meRes.status === 401)) {
         localStorage.removeItem(TOKEN_KEY);
         localStorage.setItem(REVOKED_KEY, "1");
         document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
         setError("revoked");
         setTokenState(null);
+        return;
       }
+      if (!dashRes.ok) return; // errore transitorio: mantieni ultimo stato
+      setData(await dashRes.json());
+      if (!tech && meRes && meRes.ok) setTech(await meRes.json());
+      setError(null);
+    } catch (e) {
+      // errore di rete transitorio: non fare logout, riproverà al prossimo tick
     }
   }, [tech]);
 

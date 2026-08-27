@@ -4126,22 +4126,11 @@ function PrinterDetailModal({ printer, clientId, onClose }) {
 
 /* ==================== BACKUP TAB ==================== */
 function BackupTab({ backups, clientId }) {
-  const [subTab, setSubTab] = useState("m365");
+  const [subTab, setSubTab] = useState("vm");
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
         <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Provider:</span>
-        <button
-          onClick={() => setSubTab("m365")}
-          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
-            subTab === "m365"
-              ? "bg-cyan-500/20 border-cyan-400 text-cyan-300"
-              : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10"
-          }`}
-          data-testid="backup-subtab-m365"
-        >
-          365 Total Backup
-        </button>
         <button
           onClick={() => setSubTab("vm")}
           className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
@@ -4152,6 +4141,17 @@ function BackupTab({ backups, clientId }) {
           data-testid="backup-subtab-vm"
         >
           VM Backup (Altaro)
+        </button>
+        <button
+          onClick={() => setSubTab("m365")}
+          className={`px-3 py-1 rounded-md border text-[11px] font-semibold transition ${
+            subTab === "m365"
+              ? "bg-cyan-500/20 border-cyan-400 text-cyan-300"
+              : "border-cyan-500/30 text-cyan-300/70 hover:bg-cyan-500/10"
+          }`}
+          data-testid="backup-subtab-m365"
+        >
+          365 Total Backup
         </button>
       </div>
       {subTab === "m365" ? (
