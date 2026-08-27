@@ -1,0 +1,29 @@
+{
+  "summary": "Frontend-only retest of the passwordless Mobile PWA (/m) after the axios->fetch fix. Mobile viewport 390x844. Unregistered the service worker (scope '/', cache 'noc-center-v18') and deleted all caches + localStorage + cookies before testing. RESULT: FIX CONFIRMED WORKING. Fresh navigation to /m#t=<token> renders the dashboard (data-testid='mobile-monitor') in <2s with summary chips (0 Vitali down, 2 WAN offline, 1 Backup falliti, 1 Clienti coinvolti), exactly 1 client row (86BIT_Office) as expected, and technician name 'Marco Santinelli'. Detail sheet opens/closes correctly. The 8s auto-refresh tick keeps the dashboard rendered (never falls back to spinner). Token persistence works: reloading /m WITHOUT the hash still renders the dashboard from localStorage/cookie. Gate state verified: /m without any token shows data-testid='mobile-gate' with 'ARGUS · Accesso Mobile'. Network: GET /api/mobile/me -> 200 (x3), GET /api/mobile/dashboard -> 200 (x4). No page errors; only the React DevTools info log in console.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Token capture via URL hash while /m is ALREADY open (hash-only navigation, no document reload)", "issue": "MobileMonitorPage reads the #t= token only once in a mount-time useEffect and has no 'hashchange' listener. If the page is already loaded at /m (gate state) and the URL changes only in the hash to /m#t=<token>, React does not re-run the effect, no /api/mobile/* request is made and the gate stays visible forever (reproduced: 0 network calls). Real-world impact limited (QR scan normally opens a fresh document) but can affect an iOS user keeping /m open in the same tab. Fix: add window.addEventListener('hashchange', ...) re-running the token capture.", "affected_selectors": ["[data-testid=\"mobile-gate\"]", "[data-testid=\"mobile-monitor\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Mobile detail sheet (86BIT_Office)", "issues": ["Header shows 'Salute 0%' and 'Online 0' while 47 alerts exist and WAN targets report OK - caused by connector/sonda offline. Consider greying/hiding health & online stats when 'SONDA OFFLINE' to avoid misleading zeros."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL (minor): add a 'hashchange' listener in MobileMonitorPage so a token appended to the hash of an already-open /m page is picked up without a full reload.",
+    "OPTIONAL (cosmetic): grey out / hide 'Salute %' and 'Online' stats when connector_online === false."
+  ],
+  "critical_code_review_comments": [
+    "load() uses Promise.all([..., tech ? null : fetch(...)]) - passing null works but is fragile; prefer building the array conditionally.",
+    "First /api/mobile/dashboard request logged net::ERR_ABORTED (React StrictMode double-mount) before the successful retry. Harmless because load() swallows network errors, but an explicit AbortController per effect run would be cleaner."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% of requested mobile flows passed (dashboard load, gate, persistence, detail sheet)"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Mobile token jFdx6pqssnLsTIoxb2LM6rRHpFBTrcYSuvDRABISTu8 is valid (tech Marco Santinelli, 1 client 86BIT_Office). Always clear the SW registration + caches first (cache name noc-center-v18) and navigate DIRECTLY to /m#t=<token> as a fresh document - a hash-only navigation from an already-loaded /m does NOT trigger token capture.",
+  "rca_of_the_issue": "Original hang was client-side (global axios instance/interceptors stalling on the gzip /api/mobile/dashboard response). Current code uses native fetch with X-Mobile-Token and cache:'no-store'; both endpoints return 200 in the browser and the dashboard renders. Verified after full SW/cache purge, so no stale-bundle masking."
+}
