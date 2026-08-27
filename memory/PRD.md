@@ -1,5 +1,59 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Import LAN Scanner — configurazione completa del dispositivo in fase di import
+**Richiesta utente**: dal modal di import dello Scanner LAN poter dare TUTTE le impostazioni del
+dispositivo (profilo/tipo, assegnazione virtualizzazione, SNMP, ecc.) senza doverle rifare dopo nella
+scheda dispositivo. Confermato: parità totale con ciò che si fa singolarmente nella schermata device.
+**Implementazione**:
+- `frontend/src/pages/LanScannerPage.js`:
+  - Se selezioni ≤5 device (`PER_DEV_MAX`), il modal mostra un form **per-dispositivo**: Nome,
+    Tipo/Profilo (`device_type`), ⭐ Vitale (`is_vital`). Stato `perDev` (map per ip), `setPd`.
+  - Checkbox "Configura in dettaglio dopo l'import" (`configureAfter`, default on se ≤5).
+  - Dopo l'import, apre in **coda** il componente `DeviceEditModal` (RIUSO — stesso identico della
+    scheda dispositivo) per ogni device importato → SNMP v2c/v3, virtualizzazione + host (Hyper-V/
+    VMware/VM generica), silenzio allarmi. `editQueue`/`editIndex`, `advanceEdit` su onSaved/onClose.
+- `backend/routes/lan_scanner.py`: il doc nuovo device ora salva anche `is_vital` (da `d.get("is_vital")`).
+  L'endpoint restituiva già `items` con {id, ip, name, device_type} usati per la coda di config.
+**Testing**: backend verificato via script (scan sintetico → import con name/device_type/is_vital/
+monitor_type → managed_device creato con `{name:'TEST-SRV', device_type:'server', is_vital:True,
+monitor_type:'snmp'}`, poi pulito). Frontend compila; riusa `DeviceEditModal` già in produzione.
+⚠️ NON testato E2E nel browser: la preview non ha scansioni LAN reali (serve agent/connector).
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 🐞 FIX rinomina nel modal "Classifica dispositivi rilevati" (focus perso / cursore in fondo)
+**Bug utente**: nel modal Triage (aggancia Vitali), rinominando un dispositivo l'input perdeva il focus
+ad ogni carattere e il cursore "partiva sempre dal fondo".
+**Root cause** (`ClientOverviewPage.js::TriageWizard`): il componente `Row` era definito DENTRO il corpo
+di `TriageWizard`. Ogni keystroke aggiorna lo state `editValue` → `TriageWizard` si ri-renderizza →
+`Row` diventa un NUOVO tipo di componente → React **smonta e rimonta** la riga → l'`<Input autoFocus>`
+perde il focus e `autoFocus` rimette il cursore in coda. (Anti-pattern: componente definito in render.)
+**Fix**: `Row` trasformato da componente (`<Row d={d}/>`) a funzione di rendering `renderRow(d)` che
+ritorna JSX di host-elements con `key={ip}` sul root; usato come `{suggested.map(renderRow)}` /
+`{rest.map(renderRow)}`. React ora riconcilia i div/input per key senza rimontarli → focus preservato.
+La lista non si riordina mentre si scrive (il filtro usa `search`, indipendente da `editValue`).
+**Testing**: frontend compila senza errori; fix deterministico basato su anti-pattern React noto.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 ✨ Wizard Nuovo Cliente — step Backup ora include anche VM Backup (Altaro)
+**Richiesta utente**: nel wizard "Nuovo Cliente" step 3 (Backup) comparivano SOLO i tenant 365 Total
+Backup → mancavano moltissimi clienti (quelli su VM Backup/Altaro), impossibili da mappare.
+**Fix** (`frontend/src/components/NewClientWizard.js`):
+- Aggiunto fetch `GET /api/admin/hornetsecurity-vm/customers` (49 clienti VM in prod) accanto a
+  `GET /api/admin/hornetsecurity/tenants` (44 tenant 365).
+- Step 3 ora mostra DUE gruppi di chip selezionabili: "365 Total Backup" (ciano) e
+  "VM Backup (Altaro)" (viola). Stato `selVmCustomers`, handler `toggleVm`, testid `wizard-vm-<name>`.
+- `saveHornet()` salva ora entrambe le mappe in parallelo: PUT `/clients/{id}/backup/hornetsecurity/mapping`
+  (tenants) + PUT `/clients/{id}/backup/vmbackup/mapping` (customers). `done.hornet` = somma.
+**Testing**: endpoint verificati via curl (list 200 = 49 VM customers; PUT vmbackup/mapping 200, poi
+ripristinato). Frontend compila. La UI ricalca il pattern già funzionante dei tenant 365.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Digest mattutino Telegram (07:00) — riscritto per leggibilità
 **Richiesta utente**: il messaggio del buongiorno era un muro di testo — elencava OGNI flap dello
 stesso device (es. iLO GALVANSRV comparso ~38 volte in "Rientrati nella notte: 60"). Voleva qualcosa

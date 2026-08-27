@@ -1,8 +1,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import axios from "axios";
 import { toast } from "sonner";
+import { DeviceEditModal } from "@/components/DeviceEditModal";
 
 const API = process.env.REACT_APP_BACKEND_URL;
+const PER_DEV_MAX = 5;  // sotto questa soglia mostro il form per-dispositivo
+const DEVICE_TYPE_OPTS = [
+  ["generic", "Generico"], ["server", "Server"], ["workstation", "Workstation"],
+  ["switch", "Switch"], ["firewall", "Firewall"], ["router", "Router"], ["ap", "Access Point"],
+  ["printer", "Stampante"], ["nas", "NAS / Storage"], ["ups", "UPS"], ["camera", "Telecamera"],
+  ["voip", "VoIP"], ["nvr", "NVR / TVCC"], ["iot", "IoT"],
+];
 
 /**
  * Scanner LAN — versione web (NOC Center).
@@ -44,8 +52,38 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
   // (fixa import precedenti con name=IP nudo perche' arricchimento async
   //  non era ancora arrivato al momento del primo import).
   const [updateExisting, setUpdateExisting] = useState(true);
+  // Config avanzata per-dispositivo (nome/tipo/vitale) quando pochi device.
+  const [perDev, setPerDev] = useState({});
+  // Dopo l'import apre la scheda completa (DeviceEditModal) per ogni device
+  // così si configura SNMP v2c/v3, virtualizzazione+host, silenzia allarmi —
+  // le STESSE identiche impostazioni della schermata dispositivi.
+  const [configureAfter, setConfigureAfter] = useState(true);
+  const [editQueue, setEditQueue] = useState([]);
+  const [editIndex, setEditIndex] = useState(-1);
 
   const pollRef = useRef(null);
+
+  // Seed della config per-dispositivo all'apertura del modal import.
+  useEffect(() => {
+    if (!importOpen) return;
+    const sel = results.filter((r) => selectedIps.has(r.ip));
+    const map = {};
+    for (const r of sel) {
+      const sugg = autoClassify
+        ? suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server)
+        : null;
+      map[r.ip] = {
+        name: r.hostname || r.mdns_name || r.device_name || (r.http_server ? `Web · ${r.http_server.slice(0, 32)}` : "") || r.ip,
+        device_type: sugg || defaultDeviceType,
+        is_vital: false,
+      };
+    }
+    setPerDev(map);
+    setConfigureAfter(selectedIps.size <= PER_DEV_MAX);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importOpen]);
+
+  const setPd = (ip, patch) => setPerDev((prev) => ({ ...prev, [ip]: { ...prev[ip], ...patch } }));
 
   // Carica lista agent connessi (filtrata per cliente se scopedClientId).
   const refreshAgents = useCallback(() => {
@@ -176,13 +214,13 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
     if (selectedIps.size === 0) return;
     setImporting(true);
     const devices = results.filter((r) => selectedIps.has(r.ip)).map((r) => {
+      const ov = perDev[r.ip] || {};
       const suggested = autoClassify
         ? suggestDeviceType(r.vendor, r.hostname, r.device_name, r.mdns_name, r.services, r.http_server)
         : null;
       return {
         ip: r.ip,
-        // Best-name client-side (il backend ricalcola comunque autorevolmente)
-        name: r.hostname || r.mdns_name || r.device_name || (r.http_server ? `Web · ${r.http_server.slice(0,32)}` : "") || r.ip,
+        name: ov.name || r.hostname || r.mdns_name || r.device_name || (r.http_server ? `Web · ${r.http_server.slice(0,32)}` : "") || r.ip,
         hostname: r.hostname || r.mdns_name,
         mac: r.mac,
         vendor: r.vendor,
@@ -193,7 +231,8 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
         device_score: r.device_score,
         monitor_type: defaultMonitorType,
         community: defaultCommunity,
-        device_type: suggested || defaultDeviceType,
+        device_type: ov.device_type || suggested || defaultDeviceType,
+        is_vital: !!ov.is_vital,
       };
     });
     try {
@@ -206,12 +245,35 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
       toast.success(parts.join(" · ") || "Operazione completata");
       setImportOpen(false);
       setSelectedIps(new Set());
+      // Avvia la coda di configurazione completa (SNMP/virtualizzazione/silence)
+      // sugli stessi endpoint della scheda dispositivo.
+      const items = res.data.items || [];
+      if (configureAfter && items.length) {
+        const q = items.map((it) => ({
+          id: it.id, ip: it.ip, ip_address: it.ip, name: it.name,
+          device_type: it.device_type, client_id: scopedClientId,
+          monitor_type: defaultMonitorType,
+          community: defaultCommunity, snmp_community: defaultCommunity,
+          snmp_version: "v2c",
+        }));
+        setEditQueue(q);
+        setEditIndex(0);
+      }
     } catch (err) {
       toast.error(err.response?.data?.detail || "Errore import");
     } finally {
       setImporting(false);
     }
   };
+
+  // Avanza la coda di configurazione post-import (o la chiude alla fine).
+  const advanceEdit = useCallback(() => {
+    setEditIndex((i) => {
+      const next = i + 1;
+      if (next >= editQueue.length) { setEditQueue([]); return -1; }
+      return next;
+    });
+  }, [editQueue.length]);
 
   // Stili colorTokens condizionali al tab embedded vs full-page.
   const cardBg = scopedClientId ? "bg-[var(--bg-panel)]" : "bg-white";
@@ -538,6 +600,54 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
                 </select>
               </div>
             </div>
+
+            {selectedIps.size > 0 && selectedIps.size <= PER_DEV_MAX && (
+              <div className="mt-4 space-y-2" data-testid="lan-scan-perdev">
+                <label className="text-xs font-semibold">Impostazioni per dispositivo</label>
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {results.filter((r) => selectedIps.has(r.ip)).map((r) => {
+                    const ov = perDev[r.ip] || {};
+                    return (
+                      <div key={r.ip} className={`rounded-md border ${borderC} p-2.5 space-y-2`} data-testid={`lan-scan-perdev-${r.ip}`}>
+                        <div className="flex items-center gap-2">
+                          <span className={`font-mono text-[10px] ${txtMuted} shrink-0 w-24`}>{r.ip}</span>
+                          <input value={ov.name || ""} onChange={(e) => setPd(r.ip, { name: e.target.value })}
+                            placeholder="Nome dispositivo"
+                            className={`flex-1 rounded border ${borderC} px-2 py-1 text-xs ${cardBg}`}
+                            data-testid={`lan-scan-perdev-name-${r.ip}`} />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select value={ov.device_type || "generic"} onChange={(e) => setPd(r.ip, { device_type: e.target.value })}
+                            className={`flex-1 rounded border ${borderC} px-2 py-1 text-xs ${cardBg}`}
+                            data-testid={`lan-scan-perdev-type-${r.ip}`}>
+                            {DEVICE_TYPE_OPTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                          <label className="flex items-center gap-1.5 text-xs cursor-pointer shrink-0" title="Aggancia come Vitale">
+                            <input type="checkbox" checked={!!ov.is_vital} onChange={(e) => setPd(r.ip, { is_vital: e.target.checked })}
+                              data-testid={`lan-scan-perdev-vital-${r.ip}`} />
+                            <span className="text-yellow-500 font-medium">⭐ Vitale</span>
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <label className={`flex items-start gap-2.5 cursor-pointer p-2.5 rounded-md border ${borderC} mt-4 hover:bg-slate-50 dark:hover:bg-slate-700/40`}>
+              <input type="checkbox" checked={configureAfter} onChange={(e) => setConfigureAfter(e.target.checked)}
+                className="mt-0.5" data-testid="lan-scan-configure-after" />
+              <span className="text-xs">
+                <span className="font-medium">Configura in dettaglio dopo l'import</span><br />
+                <span className={txtMuted}>
+                  Apre la scheda completa di ogni dispositivo importato per impostare
+                  SNMP (v2c/v3), virtualizzazione + host di appartenenza e silenzio allarmi —
+                  le stesse identiche opzioni della schermata dispositivi.
+                </span>
+              </span>
+            </label>
+
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setImportOpen(false)} disabled={importing}
                 className={`px-4 py-2 rounded-md text-sm border ${borderC} hover:bg-slate-50 dark:hover:bg-slate-700`}>
@@ -551,6 +661,18 @@ export default function LanScannerPage({ scopedClientId, scopedClientName } = {}
             </div>
           </div>
         </div>
+      )}
+
+      {/* Coda di configurazione completa post-import (riusa la scheda dispositivo) */}
+      {editIndex >= 0 && editQueue[editIndex] && (
+        <DeviceEditModal
+          key={editQueue[editIndex].id}
+          clientId={scopedClientId}
+          device={editQueue[editIndex]}
+          open={true}
+          onClose={advanceEdit}
+          onSaved={advanceEdit}
+        />
       )}
     </div>
   );

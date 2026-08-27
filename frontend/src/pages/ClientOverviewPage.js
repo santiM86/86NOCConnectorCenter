@@ -577,12 +577,13 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
   const match = (d) => !q || (d.ip_address || "").toLowerCase().includes(q) || nameOf(d).toLowerCase().includes(q);
   const suggested = undecided.filter(d => TRIAGE_INFRA_MACROS.includes(macroOf(d)) && match(d));
   const rest = undecided.filter(d => !TRIAGE_INFRA_MACROS.includes(macroOf(d)) && match(d));
-  const Row = ({ d }) => {
+  const renderRow = (d) => {
     const ip = d.ip_address;
     const on = selected.has(ip);
     const editing = editingIp === ip;
     return (
       <div
+        key={ip}
         className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] transition-colors ${on ? "bg-indigo-500/15 border-indigo-500/50" : "border-[var(--bg-border)] hover:border-[var(--text-muted)]"}`}
         data-testid={`triage-row-${ip}`}>
         <button onClick={() => toggle(ip)} className="flex items-center gap-2 flex-1 min-w-0 text-left" data-testid={`triage-toggle-${ip}`}>
@@ -631,13 +632,13 @@ function TriageWizard({ open, onClose, devices, clientId, onDone }) {
           {suggested.length > 0 && (
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-yellow-400 mb-1.5">⭐ Suggeriti come Vitali · Infrastruttura ({suggested.length})</p>
-              <div className="space-y-1">{suggested.map(d => <Row key={d.ip_address} d={d} />)}</div>
+              <div className="space-y-1">{suggested.map(renderRow)}</div>
             </div>
           )}
           {rest.length > 0 && (
             <div>
               <p className="text-[9px] font-bold uppercase tracking-widest text-[var(--text-muted)] mb-1.5">Altri rilevati ({rest.length})</p>
-              <div className="space-y-1">{rest.map(d => <Row key={d.ip_address} d={d} />)}</div>
+              <div className="space-y-1">{rest.map(renderRow)}</div>
             </div>
           )}
           {suggested.length + rest.length === 0 && (

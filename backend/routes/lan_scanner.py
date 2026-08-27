@@ -350,6 +350,7 @@ async def import_to_client(
             "device_type": d.get("device_type") or "generic",
             "http_port": d.get("http_port") or 80,
             "snmp_version": d.get("snmp_version") or "v2c",
+            "is_vital": bool(d.get("is_vital")),
             # Metadati discovery (da scan_run, fonte autorevole)
             "hostname": scan_r.get("hostname") or d.get("hostname") or "",
             "mac": scan_r.get("mac") or d.get("mac") or "",
