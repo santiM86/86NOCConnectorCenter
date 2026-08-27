@@ -1,5 +1,26 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🐞 FIX discrepanza Backup Mobile/TV vs Desktop ("Non monitorato" falso)
+**Bug utente**: cliente Zitac (giambarinigroup.onmicrosoft.com → ZITACSRV, VM Backup Altaro 4 VM
+100% success) mostrava sul DESKTOP i backup gestiti, ma sulla **Mobile PWA** (`/m`) "BACKUP: Non
+monitorato". Discrepanza tra le viste.
+**Root cause**: `routes/tv_dashboard.py` (usato da Mobile PWA `/m` E TV wallboard, via
+`routes/mobile_access.py::mobile_dashboard`) calcolava lo stato backup leggendo SOLO la collection
+legacy `db.backup_status`, IGNORANDO le due fonti Hornetsecurity reali: 365 Total Backup
+(`backup_job_status`, mappato via `clients.hornetsecurity_tenants`) e VM Backup Altaro
+(`vmbackup_jobs`, mappato via `clients.hornetsecurity_vm_customers`). Il desktop (`routes/overview.py`)
+invece fonde tutte e tre → un cliente con SOLO VM Backup mappato risultava `backup=None` sul mobile.
+**Fix**: nuovo helper condiviso `backend/backup_aggregation.py::build_backup_by_client(db)` che
+replica ESATTAMENTE la logica di `overview.py` (legacy per `status` + 365 + VM Altaro), usato ora
+da `tv_dashboard.py`. Il payload backup mantiene le stesse chiavi (total/ok/warning/failed/missing/
+updated_ago) + aggiunge `stale`; `stale` viene ripiegato in `warning` per la vista mobile.
+**Testing**: verificata PARITÀ desktop↔TV/mobile via curl su 86BIT_Office (entrambi total=1, failed=1).
+Il caso Zitac non è riproducibile in preview (in preview esiste solo 86BIT_Office; Zitac è in PROD).
+⚠️ **PROD**: attivo su argus.86bit.it dopo Save to GitHub + redeploy backend.
+Backlog: `overview.py` potrebbe a sua volta usare `build_backup_by_client` per DRY (oggi duplica la logica).
+
+
+
 ## 2026-06 🛡️ Hardening anti-manomissione console (F12/DevTools + source-map + CSP)
 Richiesta utente: "disabilitare F12 e tutto ciò che un hacker potrebbe usare per compromettere il NOC".
 Chiarito con l'utente (onestà tecnica: F12-block è solo deterrente client-side, aggirabile) → attivate:

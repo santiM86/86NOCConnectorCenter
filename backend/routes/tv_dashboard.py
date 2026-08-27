@@ -483,24 +483,29 @@ async def tv_dashboard_data():
         })
 
     # Enrich client summaries with WAN data
-    backup_docs = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "summary": 1, "updated_at": 1}).to_list(500)
-    backup_map = {b.get("client_id"): b for b in backup_docs}
+    # Backup: fonde legacy + 365 Total Backup + VM Altaro (fonte unica, come
+    # il desktop). Fix discrepanza mobile "Non monitorato" per clienti con solo
+    # VM Backup mappato (es. Zitac → giambarinigroup.onmicrosoft.com).
+    from backup_aggregation import build_backup_by_client
+    backup_by_client = await build_backup_by_client(db)
+    backup_docs = await db.backup_status.find({}, {"_id": 0, "client_id": 1, "updated_at": 1}).to_list(500)
+    backup_updated_map = {b.get("client_id"): b.get("updated_at", "") for b in backup_docs}
     for cs in client_summaries:
         cid = cs["id"]
         cs["wan_targets"] = wan_by_client.get(cid, [])
         diag = wan_diag_map.get(cid)
         cs["wan_diagnosis"] = diag.get("diagnosis", "not_configured") if diag else "not_configured"
         cs["wan_diagnosis_text"] = diag.get("diagnosis_text", "Non configurato") if diag else "Non configurato"
-        b = backup_map.get(cid)
-        if b:
-            s = b.get("summary") or {}
+        agg = backup_by_client.get(cid)
+        if agg and agg.get("total", 0) > 0:
             cs["backup"] = {
-                "total": s.get("total_vms", 0),
-                "ok": s.get("backup_ok", 0),
-                "warning": s.get("backup_warning", 0),
-                "failed": s.get("backup_failed", 0),
-                "missing": s.get("backup_missing", 0),
-                "updated_ago": _time_ago(b.get("updated_at", "")),
+                "total": agg["total"],
+                "ok": agg["ok"],
+                "warning": agg["warning"] + agg["stale"],
+                "failed": agg["error"],
+                "missing": agg["missing"],
+                "stale": agg["stale"],
+                "updated_ago": _time_ago(backup_updated_map.get(cid, "")),
             }
         else:
             cs["backup"] = None
