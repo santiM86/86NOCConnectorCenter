@@ -1,5 +1,21 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🐞 FIX rinomina nel modal "Classifica dispositivi rilevati" (focus perso / cursore in fondo)
+**Bug utente**: nel modal Triage (aggancia Vitali), rinominando un dispositivo l'input perdeva il focus
+ad ogni carattere e il cursore "partiva sempre dal fondo".
+**Root cause** (`ClientOverviewPage.js::TriageWizard`): il componente `Row` era definito DENTRO il corpo
+di `TriageWizard`. Ogni keystroke aggiorna lo state `editValue` → `TriageWizard` si ri-renderizza →
+`Row` diventa un NUOVO tipo di componente → React **smonta e rimonta** la riga → l'`<Input autoFocus>`
+perde il focus e `autoFocus` rimette il cursore in coda. (Anti-pattern: componente definito in render.)
+**Fix**: `Row` trasformato da componente (`<Row d={d}/>`) a funzione di rendering `renderRow(d)` che
+ritorna JSX di host-elements con `key={ip}` sul root; usato come `{suggested.map(renderRow)}` /
+`{rest.map(renderRow)}`. React ora riconcilia i div/input per key senza rimontarli → focus preservato.
+La lista non si riordina mentre si scrive (il filtro usa `search`, indipendente da `editValue`).
+**Testing**: frontend compila senza errori; fix deterministico basato su anti-pattern React noto.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Wizard Nuovo Cliente — step Backup ora include anche VM Backup (Altaro)
 **Richiesta utente**: nel wizard "Nuovo Cliente" step 3 (Backup) comparivano SOLO i tenant 365 Total
 Backup → mancavano moltissimi clienti (quelli su VM Backup/Altaro), impossibili da mappare.
