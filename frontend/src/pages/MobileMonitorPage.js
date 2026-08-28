@@ -308,7 +308,21 @@ export default function MobileMonitorPage() {
 
               {/* Backup */}
               <div className="mm-block">
-                <div className="mm-block-t">Backup</div>
+                <div className="mm-block-t" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  Backup
+                  {sel.backup?.source && (
+                    <span
+                      data-testid={`mm-backup-tag-${sel.backup.source}`}
+                      style={{
+                        fontSize: 9, fontWeight: 800, padding: "1px 4px", borderRadius: 3,
+                        color: sel.backup.source === "vm" ? "#c4b5fd" : "#7dd3fc",
+                        background: sel.backup.source === "vm" ? "rgba(167,139,250,0.18)" : "rgba(56,189,248,0.18)",
+                      }}
+                    >
+                      {sel.backup.source === "vm" ? "VM" : "365"}
+                    </span>
+                  )}
+                </div>
                 {!sel.backup ? (
                   <div className="mm-mut-line">Non monitorato</div>
                 ) : (sel.backup.failed || sel.backup.missing || sel.backup.warning) ? (
@@ -316,10 +330,10 @@ export default function MobileMonitorPage() {
                     {sel.backup.failed > 0 && <b style={{ color: "#fca5a5" }}>{sel.backup.failed} falliti</b>}
                     {sel.backup.missing > 0 && <span style={{ color: "#fde68a" }}>{sel.backup.missing} mancanti</span>}
                     {sel.backup.warning > 0 && <span style={{ color: "#fde68a" }}>{sel.backup.warning} warning</span>}
-                    <span style={{ marginLeft: "auto", color: "var(--mm-mut)", fontSize: 11 }}>/ {sel.backup.total} VM</span>
+                    <span style={{ marginLeft: "auto", color: "var(--mm-mut)", fontSize: 11 }}>/ {sel.backup.total} {sel.backup.source === "vm" ? "VM" : "job"}</span>
                   </div>
                 ) : (
-                  <div className="mm-ok-line">✓ {sel.backup.ok}/{sel.backup.total} VM ok</div>
+                  <div className="mm-ok-line">✓ {sel.backup.ok}/{sel.backup.total} {sel.backup.source === "vm" ? "VM" : "job"} ok</div>
                 )}
               </div>
 

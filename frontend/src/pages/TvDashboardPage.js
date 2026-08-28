@@ -322,7 +322,21 @@ export default function TvDashboardPage() {
 
                 {/* BACKUP */}
                 <div className="tvx-sec">
-                  <div className="tvx-sec-h">BACKUP</div>
+                  <div className="tvx-sec-h" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    BACKUP
+                    {i.bk?.source && (
+                      <span
+                        data-testid={`tv-backup-tag-${i.bk.source}`}
+                        style={{
+                          fontSize: 9, fontWeight: 800, padding: "1px 5px", borderRadius: 3,
+                          color: i.bk.source === "vm" ? "#c4b5fd" : "#7dd3fc",
+                          background: i.bk.source === "vm" ? "rgba(167,139,250,0.2)" : "rgba(56,189,248,0.2)",
+                        }}
+                      >
+                        {i.bk.source === "vm" ? "VM" : "365"}
+                      </span>
+                    )}
+                  </div>
                   {!i.bk ? (
                     <div className="tvx-muted">Non monitorato</div>
                   ) : (i.bkFail || i.bkMiss || i.bkWarn) ? (
@@ -330,10 +344,10 @@ export default function TvDashboardPage() {
                       {i.bkFail > 0 && <span className="tvx-chip crit" data-testid="tv-backup-fail">{i.bkFail} FALLITI</span>}
                       {i.bkMiss > 0 && <span className="tvx-chip warn">{i.bkMiss} MANCANTI</span>}
                       {i.bkWarn > 0 && <span className="tvx-chip warn">{i.bkWarn} WARNING</span>}
-                      <span className="tvx-bk-tot">/ {i.bk.total} VM</span>
+                      <span className="tvx-bk-tot">/ {i.bk.total} {i.bk.source === "vm" ? "VM" : "job"}</span>
                     </div>
                   ) : (
-                    <div className="tvx-ok">✓ {i.bk.ok}/{i.bk.total} VM ok</div>
+                    <div className="tvx-ok">✓ {i.bk.ok}/{i.bk.total} {i.bk.source === "vm" ? "VM" : "job"} ok</div>
                   )}
                 </div>
               </div>

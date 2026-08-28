@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Eye, EyeSlash, Info } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Info, DeviceMobile } from "@phosphor-icons/react";
 import { useAppVersion } from "@/components/AppVersion";
+
+const IS_MOBILE = typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -67,6 +69,21 @@ export default function LoginPage() {
               </div>
             </div>
           </div>
+
+          {/* Banner: dispositivo mobile → suggerisci la versione ottimizzata */}
+          {IS_MOBILE && (
+            <a
+              href="/m"
+              data-testid="login-mobile-banner"
+              className="mt-3 max-w-sm mx-auto w-full flex items-center gap-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-indigo-300 active:scale-[0.98] transition-transform"
+            >
+              <DeviceMobile size={18} weight="bold" className="flex-shrink-0" />
+              <span className="text-xs font-semibold leading-tight flex-1">
+                Sei su smartphone? Apri la versione mobile ottimizzata
+              </span>
+              <span className="text-sm font-bold">→</span>
+            </a>
+          )}
 
           {/* Login Card */}
           <div className="mt-6 rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-5 max-w-sm mx-auto w-full">

@@ -1,0 +1,41 @@
+{
+  "summary": "Full e2e test of the new backup SOURCE TAG feature ('VM' = Hornetsecurity VM/Altaro, '365' = Hornetsecurity 365/legacy) on all three surfaces + the /login mobile banner. BACKEND: new pytest suite /app/backend/tests/test_backup_source_tag_iter135.py - 9/9 PASS. GET /api/overview/clients returns backup.source='365' for the only client with backups (86BIT_Office, da3d6e40-..., total=1 error=1); GET /api/tv/dashboard returns clients[].backup with source='365' (note: payload key is `clients`, NOT `client_summaries`); GET /api/mobile/dashboard with X-Mobile-Token returns byte-identical source map to /tv and correctly rejects requests without the token (403). Cross-surface parity overview<->tv<->mobile verified. Because live data has 0 VM backup items, the 'vm' branch is not reachable via the API, so I unit-tested build_backup_by_client() with fakes: VM priority path yields source='vm' with correct totals, and the 365-only path yields source='365'; 'source' is correctly omitted when total==0. FRONTEND (Playwright, preview URL, admin login + computed TOTP): (1) Desktop / dashboard -> data-testid='svc-tag-365' renders next to the BACKUP line, text '365', blue rgb(56,189,248) on rgba(56,189,248,0.15); svc-tag-vm absent as expected. (2) /tv -> data-testid='tv-backup-tag-365' renders in the BACKUP section header, text '365', rgb(125,211,252), 9px; no 'tv-backup-tag-undefined' leakage. (3) /m#t=<pairing token> -> list loads, clicking mobile-client-row opens the detail sheet and data-testid='mm-backup-tag-365' renders, text '365', 8px. (4) /login with desktop UA: login-mobile-banner absent (count=0); with a spoofed iPhone UA the banner renders, text 'Sei su smartphone? Apri la versione mobile ottimizzata', href='/m', and clicking it navigates to /m. No JS errors on any surface (only the pre-existing pre-2FA 403 and the /ws/alerts WebSocket warning). Feature works as specified; issues found are cosmetic/semantic, listed below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/overview/clients", "issue": "Only 1 client in preview DB and VM backup total is 0, so backup.source can only ever be '365' with current data - the 'vm' branch is untestable end-to-end via API (covered by unit test instead). Seed at least one client with a matching hornetsecurity_vm_customers mapping to demo/validate the violet VM tag."},
+      {"endpoint": "GET /api/tv/dashboard", "issue": "Client array key is `clients` while the code/comments call them `client_summaries` - misleading naming for API consumers/tests (no functional impact)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TvDashboardPage / MobileMonitorPage - backup counters", "issue": "The unit label after the counter is hard-coded 'VM' ('/ {total} VM', '✓ {ok}/{total} VM ok'), so with the new tag the UI now reads contradictorily: 'BACKUP [365]  1 falliti / 1 VM'. When backup.source==='365' the items are 365 workloads/tenants, not VMs. Make the label depend on source (e.g. 'VM' vs 'job'/'workload').", "selector": "TvDashboardPage.js:347,350 ; MobileMonitorPage.js:333,336", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Desktop dashboard client card", "issues": ["The svc-tag font-size is 7px (measured height 9.8px) - below practical legibility at 1920x1080; suggest >=9-10px.", "Tag color rgb(56,189,248) on rgba(56,189,248,0.15) over the dark card is fine for contrast, but at 7px the antialiasing makes '365' look like a smudge."]},
+      {"screen": "/tv wallboard", "issues": ["With a single client the wallboard leaves ~80% of the 1920x1080 screen empty (pre-existing layout/data issue, unrelated to this feature)."]},
+      {"screen": "Mobile detail sheet", "issues": ["mm-backup-tag font-size is 8px; consider 9-10px for a phone screen."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_backup_source_tag_iter135.py", "/app/test_reports/pytest/iter135.xml"],
+  "action_items": [
+    "Make the '/ N VM' and '✓ N/N VM ok' unit labels source-aware on TV and Mobile (currently says 'VM' while the tag says '365').",
+    "Bump the tag font-size on the desktop card (7px -> ~9-10px) and mobile (8px -> ~9-10px).",
+    "Optional: seed one client with a real hornetsecurity_vm_customers mapping so the violet 'VM' tag path is demonstrable end-to-end (86BIT_Office is currently mapped to the unrelated VM customer 'loghilton.com', already reported in iteration_134)."
+  ],
+  "critical_code_review_comments": [
+    "TvDashboardPage.js:329 builds the testid as `tv-backup-tag-${i.bk.source}` - it is guarded by `i.bk?.source &&` so no 'undefined' leaks today, but if the backend ever returns an unexpected source the testid/colors silently degrade. Prefer normalising: const src = i.bk.source === 'vm' ? 'vm' : '365'.",
+    "The source-tag rendering logic (color map + label) is now duplicated verbatim in three files (DashboardPage SvcLine, TvDashboardPage, MobileMonitorPage). Extract a tiny <BackupSourceTag source={...}/> component to keep colors/labels in one place.",
+    "backup_aggregation.build_backup_by_client sets 'source' only when total>0, while routes/overview.py re-derives it independently (duplicated priority logic). overview.py should just consume the aggregation helper to avoid drift.",
+    "Data inconsistency worth checking: the mobile detail alert list shows 'Backup VM fallito: SRVDATI' for a client whose card is tagged '365' - the alert engine and the card aggregation classify the same failure differently (vmbackup_jobs alert exists but VM mapping total is 0)."
+  ],
+  "updated_files": ["/app/backend/tests/test_backup_source_tag_iter135.py"],
+  "success_rate": {"backend": "100% (9/9 pytest)", "frontend": "100% of requested checks pass (desktop tag, TV tag, mobile tag, login banner mobile-only + link to /m)"},
+  "seed_data_creation": "none - all tests read-only (a mobile pairing token was requested via POST /api/mobile/pairing; QA fallback token also works)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked); mobile token jFdx6pqssnLsTIoxb2LM6rRHpFBTrcYSuvDRABISTu8 (worked)",
+  "context_for_next_testing_agent": "Backup source tag verified on all 3 surfaces (only '365' reachable with live data; 'vm' covered by unit test in test_backup_source_tag_iter135.py). /api/tv/dashboard returns the array under key `clients` (not client_summaries). Mobile flow: goto /m#t=<token>, wait for [data-testid=mobile-monitor], click [data-testid=mobile-client-row], then the tag lives in the detail sheet. Login mobile banner: IS_MOBILE is evaluated at module load, so spoof navigator.userAgent via page.add_init_script BEFORE goto. Preview DB has exactly 1 client: 86BIT_Office da3d6e40-b3e5-4d46-9787-dde328a3aa36, backup total=1 error=1 source=365.",
+  "rca_of_the_issue": "No defect in the feature. The only failure during testing was in my own first test version, which looked up `client_summaries` in the /tv payload while the endpoint actually returns `clients`; fixed in the test file. The remaining findings are cosmetic (7-8px tag font) and semantic (hard-coded 'VM' unit label next to a '365' tag)."
+}

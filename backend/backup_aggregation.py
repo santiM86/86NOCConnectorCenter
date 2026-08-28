@@ -23,6 +23,7 @@ async def build_backup_by_client(db) -> dict[str, dict]:
     """Ritorna {client_id: {total, ok, warning, error, missing, stale}}.
     Solo i clienti con almeno una fonte backup compaiono nel dict."""
     result: dict[str, dict] = {}
+    vm_result: dict[str, dict] = {}
 
     # --- 1. Legacy backup_status -------------------------------------------
     # Stessa logica di routes/overview.py: un doc = un item, classificato per
@@ -115,7 +116,7 @@ async def build_backup_by_client(db) -> dict[str, dict]:
                         vm_filters.append((it["customer"].strip(), None))
             if not vm_filters:
                 continue
-            agg = result.setdefault(cid, _empty())
+            agg = vm_result.setdefault(cid, _empty())
             for w in vm_workloads:
                 cn = w.get("customer_name")
                 hn = w.get("host_name") or ""
@@ -139,5 +140,21 @@ async def build_backup_by_client(db) -> dict[str, dict]:
                     agg["stale"] += 1
                 elif w.get("onsite_status") == "success":
                     agg["ok"] += 1
+
+    # Priorità VM Backup (Altaro): se il cliente ha backup VM, quelli hanno la
+    # precedenza sulla card (365/legacy usati solo come fallback).
+    for cid, vm in vm_result.items():
+        if vm.get("total", 0) > 0:
+            result[cid] = vm
+        else:
+            result.setdefault(cid, _empty())
+
+    # Tag fonte backup: "vm" (Altaro) ha priorita', altrimenti "365"/legacy.
+    # Coerente con routes/overview.py (dashboard desktop) → parita' TV/Mobile.
+    for cid, agg in result.items():
+        if agg.get("total", 0) <= 0:
+            continue
+        vm = vm_result.get(cid)
+        agg["source"] = "vm" if (vm and vm.get("total", 0) > 0) else "365"
 
     return result

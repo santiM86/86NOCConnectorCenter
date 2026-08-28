@@ -505,6 +505,7 @@ async def tv_dashboard_data():
                 "failed": agg["error"],
                 "missing": agg["missing"],
                 "stale": agg["stale"],
+                "source": agg.get("source"),
                 "updated_ago": _time_ago(backup_updated_map.get(cid, "")),
             }
         else:

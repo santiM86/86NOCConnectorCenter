@@ -328,6 +328,7 @@ function ClientCard({ client: c, navigate }) {
         <SvcLine
           icon={Database}
           label="Backup"
+          tag={c.backup?.total > 0 ? (c.backup.source === "vm" ? "VM" : "365") : null}
           value={
             c.backup?.total > 0
               ? (c.backup.error > 0 ? `${c.backup.error} ERR`
@@ -435,12 +436,26 @@ function ClientCard({ client: c, navigate }) {
 }
 
 /* ==================== SERVICE LINE ==================== */
-function SvcLine({ icon: Icon, label, value, color, sub }) {
+function SvcLine({ icon: Icon, label, value, color, sub, tag }) {
   return (
     <div className="flex items-center gap-1.5 py-0.5">
       <Icon size={11} weight="bold" style={{ color, opacity: 0.7 }} className="flex-shrink-0" />
       <div className="min-w-0">
-        <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest leading-none">{label}</p>
+        <p className="text-[8px] text-[var(--text-muted)] uppercase tracking-widest leading-none flex items-center gap-1">
+          {label}
+          {tag && (
+            <span
+              data-testid={`svc-tag-${tag.toLowerCase()}`}
+              className="text-[9px] font-bold px-1 rounded-sm leading-[1.4]"
+              style={{
+                color: tag === "VM" ? "#a78bfa" : "#38bdf8",
+                background: tag === "VM" ? "rgba(167,139,250,0.15)" : "rgba(56,189,248,0.15)",
+              }}
+            >
+              {tag}
+            </span>
+          )}
+        </p>
         <p className="text-[10px] font-bold font-mono leading-tight" style={{ color }}>
           {value}
           {sub && <span className="text-[8px] font-normal opacity-60 ml-0.5">{sub}</span>}
