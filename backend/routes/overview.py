@@ -510,9 +510,10 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
         # QUELLI (più importanti); altrimenti ripiega su 365/legacy aggregato.
         _vm = vm_by_client.get(cid)
         if _vm and _vm.get("total", 0) > 0:
-            backup_info = _vm
+            backup_info = {**_vm, "source": "vm"}
         else:
-            backup_info = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
+            _m = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
+            backup_info = {**_m, "source": "365"} if _m.get("total", 0) > 0 else _m
         printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
         wan_tgts = wan_targets_by_client.get(cid, [])
         connector_online = connector_by_client.get(cid)

@@ -149,4 +149,12 @@ async def build_backup_by_client(db) -> dict[str, dict]:
         else:
             result.setdefault(cid, _empty())
 
+    # Tag fonte backup: "vm" (Altaro) ha priorita', altrimenti "365"/legacy.
+    # Coerente con routes/overview.py (dashboard desktop) → parita' TV/Mobile.
+    for cid, agg in result.items():
+        if agg.get("total", 0) <= 0:
+            continue
+        vm = vm_result.get(cid)
+        agg["source"] = "vm" if (vm and vm.get("total", 0) > 0) else "365"
+
     return result

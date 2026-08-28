@@ -8995,3 +8995,19 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   (sel._i.vital.length). ONLINE resta il totale device online.
 - PWA: manifest già "display":"standalone" → aggiunta alla Home parte a schermo intero
   senza barra browser (in Safari la barra è normale finché non la aggiungi alla Home).
+
+## 2026-08-28 — Etichetta Fonte Backup ("VM"/"365") su Desktop+TV+Mobile + Banner Mobile su /login
+- backup_aggregation.build_backup_by_client() ora imposta agg["source"] = "vm"
+  (Hornetsecurity VM/Altaro, priorità) oppure "365" (Hornetsecurity 365/legacy)
+  quando total>0 → parità TV/Mobile con la dashboard desktop (overview.py già lo faceva).
+- tv_dashboard.py propaga cs["backup"]["source"]; /api/mobile/dashboard riusa tv_dashboard_data().
+- Frontend: tag mini "VM" (viola) / "365" (blu) accanto a Backup su:
+  - DashboardPage SvcLine (prop `tag`, data-testid svc-tag-vm/365, font 9px)
+  - TvDashboardPage sezione BACKUP (data-testid tv-backup-tag-vm/365)
+  - MobileMonitorPage blocco Backup (data-testid mm-backup-tag-vm/365, font 9px)
+- Label unità resa source-aware: "N VM" per source=vm, "N job" per source=365
+  (prima era hard-coded "VM", incoerente col tag 365).
+- LoginPage: banner "Sei su smartphone? Apri la versione mobile ottimizzata →"
+  (data-testid login-mobile-banner) mostrato SOLO con user-agent mobile, link a /m.
+- TESTATO: testing_agent iter_135 (backend 9/9 pytest, frontend 100%). Con i dati
+  live solo il tag "365" è raggiungibile (VM total=0); ramo "vm" coperto da unit test.
