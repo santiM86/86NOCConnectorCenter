@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Database, ShieldCheck, ArrowsClockwise, Trash, Plug, CaretDown, CaretRight, Users, Sparkle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import BackupAutoMapModal from "@/components/BackupAutoMapModal";
 
 export default function HornetsecuritySettingsPage() {
@@ -22,6 +22,10 @@ export default function HornetsecuritySettingsPage() {
   const [viewMode, setViewMode] = useState("by-tenant"); // "by-tenant" | "by-client"
   const [form, setForm] = useState({ api_url: "", api_key: "", poll_interval_minutes: 30, enabled: true });
   const [showAutoMap, setShowAutoMap] = useState(false);
+  const _location = useLocation();
+  useEffect(() => {
+    if (new URLSearchParams(_location.search).get("automap") === "1") setShowAutoMap(true);
+  }, [_location.search]);
 
   const reload = useCallback(async () => {
     setLoading(true);

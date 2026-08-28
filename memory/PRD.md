@@ -1,5 +1,17 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Badge "clienti senza backup mappato" sulla dashboard
+Aggiunto in `DashboardPage.js` un badge nell'header (ambra, `data-testid=unmapped-backup-badge`) che
+mostra "N clienti senza backup · Auto-mappa" quando ci sono clienti con `backup.total` mancante/0.
+Cliccandolo → `/settings/hornetsecurity?automap=1`. `HornetsecuritySettingsPage.js` legge quel query
+param (useLocation) e apre automaticamente il `BackupAutoMapModal`. Badge nascosto se count=0.
+**Testing**: conteggio verificato via curl (cliente temporaneo non mappato → badge count=1, poi rimosso);
+frontend compila. In preview l'unico cliente è mappato → badge assente (corretto).
+Nota: il redeploy in produzione è azione utente (Save to GitHub); l'auto-map dei 19 clienti reali va
+eseguito in produzione dopo il deploy (in preview c'è 1 solo cliente).
+
+
+
 ## 2026-06 ✨ Auto-mappatore Backup (bulk) — cliente ARGUS ↔ VM customer / tenant 365
 **Contesto**: sulla dashboard molti clienti mostravano backup "—" perché non mappati ad alcun cliente
 VM Backup / tenant 365 (49 VM customers + 44 tenant in Hornetsecurity, ma solo ~7 clienti agganciati).

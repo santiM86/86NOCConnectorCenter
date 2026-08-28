@@ -20,6 +20,7 @@ import {
   PlugsConnected,
   MagnifyingGlass,
   ArrowClockwise,
+  WarningCircle,
   Funnel,
   Clock,
   XCircle,
@@ -120,6 +121,7 @@ export default function DashboardPage() {
 
   const g = overview.global || {};
   const clients = overview.clients || [];
+  const unmappedBackup = clients.filter(c => !c.backup || !c.backup.total).length;
 
   // Filter & search
   const filtered = clients.filter(c => {
@@ -140,6 +142,17 @@ export default function DashboardPage() {
           <p className="text-[var(--text-muted)] text-xs mt-0.5">Monitoraggio in tempo reale — {clients.length} clienti</p>
         </div>
         <div className="flex items-center gap-3">
+          {unmappedBackup > 0 && (
+            <button
+              onClick={() => navigate("/settings/hornetsecurity?automap=1")}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/15 border border-amber-500/40 text-amber-400 hover:bg-amber-500/25 transition-all"
+              title="Alcuni clienti non hanno un backup mappato — apri l'auto-mappatore"
+              data-testid="unmapped-backup-badge"
+            >
+              <WarningCircle size={13} weight="fill" />
+              {unmappedBackup} clienti senza backup · Auto-mappa
+            </button>
+          )}
           <button onClick={fetchData} className="p-1.5 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all" title="Aggiorna">
             <ArrowClockwise size={16} />
           </button>
