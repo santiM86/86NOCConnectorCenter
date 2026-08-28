@@ -43,7 +43,7 @@ class TestPingHTTPMonitoring:
         # Cleanup: Remove test device
         try:
             self.session.delete(f"{BASE_URL}/api/connector/device-poll-status/{TEST_PING_DEVICE_IP}")
-        except:
+        except Exception:
             pass
     
     def test_01_connector_status_shows_online(self):
@@ -203,7 +203,7 @@ class TestPingHTTPMonitoring:
         # Cleanup
         try:
             self.session.delete(f"{BASE_URL}/api/connector/device-poll-status/{snmp_ip}")
-        except:
+        except Exception:
             pass
     
     def test_08_cleanup_test_device(self):

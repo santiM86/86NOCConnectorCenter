@@ -805,3 +805,105 @@ async def poll_vmbackup_now(current_user: dict = Depends(get_current_user)):
     from services.hornetsecurity_vmbackup_poller import run_vmbackup_tick
     summary = await run_vmbackup_tick(force=True)
     return summary
+
+
+
+# ---------------------------------------------------------------------------
+# Admin: auto-mapping backup (suggerisce cliente ARGUS <-> cliente VM / tenant 365
+# per somiglianza nome/dominio). L'apply avviene via i PUT mapping esistenti.
+# ---------------------------------------------------------------------------
+_AUTOMAP_STOP = {
+    "srl", "srls", "spa", "sas", "snc", "srl", "group", "gruppo", "di", "the",
+    "impianti", "studio", "azienda", "ditta", "societa", "it", "com", "net",
+    "org", "eu", "cloud", "io", "biz", "info", "onmicrosoft", "backup", "spa",
+    "spa", "sa", "co", "ltd", "inc", "and", "e", "s", "office",
+}
+
+
+def _automap_norm(s: str) -> str:
+    import re
+    if not s:
+        return ""
+    toks = re.split(r"[^a-z0-9]+", str(s).lower())
+    toks = [t for t in toks if t and t not in _AUTOMAP_STOP]
+    return "".join(toks)
+
+
+def _automap_score(a_norm: str, b_norm: str) -> float:
+    import difflib
+    if not a_norm or not b_norm:
+        return 0.0
+    if a_norm == b_norm:
+        return 1.0
+    if a_norm in b_norm or b_norm in a_norm:
+        # contenimento: forte ma non perfetto (evita match troppo generici corti)
+        shorter = min(len(a_norm), len(b_norm))
+        if shorter >= 4:
+            return 0.9
+    return round(difflib.SequenceMatcher(None, a_norm, b_norm).ratio(), 3)
+
+
+def _best_matches(client_norm: str, candidates: list[dict], topn: int = 5) -> list[dict]:
+    scored = []
+    for c in candidates:
+        sc = _automap_score(client_norm, c["norm"])
+        if sc > 0:
+            scored.append({"name": c["name"], "score": sc})
+    scored.sort(key=lambda x: -x["score"])
+    return scored[:topn]
+
+
+@router.get("/admin/backup-automap/suggestions")
+async def backup_automap_suggestions(current_user: dict = Depends(get_current_user)):
+    """Suggerisce, per ogni cliente ARGUS, il miglior cliente VM Backup e il
+    miglior tenant 365 per somiglianza di nome/dominio. Ritorna anche i top
+    candidati (per override manuale) e lo stato di mappatura attuale."""
+    require_admin(current_user)
+    THRESHOLD = 0.72
+
+    # Candidati VM (customer_name distinti) e 365 (tenant distinti)
+    vm_names = await db.vmbackup_jobs.distinct("customer_name")
+    tenant_names = await db.backup_job_status.distinct("tenant", {"source": "hornetsecurity"})
+    vm_cands = [{"name": n, "norm": _automap_norm(n)} for n in vm_names if n]
+    tn_cands = [{"name": n, "norm": _automap_norm(n)} for n in tenant_names if n]
+
+    suggestions = []
+    async for c in db.clients.find({}, {"_id": 0, "id": 1, "name": 1,
+                                        "hornetsecurity_vm_customers": 1,
+                                        "hornetsecurity_tenants": 1}):
+        cname = c.get("name") or ""
+        cnorm = _automap_norm(cname)
+        cur_vm = c.get("hornetsecurity_vm_customers") or []
+        cur_tn = c.get("hornetsecurity_tenants") or []
+        if isinstance(cur_vm, str):
+            cur_vm = [cur_vm]
+        if isinstance(cur_tn, str):
+            cur_tn = [cur_tn]
+        cur_vm_flat = [x if isinstance(x, str) else x.get("customer") for x in cur_vm]
+        cur_tn_flat = [x if isinstance(x, str) else x.get("tenant") for x in cur_tn]
+
+        vm_top = _best_matches(cnorm, vm_cands)
+        tn_top = _best_matches(cnorm, tn_cands)
+        vm_sugg = vm_top[0] if vm_top and vm_top[0]["score"] >= THRESHOLD else None
+        tn_sugg = tn_top[0] if tn_top and tn_top[0]["score"] >= THRESHOLD else None
+
+        suggestions.append({
+            "client_id": c["id"],
+            "client_name": cname,
+            "mapped": bool(cur_vm_flat) or bool(cur_tn_flat),
+            "current_vm": [x for x in cur_vm_flat if x],
+            "current_tenants": [x for x in cur_tn_flat if x],
+            "vm_suggestion": vm_sugg,
+            "tenant_suggestion": tn_sugg,
+            "vm_candidates": vm_top,
+            "tenant_candidates": tn_top,
+        })
+
+    suggestions.sort(key=lambda s: (s["mapped"], s["client_name"].lower()))
+    return {
+        "threshold": THRESHOLD,
+        "vm_customers_total": len(vm_cands),
+        "tenants_total": len(tn_cands),
+        "clients_total": len(suggestions),
+        "suggestions": suggestions,
+    }

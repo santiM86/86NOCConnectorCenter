@@ -45,6 +45,7 @@ async def create_change(cr: ChangeRequest, current_user: dict = Depends(get_curr
     data["implemented_at"] = None
     data["pir_notes"] = None
     await db.changes.insert_one(data)
+    data.pop("_id", None)
     return data
 
 
@@ -124,6 +125,7 @@ async def create_problem(p: ProblemRecord, current_user: dict = Depends(get_curr
     data["created_by"] = current_user.get("email")
     data["updated_at"] = now.isoformat()
     await db.problems.insert_one(data)
+    data.pop("_id", None)
     return data
 
 

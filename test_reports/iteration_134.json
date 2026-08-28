@@ -1,0 +1,40 @@
+{
+  "summary": "Frontend-only test of the Backup BULK AUTO-MAPPER modal (/settings/hornetsecurity) on the preview URL, logged in as admin info@86bit.it with computed TOTP (2FA). RESULT: core flow WORKS. (1) 'Auto-mappa clienti' (data-testid='open-automap-btn') opens data-testid='automap-modal'; header shows '1 clienti · 49 VM · 44 tenant 365' matching the backend payload. (2) With the default 'solo non mappati' filter checked the list correctly shows 'Nessun cliente da mappare' (the single client is already mapped). (3) Unchecking data-testid='automap-only-unmapped' reveals 1 row (automap-row-da3d6e40-...) for 86BIT_Office with the 'gia mappato' badge. (4) Both selects are interactive: VM select has 6 options (86bit.it (100%), bufalitaly... (40%), barcellaimpianti.com (29%), loghilton.com (29%), idrotechsrl.org (25%)) and changing the option works; 365 select has 6 options (VITS Impianti 44%, etc.) and defaults to '— nessuno —'. (5) The per-row include checkbox toggles and the 'Applica N' button count/disabled state follow it correctly (Applica 1 -> enabled, Applica 0 -> disabled). (6) Clicked Applica with the row selected but unchanged (vm == current mapping): NO PUT /mapping request was sent (idempotency guard works) and the existing mapping stayed intact (loghilton.com) - no data modified by this test. No page errors; console clean except React DevTools info, a 403 on the pre-2FA request and the /ws/alerts WebSocket warning.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/admin/backup-automap/suggestions", "issue": "Verified directly (200): clients_total=1, vm_customers_total=49, tenants_total=44, and for 86BIT_Office current_vm=['loghilton.com'] while vm_suggestion={'86bit.it', 1.0}. The only client is mapped to an unrelated VM customer - preview seed-data issue, not an API bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "BackupAutoMapModal - row for ALREADY-MAPPED clients", "issue": "For rows where s.mapped===true the modal (a) pre-selects current_vm[0] ('loghilton.com', 29%) instead of the much better vm_suggestion ('86bit.it', score 1.0) and (b) hides the 'match %' badge entirely because it is gated by `s.vm_suggestion && !s.mapped`. So the admin sees NO indication that a 100% suggestion exists; the expectation 'select pre-populated with 86bit.it and ~100% match' does NOT hold for mapped clients. Suggest: always render the match badge and show a 'suggerito: X (100%)' hint / one-click 'usa suggerimento' when the current mapping differs from a high-score suggestion.", "selector": "[data-testid='automap-vm-da3d6e40-b3e5-4d46-9787-dde328a3aa36']", "priority": "MEDIUM"},
+      {"component": "BackupAutoMapModal - state after Applica", "issue": "After clicking Applica the modal appears to remount/reset: the 'Mostra solo clienti non ancora mappati' checkbox returns to CHECKED and the list collapses to 'Nessun cliente da mappare', so the admin loses filter/context right after applying. Only sel[] should reload, not the onlyUnmapped filter.", "selector": "[data-testid='automap-only-unmapped']", "priority": "LOW"},
+      {"component": "BackupAutoMapModal - apply feedback", "issue": "apply() calls toast.success('Auto-mapping applicato: 0 clienti') unconditionally even when no PUT was issued. No toast was visible in the DOM 5s after the click (possibly sonner auto-dismiss), so the no-op case gives either misleading or unnoticeable feedback. Suggest a distinct 'Nessuna modifica necessaria' info toast when okCount===0 && errCount===0.", "selector": "[data-testid='automap-apply']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Auto-mappatura backup modal", "issues": ["Rows use native <select> elements (11px) while the rest of the app uses shadcn Select - visual inconsistency.", "'match %' label rendered at 9px is barely readable at 1920x1080."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Show the match % / suggestion for already-mapped clients too (remove the `!s.mapped` gate) and surface the higher-scoring suggestion (86bit.it 100%) instead of silently keeping the current mapping (loghilton.com 29%).",
+    "Do not reset the 'only unmapped' filter / remount the modal after Applica.",
+    "Differentiate the apply toast when nothing changed (okCount===0).",
+    "Preview data: 86BIT_Office is mapped to VM customer 'loghilton.com' - likely wrong seed data; fixing it makes the auto-mapper demo coherent."
+  ],
+  "critical_code_review_comments": [
+    "BackupAutoMapModal.apply() runs PUTs in a sequential for-loop; with many clients this will be slow with no progress indicator beyond 'Applico…'. Consider batching + progress counter.",
+    "apply() swallows errors (errCount++) without surfacing WHICH client failed - no way to retry a specific row.",
+    "The inline `Select` component is defined inside the component body, so it is re-created on every render and remounts the <select> nodes on each state change - move it out or memoize."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request); suggestions endpoint spot-checked 200", "frontend": "100% of requested checks executed; modal open/load/rows/dropdowns/checkbox/apply-count all pass, 3 UX defects found"},
+  "seed_data_creation": "none - no mappings created or modified (no-op apply confirmed by 0 PUT requests)",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked)",
+  "context_for_next_testing_agent": "Login: /login (login-email-input, login-password-input, login-submit-btn) -> /2fa (2fa-code-input, verify-2fa-btn) with TOTP from /app/memory/test_credentials.md. Auto-mapper client_id in preview = da3d6e40-b3e5-4d46-9787-dde328a3aa36 (86BIT_Office), current_vm=['loghilton.com'], vm_suggestion 86bit.it 1.0, no tenant mapping. You MUST uncheck automap-only-unmapped to see the row.",
+  "rca_of_the_issue": "The expected '86bit.it pre-filled at ~100%' fails only because the client is already mapped: init logic `vm = !s.mapped && s.vm_suggestion ? s.vm_suggestion.name : (s.current_vm[0] || '')` prefers the existing (wrong) mapping, and the match badge renders only when `!s.mapped`. Backend data is correct."
+}

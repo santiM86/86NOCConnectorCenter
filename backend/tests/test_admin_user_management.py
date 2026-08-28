@@ -120,7 +120,7 @@ class TestAdminUserCRUD:
         for user_id in self.created_user_ids:
             try:
                 requests.delete(f"{BASE_URL}/api/admin/users/{user_id}", headers=self.headers)
-            except:
+            except Exception:
                 pass
     
     def test_create_user_with_operator_role(self):
@@ -318,7 +318,7 @@ class TestAdmin2FAManagement:
         for user_id in self.created_user_ids:
             try:
                 requests.delete(f"{BASE_URL}/api/admin/users/{user_id}", headers=self.headers)
-            except:
+            except Exception:
                 pass
     
     def test_reset_2fa_for_user(self):

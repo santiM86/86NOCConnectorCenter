@@ -122,7 +122,7 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
-            except:
+            except Exception:
                 pass
 
 manager = ConnectionManager()
@@ -163,7 +163,7 @@ def parse_version(version_str: str):
     try:
         parts = version_str.strip().lstrip("v").split(".")
         return tuple(int(p) for p in parts)
-    except:
+    except Exception:
         return (0, 0, 0)
 
 def is_newer_version(published: str, current: str) -> bool:

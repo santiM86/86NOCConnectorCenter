@@ -2,23 +2,28 @@
 NOC Alert Command Center - Enterprise Routes
 RBAC, SLA, Maintenance, Reports, Security Hardening endpoints
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
-from fastapi.responses import StreamingResponse
-from typing import List, Optional
-from datetime import datetime, timezone
 import io
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+
+from correlation import AlertCorrelationManager
+from ldap_auth import LDAPManager
+from maintenance import MaintenanceManager, MaintenanceWindowCreate
 
 # Import enterprise modules
-from rbac import RBACManager, Role, Permission, ROLE_PERMISSIONS, UserRoleUpdate
-from sla import SLAManager, SLAConfigUpdate, DEFAULT_SLA_CONFIGS
-from maintenance import MaintenanceManager, MaintenanceWindowCreate, MaintenanceWindowResponse
-from correlation import AlertCorrelationManager
+from rbac import ROLE_PERMISSIONS, Permission, RBACManager, Role, UserRoleUpdate
 from reports import ReportGenerator
 from security_hardening import (
-    SecurityHardening, PasswordPolicy, IPWhitelistUpdate, 
-    PasswordPolicyUpdate, RetentionPolicyUpdate
+    IPWhitelistUpdate,
+    PasswordPolicy,
+    PasswordPolicyUpdate,
+    RetentionPolicyUpdate,
+    SecurityHardening,
 )
-from ldap_auth import LDAPManager
+from sla import DEFAULT_SLA_CONFIGS, SLAConfigUpdate, SLAManager
+
 
 def create_enterprise_router(db, get_current_user, audit_logger):
     """Create enterprise router with all advanced endpoints."""
@@ -50,7 +55,6 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     @router.get("/rbac/permissions")
     async def get_permissions(current_user: dict = Depends(get_current_user)):
         """Get all available permissions."""
-        from rbac import Permission
         return [{"name": p.name, "value": p.value} for p in Permission]
     
     @router.get("/users")
@@ -141,7 +145,7 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/sla/stats")
     async def get_sla_stats(
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         days: int = 30,
         current_user: dict = Depends(get_current_user)
     ):
@@ -151,7 +155,7 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/sla/breaches")
     async def get_sla_breaches(
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         days: int = 30,
         limit: int = 100,
         current_user: dict = Depends(get_current_user)
@@ -174,8 +178,8 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/maintenance/windows")
     async def get_maintenance_windows(
-        client_id: Optional[str] = None,
-        status: Optional[str] = None,
+        client_id: str | None = None,
+        status: str | None = None,
         current_user: dict = Depends(get_current_user)
     ):
         """Get maintenance windows."""
@@ -250,7 +254,7 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/reports/sla/pdf")
     async def generate_sla_report_pdf(
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         days: int = 30,
         current_user: dict = Depends(get_current_user)
     ):
@@ -270,9 +274,9 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/reports/alerts/csv")
     async def generate_alerts_csv(
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         days: int = 30,
-        status: Optional[str] = None,
+        status: str | None = None,
         current_user: dict = Depends(get_current_user)
     ):
         """Generate alerts export as CSV."""
@@ -292,7 +296,7 @@ def create_enterprise_router(db, get_current_user, audit_logger):
     
     @router.get("/reports/devices/csv")
     async def generate_devices_csv(
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         current_user: dict = Depends(get_current_user)
     ):
         """Generate devices export as CSV."""

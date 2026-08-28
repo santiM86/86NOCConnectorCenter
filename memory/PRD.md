@@ -1,5 +1,28 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Auto-mappatore Backup (bulk) — cliente ARGUS ↔ VM customer / tenant 365
+**Contesto**: sulla dashboard molti clienti mostravano backup "—" perché non mappati ad alcun cliente
+VM Backup / tenant 365 (49 VM customers + 44 tenant in Hornetsecurity, ma solo ~7 clienti agganciati).
+Mappare a mano è lungo → costruito un auto-mappatore per somiglianza nome/dominio.
+**Backend** (`routes/hornetsecurity_vmbackup.py`): `GET /api/admin/backup-automap/suggestions` (admin).
+Normalizza i nomi (lowercase, rimuove TLD e stopword aziendali: srl/spa/group/di/office/it/com…),
+calcola score (uguaglianza=1.0, contenimento=0.9, altrimenti difflib ratio). Per ogni cliente ARGUS
+ritorna miglior VM + miglior tenant (soglia 0.72 per pre-selezione) + top-5 candidati per override +
+stato mappatura attuale. Verificato: 86BIT_Office → VM '86bit.it' score 1.0.
+**Frontend**: nuovo `components/BackupAutoMapModal.js`, aperto da pulsante "Auto-mappa clienti"
+(`open-automap-btn`) in `HornetsecuritySettingsPage.js`. Tabella clienti con select VM + select 365
+pre-compilati sul suggerimento, badge "suggerito: X (%)", checkbox include per riga, "Applica N".
+L'apply riusa i PUT mapping esistenti (`/clients/{id}/backup/vmbackup/mapping` e
+`/backup/hornetsecurity/mapping`); guardia idempotenza (salta se invariato). Filtro "solo non mappati".
+**Testing**: endpoint via curl (200, 49 VM/44 tenant, match 100% per 86bit). UI via testing_agent
+(iteration_134): modal apre/carica/righe/dropdown/checkbox/conteggio Applica OK, nessun dato modificato
+(no-op confermato). Corretti 3 difetti UX post-test: badge suggerimento visibile anche per mappati;
+`Select` estratto da render (era ridefinito ad ogni render → remount, anti-pattern); toast "Nessuna
+modifica necessaria" quando nulla cambia.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Mobile PWA passwordless su iPhone — FIX manifest dedicato (start_url)
 **Problema**: aggiungendo `/m` alla Home iOS chiedeva sempre la password. Causa: `manifest.json`
 globale con `start_url:"/"` + `scope:"/"` → su iOS 16.4+ l'icona ripartiva dalla ROOT (console admin
