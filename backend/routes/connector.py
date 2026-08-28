@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 
 from database import db
+from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from models import ConnectorHeartbeat, ManagedDevice, LanScanReport
 from security import security_manager
 from audit import AuditAction
@@ -1528,10 +1529,11 @@ async def connector_download(filename: str, request: Request):
                 pass
     if not client_data:
         raise HTTPException(status_code=401, detail="Invalid API key or admin token required")
-    filepath = CONNECTOR_STORAGE / filename
-    if not filepath.exists():
+    data = await _load_connector_zip(filename)
+    if data is None:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/connector/public-download/latest")
@@ -1551,10 +1553,41 @@ async def connector_public_download_latest():
     filename = update_info.get("filename", "")
     if not filename or not re.match(r"^86NocConnector_v[\d\.]+\.zip$", filename):
         raise HTTPException(status_code=500, detail="Filename non valido")
-    filepath = CONNECTOR_STORAGE / filename
-    if not filepath.exists():
+    data = await _load_connector_zip(filename)
+    if data is None:
         raise HTTPException(status_code=404, detail="File ZIP non trovato sul server")
-    return FileResponse(path=str(filepath), filename=filename, media_type="application/zip")
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+_connector_gridfs = None
+
+
+def _connector_bucket():
+    """GridFS bucket per gli ZIP del connector: storage PERSISTENTE su MongoDB
+    (sopravvive ai restart del pod, a differenza del filesystem effimero)."""
+    global _connector_gridfs
+    if _connector_gridfs is None:
+        _connector_gridfs = AsyncIOMotorGridFSBucket(db, bucket_name="connector_zips")
+    return _connector_gridfs
+
+
+async def _store_connector_zip(filename: str, content: bytes):
+    bucket = _connector_bucket()
+    async for f in bucket.find({"filename": filename}):
+        await bucket.delete(f._id if hasattr(f, "_id") else f["_id"])
+    await bucket.upload_from_stream(filename, content)
+
+
+async def _load_connector_zip(filename: str):
+    bucket = _connector_bucket()
+    docs = await bucket.find({"filename": filename}).sort("uploadDate", -1).to_list(1)
+    if not docs:
+        return None
+    d = docs[0]
+    fid = d._id if hasattr(d, "_id") else d["_id"]
+    stream = await bucket.open_download_stream(fid)
+    return await stream.read()
 
 
 @router.post("/connector/upload-update")
@@ -1569,15 +1602,13 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
     if not version:
         raise HTTPException(status_code=400, detail="Version is required")
     safe_filename = f"86NocConnector_v{version}.zip"
-    filepath = CONNECTOR_STORAGE / safe_filename
+    content = await file.read()
     try:
-        content = await file.read()
-        with open(filepath, "wb") as f:
-            f.write(content)
+        await _store_connector_zip(safe_filename, content)
     except Exception as e:
         import logging
-        logging.error(f"Errore scrittura ZIP {filepath}: {e}")
-        raise HTTPException(status_code=500, detail=f"Errore scrittura ZIP: {e}")
+        logging.error(f"Errore salvataggio ZIP {safe_filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio ZIP: {e}")
 
     # v3.8.25: integrity hash — calcoliamo SHA256 del ZIP e lo includiamo in
     # /update-check cosi' il connector PowerShell verifica il download e abortisce
@@ -1593,22 +1624,6 @@ async def upload_connector_update(request: Request, file: UploadFile = File(...)
         "uploaded_by": current_user.get("name", "admin")
     }
     await db.connector_updates.insert_one(update_doc)
-
-    # Copy ZIP to public downloads folder(s) so it can be downloaded via HTTPS
-    # Some environments (build-time minified React) don't keep /app/frontend/public,
-    # so we try multiple locations and ignore failures (non-fatal for the upload itself).
-    import logging
-    for dest in [
-        Path("/app/frontend/public/86NocConnector.zip"),
-        Path("/app/frontend/public/downloads") / safe_filename,
-        Path("/app/frontend/build/86NocConnector.zip"),
-        Path("/app/frontend/build/downloads") / safe_filename,
-    ]:
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(filepath, dest)
-        except Exception as e:
-            logging.warning(f"Public copy skipped for {dest}: {e}")
 
     return {
         "status": "ok", "version": version, "filename": safe_filename,
@@ -2511,7 +2526,7 @@ async def connector_device_report(request: Request):
         doc = {
             "client_id": client_id, "connector_hostname": hostname,
             "device_ip": dev["device_ip"], "device_name": dev["device_name"],
-            "reachable": dev["reachable"], "monitor_type": dev.get("monitor_type", "snmp"),
+            "reachable": dev["reachable"],
             "ports": dev.get("ports", []), "sys_descr": dev.get("sys_descr", ""),
             "sys_name": dev.get("sys_name", ""),
             "sys_object_id": dev.get("sys_object_id", ""),

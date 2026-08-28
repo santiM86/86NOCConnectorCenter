@@ -194,7 +194,6 @@ export function SecurityAuditTab() {
       await axios.post(`${API}/security/ip-block-config`, payload);
       toast.success("Configurazione salvata");
       setShowConfig(false);
-      _ip_block_config_cache = null;
     } catch (e) {
       toast.error(e.response?.data?.detail || "Errore nel salvataggio");
     }

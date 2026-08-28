@@ -77,6 +77,24 @@ export default function MobileMonitorPage() {
     return () => window.removeEventListener("hashchange", capture);
   }, []);
 
+  // Aggancia il manifest DEDICATO alla vista mobile quando c'e' un token, cosi'
+  // "Aggiungi a Home" su iOS salva start_url=/m?t=TOKEN (e non "/" della console
+  // admin) -> l'icona riapre SEMPRE la vista mobile gia' autenticata, senza psw.
+  useEffect(() => {
+    if (!token) return;
+    const linkEl = document.querySelector('link[rel="manifest"]');
+    const titleEl = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    const prevHref = linkEl ? linkEl.getAttribute("href") : null;
+    const prevTitle = titleEl ? titleEl.getAttribute("content") : null;
+    if (linkEl) linkEl.setAttribute("href", `${API}/mobile/manifest?t=${encodeURIComponent(token)}`);
+    if (titleEl) titleEl.setAttribute("content", "ARGUS Mobile");
+    return () => {
+      if (linkEl && prevHref) linkEl.setAttribute("href", prevHref);
+      if (titleEl && prevTitle) titleEl.setAttribute("content", prevTitle);
+    };
+  }, [token]);
+
+
   const load = useCallback(async (tk) => {
     // Usa la fetch nativa (NON axios): la pagina mobile passwordless deve restare
     // isolata dagli interceptor/refresh-token dell'app admin. Inoltre axios si

@@ -1,0 +1,24 @@
+{
+  "summary": "Frontend-only retest of the passwordless mobile PWA (/m) for the NEW iOS Add-to-Home fix. Mobile viewport 390x844, Chromium. Purged service worker (1 registration unregistered) and deleted cache 'noc-center-v18' + localStorage/sessionStorage/cookies BEFORE each navigation, so no stale bundle. RESULTS: ALL 3 REQUESTED CHECKS PASS. (1) QUERY-PARAM AUTH: fresh navigation to /m?t=<token> renders data-testid='mobile-monitor' within ~2s with exactly 1 client row (86BIT_Office), tech 'Marco Santinelli'; NO spinner (mobile-loading count=0) and NO pairing gate (mobile-gate count=0). Chips: 0 Vitali down / 2 WAN offline / 1 Backup falliti / 1 Clienti coinvolti. (2) MANIFEST SWAP: link[rel=manifest] href = https://noc-alert-hub-2.preview.emergentagent.com/api/mobile/manifest?t=jFdx6pqssnLsTIoxb2LM6rRHpFBTrcYSuvDRABISTu8 ; fetching it returns 200 with content-type application/manifest+json and JSON start_url='/m?t=<token>', scope='/m', display='standalone'. meta[name='apple-mobile-web-app-title'] content = 'ARGUS Mobile'. (3) HASH REGRESSION: after a second SW/cache purge, fresh /m#t=<token> also renders mobile-monitor with 1 client row. Console: only the React DevTools info log; no errors, no pageerror events.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "MobileMonitorPage manifest-swap effect has a cleanup that restores the previous manifest href/title on unmount or token change. Harmless in /m (single-page), but if the user navigates client-side from /m to the admin app the swap is reverted while the iOS 'Add to Home' sheet may already be open. Low risk, no change required.",
+    "The swapped manifest href is absolute (REACT_APP_BACKEND_URL). It is same-origin in preview so iOS will accept it; if the backend is ever served from a different origin, iOS will reject the manifest (cross-origin manifest requires the same origin). Consider using a relative '/api/mobile/manifest?t=' path to be origin-safe.",
+    "Manifest returns Cache-Control: no-store, which is correct for token-bearing content but means the manifest cannot be read offline once installed; acceptable since start_url still carries the token."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (frontend-only request)", "frontend": "100% (3/3 requested flows passed)" },
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "mobile token jFdx6pqssnLsTIoxb2LM6rRHpFBTrcYSuvDRABISTu8 (tech Marco Santinelli)",
+  "context_for_next_testing_agent": "Both /m?t=<token> (query) and /m#t=<token> (hash) authenticate and render the dashboard. Always unregister service workers and delete cache 'noc-center-v18' before navigating, otherwise a stale JS bundle masks current code. Preview DB has 1 client (86BIT_Office) -> expect exactly 1 mobile-client-row. The iOS A2HS banner (data-testid='mobile-a2hs') does not render in Chromium because the UA check requires iPhone/iPad; it could not be verified in this environment.",
+  "rca_of_the_issue": "Prior failure was the global manifest (start_url='/', scope='/') making iOS launch the admin root and drop the token, plus token capture only from the hash. Verified fixed: /api/mobile/manifest?t= serves a dedicated manifest (start_url=/m?t=..., scope=/m) and MobileMonitorPage swaps link[rel=manifest] + apple title; token capture now also reads ?t= via URLSearchParams. Earlier 'stale spinner' screenshots were caused by the cached SW bundle, not by app code."
+}

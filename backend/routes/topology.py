@@ -1,10 +1,9 @@
 """Network topology inference engine and routes."""
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Optional
-import re
 import ipaddress
-from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+import re
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException
 
 from database import db
 from deps import get_current_user
@@ -37,7 +36,7 @@ def _port_number_from_name(name: str) -> str:
 
 
 @router.get("/devices/{device_ip}/switch-ports")
-async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
+async def get_switch_ports(device_ip: str, client_id: str | None = None,
                            current_user: dict = Depends(get_current_user)):
     """Ritorna le porte dello switch con status arricchito da LLDP neighbor + MAC table.
 
@@ -46,7 +45,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
       2. MAC Table -> managed_devices (via MAC di ifPhysAddress) — per NAS/stampanti/UPS
       3. MAC Table -> OUI vendor lookup — per device sconosciuti (es. "Apple laptop")
     """
-    from .oui_lookup import lookup_oui, classify_device
+    from .oui_lookup import classify_device, lookup_oui
 
     # v2026-07-29 MULTI-TENANT ISOLATION: gli IP privati (10.x/192.168.x)
     # collidono tra clienti diversi. Senza scope per client_id si mescolavano
@@ -559,11 +558,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
                         o["port_type"] = "switch"
                     # direzione: dorsale (verso l'alto) vs downlink (verso il basso)
                     peer_lvl = level_by_ip.get(up.get("peer_ip"))
-                    if up.get("peer_kind") == "gateway":
-                        direction = "upstream"
-                    elif dorsale_local and nm == dorsale_local:
-                        direction = "upstream"
-                    elif peer_lvl is not None and peer_lvl < my_level:
+                    if up.get("peer_kind") == "gateway" or dorsale_local and nm == dorsale_local or peer_lvl is not None and peer_lvl < my_level:
                         direction = "upstream"
                     elif peer_lvl is not None and peer_lvl > my_level:
                         direction = "downstream"
@@ -597,7 +592,7 @@ async def get_switch_ports(device_ip: str, client_id: Optional[str] = None,
 
 
 @router.get("/devices/{device_ip}/switch-ports/diagnose")
-async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
+async def diagnose_switch_ports(device_ip: str, client_id: str | None = None,
                                 current_user: dict = Depends(get_current_user)):
     """Spiega passo-passo perche' non arrivano le porte di uno switch.
 
@@ -826,7 +821,7 @@ async def diagnose_switch_ports(device_ip: str, client_id: Optional[str] = None,
 
 
 @router.post("/devices/{device_ip}/switch-ports/set-type-switch")
-async def set_device_type_switch(device_ip: str, client_id: Optional[str] = None,
+async def set_device_type_switch(device_ip: str, client_id: str | None = None,
                                  current_user: dict = Depends(get_current_user)):
     """Correzione one-click: imposta device_type='switch' sul device (ip+client_id),
     cosi' l'agent iniziera' a raccogliere ifTable/LLDP/PoE al prossimo poll."""
@@ -879,11 +874,11 @@ async def get_port_flap_history(
     device_ip: str,
     idx: int,
     hours: int = 24,
-    client_id: Optional[str] = None,
+    client_id: str | None = None,
     current_user: dict = Depends(get_current_user),
 ):
     """Ritorna gli eventi flap (UP/DOWN/ADMIN/SPEED change) per una porta, ultime N ore."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone
     hours = max(1, min(hours, 720))  # 1h..30gg
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
@@ -1493,7 +1488,7 @@ def build_mac_edges(mac_connections, device_ips, port_speeds_data):
 
         label = f"Port {port}"
         if speed >= 10000:
-            label += f" (10G)"
+            label += " (10G)"
             edge_type = "trunk"
         elif speed >= 1000:
             label += f" ({speed // 1000}G)"
@@ -2043,8 +2038,9 @@ async def add_endpoint_to_monitoring(body: dict, current_user: dict = Depends(ge
     # automaticamente senza richiedere l'azione manuale "recognize-unknowns".
     # Best-effort: errori non bloccano l'inserimento.
     try:
-        from routes.devices import _enrich_devices_for_client
         import asyncio as _asyncio
+
+        from routes.devices import _enrich_devices_for_client
         _asyncio.create_task(_enrich_devices_for_client(client_id))
     except Exception as _e:
         import logging as _logging

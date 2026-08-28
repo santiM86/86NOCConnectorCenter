@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
-import { Database, ShieldCheck, ArrowsClockwise, Trash, Plug, CaretDown, CaretRight, Users } from "@phosphor-icons/react";
+import { Database, ShieldCheck, ArrowsClockwise, Trash, Plug, CaretDown, CaretRight, Users, Sparkle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
+import BackupAutoMapModal from "@/components/BackupAutoMapModal";
 
 export default function HornetsecuritySettingsPage() {
   const navigate = useNavigate();
@@ -20,6 +21,11 @@ export default function HornetsecuritySettingsPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [viewMode, setViewMode] = useState("by-tenant"); // "by-tenant" | "by-client"
   const [form, setForm] = useState({ api_url: "", api_key: "", poll_interval_minutes: 30, enabled: true });
+  const [showAutoMap, setShowAutoMap] = useState(false);
+  const _location = useLocation();
+  useEffect(() => {
+    if (new URLSearchParams(_location.search).get("automap") === "1") setShowAutoMap(true);
+  }, [_location.search]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -172,7 +178,14 @@ export default function HornetsecuritySettingsPage() {
         <button onClick={() => navigate(-1)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-sm">←</button>
         <Database size={20} className="text-cyan-400" />
         <h1 className="text-xl font-bold text-[var(--text-primary)]">Hornetsecurity Backup</h1>
+        <Button size="sm" onClick={() => setShowAutoMap(true)}
+          className="ml-auto bg-indigo-600 hover:bg-indigo-700 text-white text-xs gap-1.5"
+          data-testid="open-automap-btn">
+          <Sparkle size={14} weight="fill" /> Auto-mappa clienti
+        </Button>
       </div>
+
+      <BackupAutoMapModal open={showAutoMap} onClose={() => setShowAutoMap(false)} onApplied={reload} />
 
       {/* Provider tabs */}
       <div className="flex items-center gap-1.5 flex-wrap text-[11px] border-b border-[var(--bg-border)] pb-2">

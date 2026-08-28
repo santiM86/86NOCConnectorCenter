@@ -41,7 +41,7 @@ class TestIPBlockingSystem:
             self.session.post(f"{BASE_URL}/api/security/unblock-ip", json={"ip": "192.168.99.99"})
             self.session.post(f"{BASE_URL}/api/security/unblock-ip", json={"ip": "10.0.0.99"})
             self.session.post(f"{BASE_URL}/api/security/unblock-ip", json={"ip": "172.16.0.99"})
-        except:
+        except Exception:
             pass
     
     # ==================== GET /api/security/blocked-ips ====================

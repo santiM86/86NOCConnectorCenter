@@ -1,5 +1,62 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 ✨ Badge "clienti senza backup mappato" sulla dashboard
+Aggiunto in `DashboardPage.js` un badge nell'header (ambra, `data-testid=unmapped-backup-badge`) che
+mostra "N clienti senza backup · Auto-mappa" quando ci sono clienti con `backup.total` mancante/0.
+Cliccandolo → `/settings/hornetsecurity?automap=1`. `HornetsecuritySettingsPage.js` legge quel query
+param (useLocation) e apre automaticamente il `BackupAutoMapModal`. Badge nascosto se count=0.
+**Testing**: conteggio verificato via curl (cliente temporaneo non mappato → badge count=1, poi rimosso);
+frontend compila. In preview l'unico cliente è mappato → badge assente (corretto).
+Nota: il redeploy in produzione è azione utente (Save to GitHub); l'auto-map dei 19 clienti reali va
+eseguito in produzione dopo il deploy (in preview c'è 1 solo cliente).
+
+
+
+## 2026-06 ✨ Auto-mappatore Backup (bulk) — cliente ARGUS ↔ VM customer / tenant 365
+**Contesto**: sulla dashboard molti clienti mostravano backup "—" perché non mappati ad alcun cliente
+VM Backup / tenant 365 (49 VM customers + 44 tenant in Hornetsecurity, ma solo ~7 clienti agganciati).
+Mappare a mano è lungo → costruito un auto-mappatore per somiglianza nome/dominio.
+**Backend** (`routes/hornetsecurity_vmbackup.py`): `GET /api/admin/backup-automap/suggestions` (admin).
+Normalizza i nomi (lowercase, rimuove TLD e stopword aziendali: srl/spa/group/di/office/it/com…),
+calcola score (uguaglianza=1.0, contenimento=0.9, altrimenti difflib ratio). Per ogni cliente ARGUS
+ritorna miglior VM + miglior tenant (soglia 0.72 per pre-selezione) + top-5 candidati per override +
+stato mappatura attuale. Verificato: 86BIT_Office → VM '86bit.it' score 1.0.
+**Frontend**: nuovo `components/BackupAutoMapModal.js`, aperto da pulsante "Auto-mappa clienti"
+(`open-automap-btn`) in `HornetsecuritySettingsPage.js`. Tabella clienti con select VM + select 365
+pre-compilati sul suggerimento, badge "suggerito: X (%)", checkbox include per riga, "Applica N".
+L'apply riusa i PUT mapping esistenti (`/clients/{id}/backup/vmbackup/mapping` e
+`/backup/hornetsecurity/mapping`); guardia idempotenza (salta se invariato). Filtro "solo non mappati".
+**Testing**: endpoint via curl (200, 49 VM/44 tenant, match 100% per 86bit). UI via testing_agent
+(iteration_134): modal apre/carica/righe/dropdown/checkbox/conteggio Applica OK, nessun dato modificato
+(no-op confermato). Corretti 3 difetti UX post-test: badge suggerimento visibile anche per mappati;
+`Select` estratto da render (era ridefinito ad ogni render → remount, anti-pattern); toast "Nessuna
+modifica necessaria" quando nulla cambia.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 ✨ Mobile PWA passwordless su iPhone — FIX manifest dedicato (start_url)
+**Problema**: aggiungendo `/m` alla Home iOS chiedeva sempre la password. Causa: `manifest.json`
+globale con `start_url:"/"` + `scope:"/"` → su iOS 16.4+ l'icona ripartiva dalla ROOT (console admin
+con psw) scartando il token.
+**Fix**:
+- Backend `routes/mobile_access.py`: nuovo `GET /api/mobile/manifest?t=TOKEN` → manifest dedicato
+  (`application/manifest+json`) con `start_url:"/m?t=TOKEN"`, `scope:"/m"`, `display:standalone`,
+  name "ARGUS Mobile", icone. Token sanificato (alnum/-/_). Pubblico, no-store.
+- Frontend `MobileMonitorPage.js`: quando c'è un token, effetto che sostituisce
+  `<link rel="manifest">` href → `${API}/mobile/manifest?t=TOKEN` e `apple-mobile-web-app-title` →
+  "ARGUS Mobile" (ripristina all'unmount). Così iOS "Aggiungi a Home" salva start_url=/m?t=TOKEN.
+- La `capture()` legge il token sia da `#t=` (hash) sia da `?t=` (query) → copre lo start_url iOS.
+**Testing**: testing_agent (browser pulito, SW/cache purge) → PASS su tutti e 3: `/m?t=TOKEN` rende la
+dashboard in ~2s (1 client, tech Marco Santinelli); `link[rel=manifest]` → `/api/mobile/manifest?t=…`
+(200, start_url `/m?t=…`, scope `/m`, standalone; apple title "ARGUS Mobile"); `/m#t=TOKEN` regression OK.
+Nessun errore console.
+**IMPORTANTE per l'utente (dopo deploy)**: rimuovere la vecchia icona dalla Home, riaprire il link del
+QR (`/m#t=…`) su Safari, poi Condividi → Aggiungi a Home. La nuova icona ripartirà sempre autenticata.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Import LAN Scanner — configurazione completa del dispositivo in fase di import
 **Richiesta utente**: dal modal di import dello Scanner LAN poter dare TUTTE le impostazioni del
 dispositivo (profilo/tipo, assegnazione virtualizzazione, SNMP, ecc.) senza doverle rifare dopo nella
