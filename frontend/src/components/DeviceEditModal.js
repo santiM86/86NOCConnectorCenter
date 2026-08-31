@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu, CheckCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +32,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
   const [alertsSilenced, setAlertsSilenced] = useState(!!device?.alerts_silenced);
   const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
   // Alert opzionale "VM spenta inaspettatamente" (solo VM Hyper-V)
@@ -80,6 +81,22 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     if (v === "hyperv") {
       setHypervVmName((prev) => prev || device?.name || "");
       setHypervHostHint((prev) => prev || device?.hyperv_host || "");
+    }
+  };
+
+  // Reset conferma "salvato" quando cambia device o si riapre il modal.
+  useEffect(() => { setSavedOk(false); }, [device?.id, open]);
+
+  // Ricarica il device dal backend DOPO il salvataggio per confermare che le
+  // modifiche siano state persistite (verifica reale, non ottimistica).
+  const reloadSavedDevice = async () => {
+    try {
+      const ip = device?.ip_address || device?.ip;
+      const { data } = await axios.get(`${API}/devices`, { params: { client_id: clientId } });
+      const list = Array.isArray(data) ? data : (data?.devices || []);
+      return list.find((d) => (d.ip_address || d.ip) === ip) || null;
+    } catch {
+      return null;
     }
   };
 
@@ -243,22 +260,27 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     }
     setSaving(true);
     const { errors, silencePersisted } = await persistChanges();
-    setSaving(false);
 
     if (errors.length > 0) {
+      setSaving(false);
       toast.error(`Errori durante il salvataggio: ${errors.join(" | ")}`);
       return;
     }
+    // Ricarica dal backend per CONFERMARE la persistenza (verifica reale).
+    const confirmed = await reloadSavedDevice();
+    setSaving(false);
+    setSavedOk(true);
     if (silencePersisted) {
       toast.success(alertsSilenced
         ? "Alert SILENZIATI per questo device. Eventuali alert già aperti restano e vanno risolti manualmente."
         : "Alert RIATTIVATI per questo device.");
     } else {
-      toast.success("Dispositivo aggiornato. Clicca 'Applica ora' per forzare il connector a ri-leggere immediatamente.");
+      toast.success("Impostazioni salvate ✓");
     }
-    // Push optimistic update verso il parent (aggiorna la riga senza attendere
-    // il refetch async) + chiude il modal.
-    if (onSaved) onSaved(buildOptimistic());
+    // Mostra la conferma visiva ~1.4s, poi push update + chiudi/refresh parent.
+    setTimeout(() => {
+      if (onSaved) onSaved(confirmed || buildOptimistic());
+    }, 1400);
   };
 
   const applyNow = async () => {
@@ -278,12 +300,16 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         return;
       }
       const res = await axios.post(`${API}/connector/${clientId}/request-refresh`);
-      toast.success(res.data?.message || "Modifiche salvate — richiesta di refresh inviata al connector");
-      if (onSaved) onSaved(buildOptimistic()); else onClose();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore nella richiesta refresh");
-    } finally {
+      const confirmed = await reloadSavedDevice();
       setRefreshing(false);
+      setSavedOk(true);
+      toast.success(res.data?.message || "Impostazioni salvate ✓ — richiesta di refresh inviata al connector");
+      setTimeout(() => {
+        if (onSaved) onSaved(confirmed || buildOptimistic()); else onClose();
+      }, 1400);
+    } catch (e) {
+      setRefreshing(false);
+      toast.error(e.response?.data?.detail || "Errore nella richiesta refresh");
     }
   };
 
@@ -576,7 +602,16 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           )}
         </div>
 
-        <div className="flex flex-wrap gap-2 justify-end mt-4">
+        <div className="flex flex-wrap gap-2 justify-end items-center mt-4">
+          {savedOk && (
+            <span
+              className="mr-auto inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 animate-in fade-in duration-200"
+              data-testid="device-saved-indicator"
+            >
+              <CheckCircle size={14} weight="fill" />
+              Impostazioni salvate
+            </span>
+          )}
           <Button
             variant="ghost"
             onClick={onClose}
@@ -587,7 +622,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           </Button>
           <Button
             onClick={applyNow}
-            disabled={refreshing || saving}
+            disabled={refreshing || saving || savedOk}
             variant="outline"
             className="border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 h-8 text-xs"
             title="Forza il connector a ri-leggere subito la lista dispositivi con la nuova config (max 30s di attesa)"
@@ -598,11 +633,11 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
           </Button>
           <Button
             onClick={save}
-            disabled={saving || refreshing}
+            disabled={saving || refreshing || savedOk}
             className="bg-indigo-500 hover:bg-indigo-600 text-white h-8 text-xs"
             data-testid="edit-save-btn"
           >
-            {saving ? "Salvataggio..." : "Salva"}
+            {savedOk ? "Salvato ✓" : saving ? "Salvataggio..." : "Salva"}
           </Button>
         </div>
       </DialogContent>

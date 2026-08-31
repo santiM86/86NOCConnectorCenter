@@ -9052,3 +9052,13 @@ VERIFICATO E2E (preview, login 2FA): device con canonico(device_type=server) +
 legacy(virtualization=hyperv,is_vital,hyperv_vm_name) → /api/devices ritorna UN
 device con TUTTI i campi fusi (categoria server + VM settings + community). Merge
 helper unit-tested. Nessuna regressione (36 device preview OK).
+
+## 2026-08-31 — Indicatore "Impostazioni salvate ✓" + ricarica/verifica dopo Salva
+- DeviceEditModal.js: dopo Salva/Applica ora, esegue reloadSavedDevice() (GET
+  /api/devices) per CONFERMARE la persistenza reale, mostra badge verde inline
+  "✓ Impostazioni salvate" (data-testid device-saved-indicator), il pulsante
+  diventa "Salvato ✓" (disabilitato) per ~1.4s, poi chiude + refresh parent con
+  il device confermato dal backend.
+- VERIFICATO E2E (screenshot, token iniettato): badge visibile, testo corretto,
+  toast di conferma, modale si chiude dopo la conferma. Modifica di test (silence)
+  ripristinata.
