@@ -1234,20 +1234,24 @@ async def set_device_virtualization(
     }
 
     if md:
-        # v2026-06 FIX PERSISTENZA "salvo ma non mantiene": in produzione, accanto
-        # al doc canonico possono esistere doc LEGACY duplicati dello stesso IP
-        # (solo `ip_address`, senza `ip`) — l'indice unico (client_id, ip) li
-        # tollera perche' `ip` e' assente/null. La scrittura aggiornava il doc
-        # canonico ma la lettura /api/devices (last-wins) pescava il legacy stale
-        # e la UI tornava vuota. Soluzione: scegli il doc canonico (quello con
-        # ip==device_ip se esiste), ELIMINA i duplicati legacy, poi aggiorna il
-        # canonico (settando `ip` normalizzato senza rischio di duplicate-key).
-        siblings = await db.managed_devices.find(md_query, {"_id": 0, "id": 1, "ip": 1}).to_list(50)
+        # v2026-08 FIX DATA-LOSS: prima eliminavamo i doc legacy duplicati SENZA
+        # fondere i loro campi → si perdevano impostazioni presenti solo sul
+        # legacy (es. snmp_community, is_vital). Ora FONDIAMO i campi legacy
+        # mancanti nel canonico, poi eliminiamo i duplicati.
+        from managed_device_dedup import merge_field_dicts
+        siblings = await db.managed_devices.find(md_query, {"_id": 0}).to_list(50)
         canonical = next((d for d in siblings if d.get("ip") == device_ip), None) or siblings[0]
+        merged_fill: dict = {}
+        canon_view = {**canonical, **set_fields}
+        for sib in siblings:
+            if sib.get("id") == canonical.get("id"):
+                continue
+            for k, v in merge_field_dicts({**canon_view, **merged_fill}, sib).items():
+                merged_fill[k] = v
         dup_ids = [d["id"] for d in siblings if d.get("id") and d["id"] != canonical["id"]]
         if dup_ids:
             await db.managed_devices.delete_many({"id": {"$in": dup_ids}})
-        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": set_fields})
+        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": {**merged_fill, **set_fields}})
         md = {**md, "id": canonical["id"]}
     else:
         # Device poll-only (es. server iLO/redfish presenti solo in
@@ -1364,14 +1368,22 @@ async def set_device_vm_alert(
     }
 
     if md:
-        # v2026-06 FIX PERSISTENZA: elimina duplicati legacy dello stesso IP e
-        # aggiorna solo il doc canonico (vedi set_device_virtualization).
-        siblings = await db.managed_devices.find(md_query, {"_id": 0, "id": 1, "ip": 1}).to_list(50)
+        # v2026-08 FIX DATA-LOSS: fondi i campi legacy mancanti nel canonico
+        # PRIMA di eliminare i duplicati (vedi set_device_virtualization).
+        from managed_device_dedup import merge_field_dicts
+        siblings = await db.managed_devices.find(md_query, {"_id": 0}).to_list(50)
         canonical = next((d for d in siblings if d.get("ip") == device_ip), None) or siblings[0]
+        merged_fill: dict = {}
+        canon_view = {**canonical, **set_fields}
+        for sib in siblings:
+            if sib.get("id") == canonical.get("id"):
+                continue
+            for k, v in merge_field_dicts({**canon_view, **merged_fill}, sib).items():
+                merged_fill[k] = v
         dup_ids = [d["id"] for d in siblings if d.get("id") and d["id"] != canonical["id"]]
         if dup_ids:
             await db.managed_devices.delete_many({"id": {"$in": dup_ids}})
-        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": set_fields})
+        await db.managed_devices.update_one({"id": canonical["id"]}, {"$set": {**merged_fill, **set_fields}})
         md = {**md, "id": canonical["id"]}
     else:
         # Device poll-only (iLO/redfish in device_poll_status) senza doc in
