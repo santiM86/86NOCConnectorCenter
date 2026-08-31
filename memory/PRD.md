@@ -9127,3 +9127,24 @@ NB: SLA/ISP/GEO/DNS/IP funzionano via probe esterno dal server ARGUS verso l'IP 
 di ogni sede; Traceroute/Speedtest "via sonda" richiedono agent nella sede.
 VERIFICATO: import crea 2/3 target sintetici (salta quello senza WAN), idempotente su
 re-run; pulsante presente in UI (screenshot). Effetto pieno in prod dopo redeploy.
+
+## 2026-08-31 — Redesign tab WAN: master-detail (lista firewall + dettaglio per-firewall)
+Feedback utente: pagina WAN "troppo incasinata" (tutto impilato per tutti i firewall).
+Rifatto in WanClientTab.jsx come MASTER-DETAIL:
+- LISTA (default): HeroCard riepilogo + MultiIsp + elenco pulito "Firewall & Router del
+  cliente" con una riga per target (FirewallListRow: icona, nome, tag NEBULA se
+  auto-importato, stato, IP+sede, latenza) e pulsante "Dettagli e funzioni →"
+  (data-testid wan-fw-row-<id>, wan-list-view).
+- DETTAGLIO (al clic): solo il firewall selezionato → back button (wan-back-to-list),
+  TargetCard con azioni (storico/path-trace/alert/rimuovi), InsightsPanel (SLA 24h/30gg),
+  GEO/DNS/IP pubblico di QUEL firewall, e le funzioni Speedtest/SaaS/Traceroute
+  (Traceroute scoped al target). data-testid wan-detail-view.
+Rimosso il blocco NebulaFirewalls duplicato e lo stacking di tutti i pannelli.
+VERIFICATO (screenshot preview, 2 target): lista pulita + apertura dettaglio + back OK.
+
+## 2026-08-31 — Badge SLA 24h nella riga lista firewall (tab WAN)
+Aggiunto componente SlaBadge (WanClientTab.jsx): recupera uptime_today da
+/external-monitor/insights/{id}?days=1 e mostra "XX.X% · SLA 24h" nella riga della
+lista firewall (verde >=99.5, giallo >=97, rosso sotto). data-testid wan-fw-sla-<id>.
+Così lo stato SLA di ogni sede si vede a colpo d'occhio senza aprire il dettaglio.
+VERIFICATO (screenshot): 2 badge in lista, primo firewall 100.0%.

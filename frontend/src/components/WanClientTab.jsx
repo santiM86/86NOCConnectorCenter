@@ -7,7 +7,7 @@ import {
   Globe, ShieldCheck, HardDrives, WifiHigh, Lightning, Plus, Trash,
   ArrowClockwise, CheckCircle, Warning, MapPin, Pulse, Gauge,
   ArrowsClockwise, ChartLine, Clock, ArrowsLeftRight, PencilSimple,
-  Cloud, Path, Bell, X, XCircle,
+  Cloud, Path, Bell, X, XCircle, CaretRight, ArrowLeft,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,6 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
-import NebulaFirewalls from "@/components/NebulaFirewalls";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", degraded: "#FF9500", filtered: "#FFCC00", unknown: "#555", pending: "#555" };
 
@@ -138,6 +137,72 @@ function TargetCard({ target, onDelete, onHistory }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// =================== SLA BADGE (mini, per riga lista) ===================
+function SlaBadge({ targetId }) {
+  const [pct, setPct] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/external-monitor/insights/${targetId}?days=1`);
+        if (alive) setPct(r.data?.uptime_today);
+      } catch { /* silent */ }
+    })();
+    return () => { alive = false; };
+  }, [targetId]);
+  if (pct == null) return null;
+  const color = pct >= 99.5 ? "#22c55e" : pct >= 97 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="text-right flex-shrink-0 hidden sm:block" data-testid={`wan-fw-sla-${targetId}`}>
+      <div className="text-sm font-bold tabular-nums leading-none" style={{ color }}>{pct.toFixed(1)}%</div>
+      <div className="text-[8px] uppercase tracking-wider opacity-60 mt-0.5">SLA 24h</div>
+    </div>
+  );
+}
+
+// =================== FIREWALL LIST ROW (master list, pulita) ===================
+function FirewallListRow({ target, onOpen }) {
+  const r = target.result;
+  const color = STATUS_COLOR[r?.status] || "#64748b";
+  const Icon = target.device_type === "router" ? HardDrives : ShieldCheck;
+  const site = target.linked_nebula_site_id || target.site_name;
+  return (
+    <button
+      onClick={() => onOpen(target)}
+      className="w-full text-left rounded-xl border bg-[var(--bg-panel)] p-3 flex items-center gap-3 transition-all hover:border-indigo-500/50 hover:bg-indigo-500/[0.04] group"
+      style={{ borderColor: `${color}30` }}
+      data-testid={`wan-fw-row-${target.id}`}
+    >
+      <div className="w-2 h-2 rounded-full animate-pulse flex-shrink-0" style={{ background: color, boxShadow: `0 0 10px ${color}` }}></div>
+      <Icon size={18} weight="bold" style={{ color }} className="flex-shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-[var(--text-primary)] truncate">{target.label}</span>
+          {target.auto_imported && (
+            <span className="text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold whitespace-nowrap">NEBULA</span>
+          )}
+          <span className="text-[8px] px-1.5 py-0.5 rounded font-bold uppercase border whitespace-nowrap" style={{ color, borderColor: `${color}50`, background: `${color}10` }}>
+            {r?.status?.toUpperCase() || "PENDING"}
+          </span>
+        </div>
+        <div className="text-[10px] font-mono text-[var(--text-muted)] mt-0.5 truncate">{target.public_ip}{site ? ` · ${site}` : ""}</div>
+      </div>
+      {r?.ping?.latency_ms != null && (
+        <div className="text-right flex-shrink-0">
+          <div className="text-base font-bold tabular-nums" style={{ color }}>
+            {r.ping.latency_ms}<span className="text-[9px] font-normal opacity-70">ms</span>
+          </div>
+          <div className="text-[8px] uppercase tracking-wider opacity-60">{r?.ping?.reachable ? "ICMP" : "—"}</div>
+        </div>
+      )}
+      <SlaBadge targetId={target.id} />
+      <span className="flex items-center gap-1 text-[10px] font-semibold text-indigo-300 px-2.5 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 group-hover:bg-indigo-500/20 whitespace-nowrap flex-shrink-0">
+        Dettagli e funzioni <CaretRight size={12} weight="bold" />
+      </span>
+    </button>
   );
 }
 
@@ -1062,6 +1127,7 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
   };
 
   const [importing, setImporting] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
   const importNebula = async () => {
     setImporting(true);
     try {
@@ -1100,145 +1166,87 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
         </div>
       </div>
 
-      {/* HERO */}
-      {targets.length > 0 && (
-        <HeroCard
-          clientName={clientName}
-          diagnosis={diagnosis?.diagnosis_text}
-          gateway={gatewayInfo}
-          isOnline={allOnline || anyOnline}
-        />
-      )}
-
-      {/* Tutti i firewall Nebula del cliente (tutte le sedi, incl. dietro NAT) —
-          elenco selezionabile che apre la scheda dispositivo completa.
-          Si auto-nasconde se il cliente non ha firewall Nebula. */}
-      <div data-testid="wan-nebula-firewalls">
-        <NebulaFirewalls clientId={clientId} wanTargets={targets} boxed />
-      </div>
-
       {targets.length === 0 ? (
         <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] py-12 text-center text-[var(--text-muted)]">
           <Globe size={36} className="mx-auto mb-3 opacity-30" />
           <p className="text-sm font-bold">Nessun target WAN configurato per {clientName}</p>
-          <p className="text-[10px] mt-1 opacity-70">Clicca "Aggiungi Target WAN" per iniziare il monitoraggio dell'IP pubblico</p>
+          <p className="text-[10px] mt-1 opacity-70">Clicca "Importa firewall Nebula" oppure "Aggiungi Target WAN" per iniziare</p>
         </div>
-      ) : (
-        <>
-          {/* DEVICE GROUPS — adaptive layout:
-              - Se solo firewall O solo router: layout 2 colonne (lista target | insights)
-              - Se entrambi: due card side-by-side, ognuna con i suoi target+insights */}
-          {firewalls.length > 0 && routers.length > 0 ? (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid="wan-firewalls-group">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={14} weight="bold" className="text-indigo-400" />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.18em] text-indigo-300">Firewall</h3>
-                  <div className="flex-1 h-px bg-indigo-500/15"></div>
-                  <span className="text-[9px] text-indigo-300/70">{firewalls.length}</span>
-                </div>
-                <div className="space-y-2">
-                  {firewalls.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />)}
-                </div>
-                {firewalls.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
-              </div>
-              <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid="wan-routers-group">
-                <div className="flex items-center gap-2">
-                  <HardDrives size={14} weight="bold" className="text-cyan-400" />
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">Router</h3>
-                  <div className="flex-1 h-px bg-cyan-500/15"></div>
-                  <span className="text-[9px] text-cyan-300/70">{routers.length}</span>
-                </div>
-                <div className="space-y-2">
-                  {routers.map(t => <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />)}
-                </div>
-                {routers.map(t => <InsightsPanel key={`ins-${t.id}`} target={t} />)}
-              </div>
-            </div>
-          ) : (firewalls.length > 0 || routers.length > 0) && (
-            // SINGOLO GRUPPO: target cards a sinistra, insights a destra (riempie tutto lo spazio)
-            <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4 space-y-3" data-testid={firewalls.length > 0 ? "wan-firewalls-group" : "wan-routers-group"}>
-              <div className="flex items-center gap-2">
-                {firewalls.length > 0 ? <ShieldCheck size={14} weight="bold" className="text-indigo-400" /> : <HardDrives size={14} weight="bold" className="text-cyan-400" />}
-                <h3 className={`text-[10px] font-bold uppercase tracking-[0.18em] ${firewalls.length > 0 ? "text-indigo-300" : "text-cyan-300"}`}>
-                  {firewalls.length > 0 ? "Firewall" : "Router"}
-                </h3>
-                <div className={`flex-1 h-px ${firewalls.length > 0 ? "bg-indigo-500/15" : "bg-cyan-500/15"}`}></div>
-                <span className={`text-[9px] ${firewalls.length > 0 ? "text-indigo-300/70" : "text-cyan-300/70"}`}>
-                  {firewalls.length + routers.length}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,380px),1fr] gap-3">
-                <div className="space-y-2">
-                  {(firewalls.length > 0 ? firewalls : routers).map(t => (
-                    <TargetCard key={t.id} target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />
-                  ))}
-                </div>
-                <div className="space-y-3">
-                  {(firewalls.length > 0 ? firewalls : routers).map(t => (
-                    <InsightsPanel key={`ins-${t.id}`} target={t} />
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+      ) : (() => {
+        const selected = targets.find(t => t.id === selectedId);
+        const orderedTargets = [...firewalls, ...routers, ...others];
 
-          {/* OTHERS (rare) */}
-          {others.length > 0 && (
-            <div className="space-y-2">
-              {others.map(t => (
-                <div key={t.id} className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3">
-                  <TargetCard target={t} onDelete={handleDelete} onHistory={setHistoryTarget} />
+        // ---------- DETTAGLIO singolo firewall: tutte le funzioni ----------
+        if (selected) {
+          return (
+            <div className="space-y-4" data-testid="wan-detail-view">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <button
+                  onClick={() => setSelectedId(null)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-indigo-300 px-3 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20"
+                  data-testid="wan-back-to-list"
+                >
+                  <ArrowLeft size={14} weight="bold" /> Torna alla lista firewall
+                </button>
+                <div className="flex items-center gap-2 text-[var(--text-primary)]">
+                  {selected.device_type === "router" ? <HardDrives size={16} weight="bold" className="text-cyan-400" /> : <ShieldCheck size={16} weight="bold" className="text-indigo-400" />}
+                  <span className="text-sm font-bold">{selected.label}</span>
+                  <span className="text-[11px] font-mono text-[var(--text-muted)]">{selected.public_ip}</span>
                 </div>
+              </div>
+
+              {/* Scheda target con azioni (storico, path-trace, regole alert, rimuovi) */}
+              <TargetCard target={selected} onDelete={(t) => { handleDelete(t); setSelectedId(null); }} onHistory={setHistoryTarget} />
+
+              {/* SLA / Insight 24h · 30gg */}
+              <InsightsPanel target={selected} />
+
+              {/* ISP/GEO · DNS Health · IP pubblico di QUESTO firewall */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <GeoIspCard ip={selected.public_ip} />
+                <DnsHealthCard targetId={selected.id} />
+                <PublicIpHistoryCard targetId={selected.id} currentIp={selected.public_ip} />
+              </div>
+
+              {/* Funzioni avviabili: Speedtest · SaaS Reachability · Traceroute */}
+              <div className="grid grid-cols-1 gap-3">
+                <SpeedtestCard clientId={clientId} />
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <SaasReachabilityCard clientId={clientId} />
+                <TracerouteCard targets={[selected]} clientId={clientId} />
+              </div>
+            </div>
+          );
+        }
+
+        // ---------- LISTA firewall (master, pulita) ----------
+        return (
+          <div className="space-y-4" data-testid="wan-list-view">
+            <HeroCard
+              clientName={clientName}
+              diagnosis={diagnosis?.diagnosis_text}
+              gateway={gatewayInfo}
+              isOnline={allOnline || anyOnline}
+            />
+            <MultiIspCard clientId={clientId} />
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <ShieldCheck size={14} weight="bold" className="text-indigo-400" />
+                <h3 className="text-[10px] font-bold uppercase tracking-[0.18em] text-indigo-300">Firewall & Router del cliente</h3>
+                <div className="flex-1 h-px bg-indigo-500/15"></div>
+                <span className="text-[9px] text-indigo-300/70">{orderedTargets.length}</span>
+              </div>
+              <p className="text-[10px] text-[var(--text-muted)] px-1 -mt-1">
+                Clicca un firewall per aprire la sua scheda con SLA, ISP/GEO, DNS, IP pubblico e le funzioni (Speedtest, Traceroute).
+              </p>
+              {orderedTargets.map(t => (
+                <FirewallListRow key={t.id} target={t} onOpen={(x) => setSelectedId(x.id)} />
               ))}
             </div>
-          )}
-
-          {/* MULTI-ISP (mostrato solo se >=2 linee) */}
-          <MultiIspCard clientId={clientId} />
-
-          {/* INTELLIGENCE per-firewall: GEO / DNS / IP HISTORY — un set per OGNI
-              firewall/router monitorato (prima veniva mostrato solo per il primo). */}
-          {(() => {
-            const intelTargets = [...firewalls, ...routers];
-            const list = intelTargets.length > 0 ? intelTargets : targets;
-            const multi = list.length > 1;
-            return list.map((t) => (
-              <div
-                key={`intel-${t.id}`}
-                className={multi ? "rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3 space-y-3" : "space-y-3"}
-                data-testid={`wan-intel-${t.public_ip}`}
-              >
-                {multi && (
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck size={13} weight="bold" className="text-indigo-400" />
-                    <h4 className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-300">
-                      {t.label || t.public_ip} · {t.public_ip}
-                    </h4>
-                    <div className="flex-1 h-px bg-indigo-500/15"></div>
-                  </div>
-                )}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  <GeoIspCard ip={t.public_ip} />
-                  <DnsHealthCard targetId={t.id} />
-                  <PublicIpHistoryCard targetId={t.id} currentIp={t.public_ip} />
-                </div>
-              </div>
-            ));
-          })()}
-
-          {/* Speedtest — a livello cliente (una sola misura sulla connessione). */}
-          <div className="grid grid-cols-1 gap-3">
-            <SpeedtestCard clientId={clientId} />
           </div>
-
-          {/* FASE 2: SaaS Reachability + Traceroute */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <SaasReachabilityCard clientId={clientId} />
-            <TracerouteCard targets={targets} clientId={clientId} />
-          </div>
-        </>
-      )}
+        );
+      })()}
 
       {/* ADD DIALOG */}
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
