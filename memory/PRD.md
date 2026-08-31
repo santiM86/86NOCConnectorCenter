@@ -9011,3 +9011,20 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   (data-testid login-mobile-banner) mostrato SOLO con user-agent mobile, link a /m.
 - TESTATO: testing_agent iter_135 (backend 9/9 pytest, frontend 100%). Con i dati
   live solo il tag "365" è raggiungibile (VM total=0); ramo "vm" coperto da unit test.
+
+## 2026-08-31 — Ticker risolti + Nome sede Firewall Nebula + Tutti i firewall nel tab WAN
+- Ticker guasti operatore (/tv): CONFERMATO che rimuove le anomalie risolte in
+  automatico (legge solo alert status=active di oggi; refresh periodico TvDashboard).
+  Nessuna modifica codice necessaria.
+- NebulaFirewalls.jsx: la riga compatta del firewall ora mostra il TAG SEDE
+  (fw.site_name || fw.site_id, data-testid nebula-fw-site) accanto al nome →
+  con più firewall in sedi diverse sono distinguibili a colpo d'occhio.
+  Header "Firewall Nebula (N)" ingrandito (10px, cyan) per leggibilità.
+  Nuova prop `boxed` per wrapper con bordo/card.
+- WanClientTab.jsx: nel tab WAN ora è renderizzato <NebulaFirewalls boxed> →
+  elenco di TUTTI i firewall Nebula del cliente (tutte le sedi, incl. dietro NAT),
+  cliccabili per aprire la scheda dispositivo completa (nebula-fw-detail-dialog).
+  Si auto-nasconde se il cliente non ha firewall Nebula.
+- TESTATO: testing_agent iter_136 (frontend 5/5 pass, login 2FA). In preview c'è
+  1 solo firewall (site '700H') → multi-sede visibile solo in produzione, ma la
+  logica per-firewall del tag sede + l'elenco nel tab WAN sono verificati.
