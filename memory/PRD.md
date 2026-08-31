@@ -9141,3 +9141,10 @@ Rifatto in WanClientTab.jsx come MASTER-DETAIL:
   (Traceroute scoped al target). data-testid wan-detail-view.
 Rimosso il blocco NebulaFirewalls duplicato e lo stacking di tutti i pannelli.
 VERIFICATO (screenshot preview, 2 target): lista pulita + apertura dettaglio + back OK.
+
+## 2026-08-31 — Badge SLA 24h nella riga lista firewall (tab WAN)
+Aggiunto componente SlaBadge (WanClientTab.jsx): recupera uptime_today da
+/external-monitor/insights/{id}?days=1 e mostra "XX.X% · SLA 24h" nella riga della
+lista firewall (verde >=99.5, giallo >=97, rosso sotto). data-testid wan-fw-sla-<id>.
+Così lo stato SLA di ogni sede si vede a colpo d'occhio senza aprire il dettaglio.
+VERIFICATO (screenshot): 2 badge in lista, primo firewall 100.0%.

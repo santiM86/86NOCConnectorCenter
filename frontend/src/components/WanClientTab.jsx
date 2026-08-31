@@ -140,6 +140,29 @@ function TargetCard({ target, onDelete, onHistory }) {
   );
 }
 
+// =================== SLA BADGE (mini, per riga lista) ===================
+function SlaBadge({ targetId }) {
+  const [pct, setPct] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/external-monitor/insights/${targetId}?days=1`);
+        if (alive) setPct(r.data?.uptime_today);
+      } catch { /* silent */ }
+    })();
+    return () => { alive = false; };
+  }, [targetId]);
+  if (pct == null) return null;
+  const color = pct >= 99.5 ? "#22c55e" : pct >= 97 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="text-right flex-shrink-0 hidden sm:block" data-testid={`wan-fw-sla-${targetId}`}>
+      <div className="text-sm font-bold tabular-nums leading-none" style={{ color }}>{pct.toFixed(1)}%</div>
+      <div className="text-[8px] uppercase tracking-wider opacity-60 mt-0.5">SLA 24h</div>
+    </div>
+  );
+}
+
 // =================== FIREWALL LIST ROW (master list, pulita) ===================
 function FirewallListRow({ target, onOpen }) {
   const r = target.result;
@@ -175,6 +198,7 @@ function FirewallListRow({ target, onOpen }) {
           <div className="text-[8px] uppercase tracking-wider opacity-60">{r?.ping?.reachable ? "ICMP" : "—"}</div>
         </div>
       )}
+      <SlaBadge targetId={target.id} />
       <span className="flex items-center gap-1 text-[10px] font-semibold text-indigo-300 px-2.5 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 group-hover:bg-indigo-500/20 whitespace-nowrap flex-shrink-0">
         Dettagli e funzioni <CaretRight size={12} weight="bold" />
       </span>
