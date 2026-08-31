@@ -9095,3 +9095,17 @@ FIX:
 VERIFICATO live: AS1267/AS30722/AS12874/AS3269 ora widespread=False (operatori up).
 Downdetector Enterprise NON configurato in questo deploy → il fix regge comunque grazie
 al check BGP robusto. Effetto in prod dopo REDEPLOY (watch ogni 300s → auto-resolve falsi).
+
+## 2026-08-31 — IODA 2ª fonte + regola "≥2 riscontri indipendenti" + pannelli WAN per-firewall
+IODA (già interrogato, senza chiave) ora è una fonte di conferma paritaria. Nuova regola
+in isp_outage.check_isp_outage: un outage è "GUASTO DIFFUSO CONFERMATO" SOLO con
+>= CONFIRM_MIN (default 2, env ISP_OUTAGE_CONFIRM_MIN) fonti INDIPENDENTI tra:
+RIPEstat(BGP withdrawn), IODA (asn/country = 1 fonte), Cloudflare Radar, Downdetector(problema).
+1 sola fonte → "sospetto NON confermato" (widespread=False, nessun alert / auto-resolve).
+Return arricchito: confirmations[], confirm_count, confirm_min.
+VERIFICATO (scenari simulati): solo BGP=1→non confermato; BGP+IODA=2→CONFERMATO; solo IODA=1→non confermato.
+Frontend WanClientTab.jsx: la griglia INTELLIGENCE (GEO/DNS/IP PUBBLICO) prima usava
+targets.slice(0,1) (solo primo target) → ora è renderizzata PER OGNI firewall/router,
+ognuno con header "Label · IP" e i propri 3 pannelli. Speedtest resta client-level.
+VERIFICATO (screenshot preview client da3d6e40, 2 target): blocchi distinti
+wan-intel-8.8.8.8 (Zyxel/Google) e wan-intel-1.1.1.1 (Vodafone/Cloudflare).

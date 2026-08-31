@@ -1180,17 +1180,38 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           {/* MULTI-ISP (mostrato solo se >=2 linee) */}
           <MultiIspCard clientId={clientId} />
 
-          {/* INTELLIGENCE GRID: GEO / DNS / IP HISTORY / SPEEDTEST */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {targets.slice(0, 1).map(t => (
-              <GeoIspCard key={`geo-${t.id}`} ip={t.public_ip} />
-            ))}
-            {targets.slice(0, 1).map(t => (
-              <DnsHealthCard key={`dns-${t.id}`} targetId={t.id} />
-            ))}
-            {targets.slice(0, 1).map(t => (
-              <PublicIpHistoryCard key={`iph-${t.id}`} targetId={t.id} currentIp={t.public_ip} />
-            ))}
+          {/* INTELLIGENCE per-firewall: GEO / DNS / IP HISTORY — un set per OGNI
+              firewall/router monitorato (prima veniva mostrato solo per il primo). */}
+          {(() => {
+            const intelTargets = [...firewalls, ...routers];
+            const list = intelTargets.length > 0 ? intelTargets : targets;
+            const multi = list.length > 1;
+            return list.map((t) => (
+              <div
+                key={`intel-${t.id}`}
+                className={multi ? "rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3 space-y-3" : "space-y-3"}
+                data-testid={`wan-intel-${t.public_ip}`}
+              >
+                {multi && (
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={13} weight="bold" className="text-indigo-400" />
+                    <h4 className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-300">
+                      {t.label || t.public_ip} · {t.public_ip}
+                    </h4>
+                    <div className="flex-1 h-px bg-indigo-500/15"></div>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <GeoIspCard ip={t.public_ip} />
+                  <DnsHealthCard targetId={t.id} />
+                  <PublicIpHistoryCard targetId={t.id} currentIp={t.public_ip} />
+                </div>
+              </div>
+            ));
+          })()}
+
+          {/* Speedtest — a livello cliente (una sola misura sulla connessione). */}
+          <div className="grid grid-cols-1 gap-3">
             <SpeedtestCard clientId={clientId} />
           </div>
 
