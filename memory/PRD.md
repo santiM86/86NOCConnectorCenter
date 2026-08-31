@@ -9062,3 +9062,16 @@ helper unit-tested. Nessuna regressione (36 device preview OK).
 - VERIFICATO E2E (screenshot, token iniettato): badge visibile, testo corretto,
   toast di conferma, modale si chiude dopo la conferma. Modifica di test (silence)
   ripristinata.
+
+## 2026-08-31 — FIX #2 data-loss: endpoint virtualization/vm-alert eliminavano legacy SENZA fondere
+SECONDO bug (indipendente dal read-merge): POST /devices/by-ip/{ip}/virtualization e
+/vm-alert, per consolidare i duplicati, ELIMINAVANO i doc legacy ma NON fondevano i
+loro campi nel canonico → impostando "Tipo Macchina" (VM/fisico) si PERDEVANO i campi
+presenti solo sul legacy (snmp_community, monitor_type, is_vital, alerts_silenced).
+Sintomo utente: "non salva le impostazioni per le virtual e il server fisico".
+FIX: entrambi gli endpoint ora, prima di eliminare i legacy, FONDONO i campi non vuoti
+mancanti nel canonico (merge_field_dicts da managed_device_dedup), poi applicano le
+modifiche. VERIFICATO E2E (preview, duplicato sintetico): POST virtualization=physical
+→ 1 doc con virtualization=physical + device_type=server + is_vital + snmp_community +
+monitor_type + alerts_silenced TUTTI preservati. NB: i device della segnalazione erano
+di PRODUZIONE (argus.86bit.it) → serve REDEPLOY perche' i fix abbiano effetto lì.
