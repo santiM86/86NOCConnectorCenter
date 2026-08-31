@@ -9109,3 +9109,21 @@ targets.slice(0,1) (solo primo target) → ora è renderizzata PER OGNI firewall
 ognuno con header "Label · IP" e i propri 3 pannelli. Speedtest resta client-level.
 VERIFICATO (screenshot preview client da3d6e40, 2 target): blocchi distinti
 wan-intel-8.8.8.8 (Zyxel/Google) e wan-intel-1.1.1.1 (Vodafone/Cloudflare).
+
+## 2026-08-31 — Suite WAN completa per OGNI firewall Nebula (auto-import + sync)
+Richiesta: tutte le funzioni WAN (SLA/Insight, ISP/GEO, DNS, IP pubblico, ecc.) per
+OGNI firewall del cliente (es. 7 sedi), non solo per l'unico target monitorato.
+Backend (routes/external_monitor.py):
+- import_wan_targets_from_nebula(client_id): crea un target WAN per ogni firewall
+  Nebula che non ne ha (IP WAN da wan_interfaces.public_ip o public_ip), linkato via
+  linked_nebula_dev_id, check_ping=True, auto_imported=True. Idempotente (no duplicati);
+  salta i firewall senza IP pubblico WAN.
+- POST /external-monitor/import-nebula-targets?client_id= (admin) → import + auto-link.
+- Task scheduler "nebula_wan_sync" ogni 900s (run_nebula_wan_sync): importa/collega i
+  nuovi firewall Nebula automaticamente (sync). _nebula_fw_public_ip() helper.
+Frontend (WanClientTab.jsx): pulsante toolbar "Importa firewall Nebula"
+  (data-testid import-nebula-targets-btn) → POST import + refresh.
+NB: SLA/ISP/GEO/DNS/IP funzionano via probe esterno dal server ARGUS verso l'IP pubblico
+di ogni sede; Traceroute/Speedtest "via sonda" richiedono agent nella sede.
+VERIFICATO: import crea 2/3 target sintetici (salta quello senza WAN), idempotente su
+re-run; pulsante presente in UI (screenshot). Effetto pieno in prod dopo redeploy.

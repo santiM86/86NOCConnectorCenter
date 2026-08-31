@@ -558,6 +558,89 @@ async def auto_link_nebula_endpoint(current_user: dict = Depends(get_current_use
     return await auto_link_wan_targets_nebula()
 
 
+def _nebula_fw_public_ip(fw: dict) -> str:
+    """IP pubblico (WAN) di un firewall Nebula: preferisci wan_interfaces, poi public_ip."""
+    for w in (fw.get("wan_interfaces") or []):
+        ip = (w.get("public_ip") or "").strip() if isinstance(w, dict) else ""
+        if ip:
+            return ip
+    return (fw.get("public_ip") or "").strip()
+
+
+async def import_wan_targets_from_nebula(client_id: Optional[str] = None) -> dict:
+    """Crea automaticamente un target WAN monitorato per OGNI firewall Nebula del
+    cliente che non ne ha ancora uno (match per dev_id o IP pubblico). Cosi' ogni
+    firewall/sede ottiene la suite WAN completa (SLA, ISP/GEO, DNS, IP pubblico).
+    Idempotente: non duplica i target gia' esistenti."""
+    fw_q = {"device_type": "firewall"}
+    if client_id:
+        fw_q["client_id"] = client_id
+    firewalls = await db.zyxel_devices.find(fw_q, {"_id": 0}).to_list(5000)
+
+    created, skipped, details = 0, 0, []
+    # Cache target esistenti per cliente
+    existing_by_client: dict = {}
+    for fw in firewalls:
+        cid = fw.get("client_id")
+        if not cid:
+            skipped += 1
+            continue
+        if cid not in existing_by_client:
+            existing_by_client[cid] = await db.wan_targets.find(
+                {"client_id": cid}, {"_id": 0, "public_ip": 1, "linked_nebula_dev_id": 1}
+            ).to_list(5000)
+        existing = existing_by_client[cid]
+        dev_id = fw.get("dev_id")
+        pip = _nebula_fw_public_ip(fw)
+        # Gia' coperto? (per dev_id collegato o per IP pubblico)
+        already = any(
+            (dev_id and e.get("linked_nebula_dev_id") == dev_id)
+            or (pip and (e.get("public_ip") or "").strip() == pip)
+            for e in existing
+        )
+        if already:
+            skipped += 1
+            continue
+        if not pip:
+            skipped += 1
+            details.append({"firewall": fw.get("site_name") or fw.get("model"), "skip": "nessun IP pubblico WAN"})
+            continue
+        label = fw.get("site_name") or fw.get("model") or "Firewall Nebula"
+        doc = {
+            "id": str(uuid.uuid4()),
+            "client_id": cid,
+            "label": label,
+            "device_type": "firewall",
+            "public_ip": pip,
+            "gateway_ip": None,
+            "check_ports": [443],
+            "check_ping": True,
+            "enabled": True,
+            "backup_enabled": False,
+            "linked_nebula_dev_id": dev_id,
+            "linked_nebula_site_id": fw.get("site_id"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": "nebula-auto-sync",
+            "auto_imported": True,
+        }
+        await db.wan_targets.insert_one(doc)
+        # Aggiorna la cache per evitare duplicati nello stesso giro
+        existing.append({"public_ip": pip, "linked_nebula_dev_id": dev_id})
+        created += 1
+        details.append({"firewall": label, "public_ip": pip, "dev_id": dev_id})
+    return {"created": created, "skipped": skipped, "firewalls_scanned": len(firewalls), "details": details}
+
+
+@router.post("/import-nebula-targets")
+async def import_nebula_targets_endpoint(client_id: str = None, current_user: dict = Depends(get_current_user)):
+    """Importa TUTTI i firewall Nebula del cliente come target WAN monitorati e li
+    collega. Se client_id non e' fornito, processa tutti i clienti."""
+    require_admin(current_user)
+    res = await import_wan_targets_from_nebula(client_id)
+    await auto_link_wan_targets_nebula(client_id)
+    return res
+
+
 async def probe_target(target: dict) -> dict:
     """Esegue tutti i check su un target WAN."""
     ip = target["public_ip"]
@@ -1004,7 +1087,30 @@ async def start_probe_scheduler():
     # Early-warning: sorveglia gli outage DIFFUSI degli operatori dei clienti
     # (IODA/RIPEstat/Cloudflare) ogni 5 minuti e avvisa PRIMA che cada la linea.
     coordinator.schedule("isp_outage_watch", run_isp_outage_watch, 300)
-    logger.info("External WAN probe scheduler registered (interval: 30s) + ISP outage watch (300s)")
+    # Sync automatico: importa/collega come target WAN i nuovi firewall Nebula
+    # (ogni 15 min) → ogni sede ottiene la suite WAN completa senza intervento.
+    coordinator.schedule("nebula_wan_sync", run_nebula_wan_sync, 900)
+    logger.info("External WAN probe scheduler registered (30s) + ISP outage watch (300s) + Nebula WAN sync (900s)")
+
+
+_nebula_sync_running = False
+
+
+async def run_nebula_wan_sync():
+    """Importa i firewall Nebula mancanti come target WAN e li collega. Idempotente."""
+    global _nebula_sync_running
+    if _nebula_sync_running:
+        return
+    _nebula_sync_running = True
+    try:
+        res = await import_wan_targets_from_nebula()
+        await auto_link_wan_targets_nebula()
+        if res.get("created"):
+            logger.info("[nebula-wan-sync] importati %d nuovi target WAN da Nebula", res["created"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("nebula_wan_sync failed: %s", e)
+    finally:
+        _nebula_sync_running = False
 
 
 _isp_watch_running = False
