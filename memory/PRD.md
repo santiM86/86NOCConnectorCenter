@@ -9075,3 +9075,23 @@ modifiche. VERIFICATO E2E (preview, duplicato sintetico): POST virtualization=ph
 → 1 doc con virtualization=physical + device_type=server + is_vital + snmp_community +
 monitor_type + alerts_silenced TUTTI preservati. NB: i device della segnalazione erano
 di PRODUZIONE (argus.86bit.it) → serve REDEPLOY perche' i fix abbiano effetto lì.
+
+## 2026-08-31 — FIX falsi positivi "GUASTO OPERATORE" (incongruenza con Downdetector)
+SINTOMO: alert Telegram/TV "GUASTO DIFFUSO CONFERMATO ASN-WINDTRE (AS1267)" mentre
+Downdetector non mostrava problemi → falso positivo. Idem Vodafone/Fastweb/IBSNAZ/NGI/
+Planetel/QCOM tutti insieme.
+RADICE (isp_outage.py): _ripe_announced usava as-overview.`announced` e faceva
+`bool(None)=False` su risposte anomale/timeout → RIPEstat "withdrawn" fasullo →
+bgp_withdrawn=widespread=True → alert CRITICO. La summary diceva "confermato da fonti
+pubbliche esterne" pur essendo l'UNICO segnale (BGP), spesso contraddetto da Downdetector.
+FIX:
+- _ripe_announced ora usa routing-status: withdrawn SOLO se 0 prefissi v4+v6 realmente
+  annunciati; risposte insufficienti/anomale → None (unknown), MAI outage.
+- check_isp_outage: BGP da solo non basta per "widespread". Se BGP=withdrawn ma
+  Downdetector NON vede picchi (dd_no_problem) e nessun'altra fonte conferma →
+  verdetto DECLASSATO ("segnale BGP incerto, non confermato — verifica manuale"),
+  widespread=False → nessun alert / recovery automatico dell'alert aperto.
+  Summary "CONFERMATO" ora elenca le fonti reali che confermano.
+VERIFICATO live: AS1267/AS30722/AS12874/AS3269 ora widespread=False (operatori up).
+Downdetector Enterprise NON configurato in questo deploy → il fix regge comunque grazie
+al check BGP robusto. Effetto in prod dopo REDEPLOY (watch ogni 300s → auto-resolve falsi).

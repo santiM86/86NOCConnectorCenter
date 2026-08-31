@@ -74,13 +74,28 @@ async def _ioda_alerts(session, entity_type: str, entity_code: str, hours: int =
 
 
 async def _ripe_announced(session, asn: int) -> Optional[bool]:
-    url = f"{RIPESTAT_BASE}/as-overview/data.json?resource=AS{asn}"
+    """True=ASN annuncia rotte, False=NESSUNA rotta (withdrawn reale), None=incerto.
+
+    Usa routing-status (conteggio prefissi realmente visibili nelle RIS peers)
+    invece del flag `announced` di as-overview: quest'ultimo poteva restituire
+    falsi negativi (o `bool(None)=False` su risposte malformate) → falsi allarmi
+    "operatore offline". Consideriamo withdrawn SOLO se v4+v6 == 0 prefissi.
+    """
+    url = f"{RIPESTAT_BASE}/routing-status/data.json?resource=AS{asn}"
     try:
         async with session.get(url) as r:
             j = await r.json(content_type=None)
-            return bool(j.get("data", {}).get("announced"))
+            d = (j.get("data") or {})
+            sp = d.get("announced_space") or {}
+            v4 = ((sp.get("v4") or {}).get("prefixes")) or 0
+            v6 = ((sp.get("v6") or {}).get("prefixes")) or 0
+            nb = d.get("observed_neighbours")
+            # Dati insufficienti/anomali → unknown (NON trattare come outage).
+            if not sp and nb in (None, 0):
+                return None
+            return (int(v4) + int(v6)) > 0
     except Exception as e:  # noqa: BLE001
-        logger.debug("RIPEstat as-overview AS%s failed: %s", asn, e)
+        logger.debug("RIPEstat routing-status AS%s failed: %s", asn, e)
         return None
 
 
@@ -158,8 +173,8 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         sources.append("IODA")
     ripe = out.get("ripe")
     if ripe is False:
-        bgp_withdrawn = widespread = True
-        signals.append(f"RIPEstat: AS{asn_n} NON annuncia più rotte BGP → operatore offline a livello globale")
+        bgp_withdrawn = True
+        signals.append(f"RIPEstat: AS{asn_n} NON annuncia rotte BGP (0 prefissi visibili) → possibile offline globale")
         sources.append("RIPEstat")
     elif ripe is True:
         signals.append(f"RIPEstat: AS{asn_n} annuncia regolarmente le rotte BGP (nessun crollo di routing)")
@@ -185,8 +200,23 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
     except Exception as e:  # noqa: BLE001
         logger.debug("downdetector correlation failed: %s", e)
 
-    if widespread or national:
-        summary = ("🌐 GUASTO DIFFUSO CONFERMATO: l'interruzione è rilevata anche da fonti pubbliche "
+    # VERDETTO — evita il falso "CONFERMATO" quando l'UNICO segnale è il BGP
+    # (volatile) ed è CONTRADDETTO dalle segnalazioni utenti (Downdetector).
+    dd_configured = bool(dd and dd.get("configured"))
+    dd_problem = bool(dd and dd.get("problem"))
+    dd_no_problem = dd_configured and not dd_problem and dd.get("status") == "success"
+    other_widespread = bool(out.get("ioda_asn") or out.get("ioda_country") or out.get("cf") or dd_problem)
+    src_txt = ", ".join(sorted({s for s in sources if s != "RIPEstat" or bgp_withdrawn})) or "fonti esterne"
+
+    if bgp_withdrawn and not other_widespread and dd_no_problem:
+        # Contraddizione: RIPEstat dice withdrawn ma Downdetector non vede picchi.
+        widespread = national = bgp_withdrawn = False
+        summary = ("⚠️ Segnale BGP incerto (RIPEstat) NON confermato dalle segnalazioni utenti "
+                   "(Downdetector non rileva picchi su questo operatore): probabile falso allarme o "
+                   "problema in evoluzione — verifica manuale prima di dichiarare l'outage.")
+    elif other_widespread or bgp_withdrawn:
+        widespread = True
+        summary = (f"🌐 GUASTO DIFFUSO CONFERMATO ({src_txt}): l'interruzione è rilevata da fonti "
                    "esterne → NON è un problema della singola sede, ma un outage dell'operatore"
                    + (" a livello nazionale." if national else "."))
     elif ripe is True and asn_n:
