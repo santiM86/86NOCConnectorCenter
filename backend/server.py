@@ -677,6 +677,21 @@ async def startup_event():
             await _fw_idx()
         except Exception as _ix_err:
             logging.getLogger(__name__).warning(f"remediation/lifecycle/intelligence indexes: {_ix_err}")
+
+        # v2026-08 FIX PERSISTENZA device: fonde i doc duplicati di
+        # managed_devices (canonico `ip` + legacy `ip_address`) cosi' le
+        # impostazioni salvate (Tipo Macchina, categoria/device_type, SNMP,
+        # is_vital, silence) non vengono piu' perse. Idempotente: no-op se il
+        # DB e' gia' pulito.
+        try:
+            from managed_device_dedup import merge_duplicate_managed_devices
+            _dedup_res = await merge_duplicate_managed_devices(db)
+            if _dedup_res.get("deleted_docs") or _dedup_res.get("promoted"):
+                logging.getLogger(__name__).info(
+                    f"managed_devices dedup: {_dedup_res}"
+                )
+        except Exception as _dd_err:
+            logging.getLogger(__name__).warning(f"managed_devices dedup: {_dd_err}")
         # alerts: escalation scan (active + severity + ack + time)
         await db.alerts.create_index(
             [("status", 1), ("severity", 1), ("escalated", 1), ("created_at", 1)]

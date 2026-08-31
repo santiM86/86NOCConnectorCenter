@@ -1,0 +1,32 @@
+{
+  "summary": "Frontend-only verification of the 2 requested ClientOverviewPage changes on preview (admin login + 2FA via pyotp). (1) Overview tab: Firewall Nebula compact row shows the SITE tag data-testid='nebula-fw-site' with text '700H' immediately after data-testid='nebula-fw-name' ('USG FLEX 700H') — DOM check confirmed the site span is the next sibling of the name span. (2) WAN tab (label 'WAN (2)'): div[data-testid='wan-nebula-firewalls'] renders the client's Nebula firewall row data-testid='nebula-firewall-c1314334-f8eb-424b-bf13-e44c3f20e317' with name + site tag; clicking the row opens the full device card dialog data-testid='nebula-fw-detail-dialog' (status 'Online', shows model USG FLEX 700H, Sito 700H, WAN/LAN interfaces, DIETRO NAT badge, CPU/MEM/sessions) and it closes with Esc. No regression: WAN hero card present, 2 monitored WAN target cards + 2 SLA insight panels rendered, toolbar buttons add-wan-target-btn / attach-wan-target-btn / wan-refresh-btn all visible. All 5 requested checks PASSED.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "WAN tab / Overview tab — Nebula firewalls block",
+        "issues": [
+          "Section label 'FIREWALL NEBULA (1)' is rendered at text-[8px] in --text-muted: barely legible on the dark panel (low contrast + tiny). Consider 9-10px and a brighter muted tone.",
+          "In the WAN tab the Nebula firewall list sits between the HERO card and the 'Firewall' group without its own card/border, so it visually reads as part of the hero block; a light bordered container would make the selectable list clearer."
+        ]
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_136.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "NebulaFirewalls is now mounted twice for the same client (Overview + WAN tab); each instance runs its own 30s polling of /api/clients/{id}/zyxel/devices plus a detected-public-ip call. Only one is mounted at a time today (tabs are conditionally rendered), so no duplicate traffic — just keep this in mind if both tabs are ever rendered simultaneously.",
+    "NebulaFirewalls.jsx swallows fetch errors (setFirewalls([])) and then returns null, so a failing Zyxel API is indistinguishable from 'no firewalls' — no error state is surfaced to the user.",
+    "The compact row is a clickable <div> without role/tabIndex/keyboard handler — not keyboard accessible (minor a11y)."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "not tested (frontend-only request)", "frontend": "100% (5/5 requested checks passed)" },
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (worked). NOTE: on the login page the email field was cleared once right after filling password->email in the reverse order; filling password first then email worked reliably.",
+  "context_for_next_testing_agent": "Login flow: /login (login-email-input, login-password-input, login-submit-btn) -> /2fa (2fa-code-input, verify-2fa-btn, pyotp installed). Client page: /client/da3d6e40-b3e5-4d46-9787-dde328a3aa36, tabs via data-testid='tab-overview'/'tab-wan'. Nebula firewall row testid: nebula-firewall-<devId>; detail dialog: nebula-fw-detail-dialog. Preview has 1 Nebula firewall (site '700H', behind NAT) so multi-site differentiation cannot be visually reproduced here.",
+  "rca_of_the_issue": "N/A — no defects found in the two implemented changes."
+}

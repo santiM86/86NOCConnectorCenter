@@ -132,23 +132,31 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     managed_query = query.copy()
     managed_devices_raw = await db.managed_devices.find(managed_query, {"_id": 0}).to_list(5000)
     managed_by_ip = {}
+    # v2026-08 DEDUP-READ-MERGE (fix "salvo ma non mantiene / non categorizza"):
+    # per lo stesso IP possono esistere piu' doc (canonico con `ip` + legacy con
+    # solo `ip_address`). Le scritture finiscono su doc diversi a seconda
+    # dell'endpoint; prima la lettura sceglieva UN doc "per punteggio" (che NON
+    # includeva device_type!) e perdeva impostazioni/categoria salvate. Ora
+    # FONDIAMO i duplicati: priorita' ai valori non vuoti del canonico, i campi
+    # mancanti riempiti dai legacy → nessuna impostazione salvata va persa.
+    def _md_nonempty(v):
+        return v not in (None, "", [], {})
+
+    def _merge_md(a, b):
+        canonical = a if _md_nonempty(a.get("ip")) else b
+        legacy = b if canonical is a else a
+        merged = dict(legacy)
+        for k, v in canonical.items():
+            if _md_nonempty(v):
+                merged[k] = v
+        return merged
+
     for md in managed_devices_raw:
         md_ip = md.get("ip") or md.get("ip_address", "")
         if not md_ip:
             continue
         cur = managed_by_ip.get(md_ip)
-        if cur is None:
-            managed_by_ip[md_ip] = md
-            continue
-        # v2026-06 DEDUP-READ: se esistono piu' doc per lo stesso IP (legacy),
-        # preferisci quello con piu' segnale di gestione (virtualization, VM name,
-        # silence, is_vital) cosi' non perdiamo le impostazioni salvate.
-        def _score(m):
-            return sum(1 for k in ("virtualization", "hyperv_vm_name", "hyperv_host_hint",
-                                    "alerts_silenced", "is_vital", "hyperv_alert_on_off")
-                       if m.get(k))
-        if _score(md) > _score(cur):
-            managed_by_ip[md_ip] = md
+        managed_by_ip[md_ip] = md if cur is None else _merge_md(cur, md)
 
     # v2026-07-24 DATTO-AS-EVIDENCE (fix falso-rosso su server ICMP-bloccati):
     # i server Windows/Hyper-V spesso bloccano ICMP e possono NON comparire in
@@ -601,6 +609,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         if not md_ip or md_ip in manual_ips:
             continue
         manual_ips.add(md_ip)
+        # v2026-08 DEDUP-READ-MERGE: usa il doc FUSO (canonico + legacy) invece
+        # del doc grezzo, cosi' impostazioni/categoria salvate su un doc
+        # duplicato diverso non vengono perse (fix "salvo ma non mantiene").
+        md = managed_by_ip.get(md_ip, md)
         # v3.8.15: preserva il source originale (connector-scanner / connector-master / manual)
         # cosi' la colonna FONTE in UI distingue MASTER vs SCANNER vs MANUALE.
         md_source = md.get("source") or "managed"

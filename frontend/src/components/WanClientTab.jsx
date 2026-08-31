@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import NebulaFirewalls from "@/components/NebulaFirewalls";
 
 const STATUS_COLOR = { online: "#34C759", offline: "#FF3B30", degraded: "#FF9500", filtered: "#FFCC00", unknown: "#555", pending: "#555" };
 
@@ -1091,6 +1092,13 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
           isOnline={allOnline || anyOnline}
         />
       )}
+
+      {/* Tutti i firewall Nebula del cliente (tutte le sedi, incl. dietro NAT) —
+          elenco selezionabile che apre la scheda dispositivo completa.
+          Si auto-nasconde se il cliente non ha firewall Nebula. */}
+      <div data-testid="wan-nebula-firewalls">
+        <NebulaFirewalls clientId={clientId} wanTargets={targets} boxed />
+      </div>
 
       {targets.length === 0 ? (
         <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] py-12 text-center text-[var(--text-muted)]">

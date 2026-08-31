@@ -2,5 +2,9 @@
   "ignorePatterns": [
     "build/**",
     "public/argus-desktop-preview/**"
-  ]
+  ],
+  "globals": {
+    "__REACT_DEVTOOLS_GLOBAL_HOOK__": "readonly",
+    "MSApp": "readonly"
+  }
 }

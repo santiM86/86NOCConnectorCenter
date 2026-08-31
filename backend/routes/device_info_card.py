@@ -1606,38 +1606,34 @@ async def normalize_managed_device_ip_fields(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """One-shot idempotente: allinea i documenti legacy di `managed_devices`
-    che hanno l'IP salvato SOLO in `ip_address` copiandolo nel campo canonico
-    `ip`.
+    """One-shot idempotente: FONDE i documenti duplicati di `managed_devices`.
 
-    Questo elimina alla radice l'incoerenza `ip` vs `ip_address` che causava
-    il salvataggio intermittente delle impostazioni device (Tipo Macchina,
-    alert VM, ecc.). Sicuro da rilanciare piu' volte.
+    Per lo stesso IP possono coesistere un doc canonico (`ip`) e uno o piu' doc
+    legacy (solo `ip_address`). Le impostazioni (Tipo Macchina, device_type,
+    SNMP, is_vital, silence) potevano finire su doc diversi e la lettura ne
+    perdeva una parte. Questo unisce i duplicati in un unico doc canonico
+    (nessuna impostazione persa) e allinea `ip_address` → `ip`.
+
+    Sicuro da rilanciare piu' volte.
     """
     if current_user.get("role") not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Solo admin")
 
-    fixed = 0
-    cursor = db.managed_devices.find(
-        {
-            "$or": [{"ip": {"$in": [None, ""]}}, {"ip": {"$exists": False}}],
-            "ip_address": {"$nin": [None, ""]},
-        },
-        {"_id": 1, "ip_address": 1},
-    )
-    async for doc in cursor:
-        await db.managed_devices.update_one(
-            {"_id": doc["_id"]}, {"$set": {"ip": doc["ip_address"]}}
-        )
-        fixed += 1
-
+    from managed_device_dedup import merge_duplicate_managed_devices
+    res = await merge_duplicate_managed_devices(db)
+    total = res.get("deleted_docs", 0) + res.get("promoted", 0)
     return {
         "ok": True,
-        "normalized": fixed,
+        "normalized": total,
+        "merged_groups": res.get("merged_groups", 0),
+        "deleted_docs": res.get("deleted_docs", 0),
+        "promoted": res.get("promoted", 0),
         "message": (
-            f"{fixed} documenti allineati (ip_address → ip)."
-            if fixed
-            else "Nessun documento da normalizzare: DB gia' coerente."
+            f"{res.get('merged_groups', 0)} IP normalizzati "
+            f"({res.get('deleted_docs', 0)} duplicati fusi, "
+            f"{res.get('promoted', 0)} legacy promossi)."
+            if total
+            else "Nessun duplicato da fondere: DB gia' coerente."
         ),
     }
 

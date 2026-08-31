@@ -9011,3 +9011,54 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
   (data-testid login-mobile-banner) mostrato SOLO con user-agent mobile, link a /m.
 - TESTATO: testing_agent iter_135 (backend 9/9 pytest, frontend 100%). Con i dati
   live solo il tag "365" è raggiungibile (VM total=0); ramo "vm" coperto da unit test.
+
+## 2026-08-31 — Ticker risolti + Nome sede Firewall Nebula + Tutti i firewall nel tab WAN
+- Ticker guasti operatore (/tv): CONFERMATO che rimuove le anomalie risolte in
+  automatico (legge solo alert status=active di oggi; refresh periodico TvDashboard).
+  Nessuna modifica codice necessaria.
+- NebulaFirewalls.jsx: la riga compatta del firewall ora mostra il TAG SEDE
+  (fw.site_name || fw.site_id, data-testid nebula-fw-site) accanto al nome →
+  con più firewall in sedi diverse sono distinguibili a colpo d'occhio.
+  Header "Firewall Nebula (N)" ingrandito (10px, cyan) per leggibilità.
+  Nuova prop `boxed` per wrapper con bordo/card.
+- WanClientTab.jsx: nel tab WAN ora è renderizzato <NebulaFirewalls boxed> →
+  elenco di TUTTI i firewall Nebula del cliente (tutte le sedi, incl. dietro NAT),
+  cliccabili per aprire la scheda dispositivo completa (nebula-fw-detail-dialog).
+  Si auto-nasconde se il cliente non ha firewall Nebula.
+- TESTATO: testing_agent iter_136 (frontend 5/5 pass, login 2FA). In preview c'è
+  1 solo firewall (site '700H') → multi-sede visibile solo in produzione, ma la
+  logica per-firewall del tag sede + l'elenco nel tab WAN sono verificati.
+
+## 2026-08-31 — FIX BUG "salvo ma non mantiene / non categorizza il server" (managed_devices duplicati)
+RADICE: per lo stesso IP coesistono in managed_devices un doc CANONICO (`ip`
+valorizzato) e uno/piu' doc LEGACY (solo `ip_address`, `ip` null → tollerati
+dall'indice unico (client_id, ip)). Le scritture (Tipo Macchina, device_type via
+move-category, SNMP, is_vital, silence) finivano su doc diversi; la LETTURA
+/api/devices sceglieva UN doc:
+  - poll branch: managed_by_ip per punteggio (che NON includeva device_type)
+  - managed-only branch (riga 645): primo-visto tra i doc GREZZI
+→ impostazioni e categoria salvate sul doc "perdente" sparivano ("quasi sempre").
+FIX:
+- managed_device_dedup.py (NEW): merge_duplicate_managed_devices() fonde i
+  duplicati in un unico canonico (priorita' valori non vuoti canonico, buchi
+  riempiti dai legacy → nessuna perdita), poi elimina i legacy. Idempotente.
+- routes/devices.py: READ-MERGE in ENTRAMBI i branch. managed_by_ip ora FONDE i
+  doc duplicati; il branch managed-only usa `md = managed_by_ip.get(md_ip, md)`.
+- server.py startup: chiama merge_duplicate_managed_devices(db) → sana il DB
+  produzione al deploy (no-op se pulito).
+- device_info_card.py /devices/normalize-ip-fields: ora FONDE i duplicati
+  (prima copiava solo ip_address→ip, rischiando collisione indice unico).
+VERIFICATO E2E (preview, login 2FA): device con canonico(device_type=server) +
+legacy(virtualization=hyperv,is_vital,hyperv_vm_name) → /api/devices ritorna UN
+device con TUTTI i campi fusi (categoria server + VM settings + community). Merge
+helper unit-tested. Nessuna regressione (36 device preview OK).
+
+## 2026-08-31 — Indicatore "Impostazioni salvate ✓" + ricarica/verifica dopo Salva
+- DeviceEditModal.js: dopo Salva/Applica ora, esegue reloadSavedDevice() (GET
+  /api/devices) per CONFERMARE la persistenza reale, mostra badge verde inline
+  "✓ Impostazioni salvate" (data-testid device-saved-indicator), il pulsante
+  diventa "Salvato ✓" (disabilitato) per ~1.4s, poi chiude + refresh parent con
+  il device confermato dal backend.
+- VERIFICATO E2E (screenshot, token iniettato): badge visibile, testo corretto,
+  toast di conferma, modale si chiude dopo la conferma. Modifica di test (silence)
+  ripristinata.

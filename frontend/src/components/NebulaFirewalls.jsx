@@ -484,7 +484,7 @@ function FirewallDetail({ fw, wt, detectedPubIp }) {
   );
 }
 
-export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
+export default function NebulaFirewalls({ clientId, wanTargets = [], boxed = false }) {
   const [firewalls, setFirewalls] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -531,9 +531,9 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
   const active = firewalls.find((f) => f.dev_id === openId) || null;
 
   return (
-    <div className="space-y-1.5" data-testid="nebula-firewalls">
+    <div className={`space-y-1.5 ${boxed ? "rounded-xl border border-[var(--bg-border)] bg-[var(--bg-panel)] p-4" : ""}`} data-testid="nebula-firewalls">
       <div className="flex items-center justify-between">
-        <p className="text-[8px] uppercase tracking-widest text-[var(--text-muted)]">Firewall Nebula ({firewalls.length})</p>
+        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-300">Firewall Nebula ({firewalls.length})</p>
         <button onClick={fetchData} disabled={loading}
                 className="text-[var(--text-muted)] hover:text-cyan-300 transition-colors disabled:opacity-50"
                 title="Aggiorna (auto 30s)" data-testid="nebula-firewalls-refresh">
@@ -562,6 +562,12 @@ export default function NebulaFirewalls({ clientId, wanTargets = [] }) {
             >
               <ShieldCheck size={14} weight="bold" style={{ color: sc }} />
               <span className="font-bold text-[var(--text-primary)]" data-testid="nebula-fw-name">{productName(fw)}</span>
+              {(fw.site_name || fw.site_id) && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 font-semibold whitespace-nowrap"
+                      title="Sede" data-testid="nebula-fw-site">
+                  {fw.site_name || fw.site_id}
+                </span>
+              )}
               {pubIp && (
                 <span className="font-mono text-[var(--text-muted)] text-[10px]"
                       style={behindNat && !realPublic ? { color: C.warn } : undefined}
