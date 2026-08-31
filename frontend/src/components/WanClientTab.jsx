@@ -1061,6 +1061,20 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
     } finally { setAttaching(null); }
   };
 
+  const [importing, setImporting] = useState(false);
+  const importNebula = async () => {
+    setImporting(true);
+    try {
+      const r = await axios.post(`${API}/external-monitor/import-nebula-targets?client_id=${clientId}`);
+      const n = r.data?.created || 0;
+      if (n > 0) toast.success(`${n} firewall Nebula importati come target WAN — ora hanno la suite completa`);
+      else toast.info("Tutti i firewall Nebula sono già monitorati come target WAN");
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore import firewall Nebula");
+    } finally { setImporting(false); }
+  };
+
   return (
     <div className="space-y-4" data-testid="wan-client-tab">
       {/* Toolbar */}
@@ -1073,6 +1087,9 @@ export default function WanClientTab({ targets, clientId, clientName, onRefresh 
         <div className="flex gap-2">
           <Button onClick={onRefresh} variant="outline" className="h-8 text-xs gap-1 border-[var(--bg-border)]" data-testid="wan-refresh-btn">
             <ArrowClockwise size={13} weight="bold" /> Aggiorna
+          </Button>
+          <Button onClick={importNebula} disabled={importing} variant="outline" className="h-8 text-xs gap-1 border-cyan-500/40 hover:bg-cyan-500/10 text-cyan-300" data-testid="import-nebula-targets-btn" title="Importa tutti i firewall Nebula del cliente come target WAN monitorati (una scheda completa per ogni sede)">
+            <ShieldCheck size={13} weight="bold" /> {importing ? "Importo..." : "Importa firewall Nebula"}
           </Button>
           <Button onClick={openAttach} variant="outline" className="h-8 text-xs gap-1 border-indigo-500/40 hover:bg-indigo-500/10 text-indigo-300" data-testid="attach-wan-target-btn">
             <Globe size={13} weight="bold" /> Aggancia esistente
