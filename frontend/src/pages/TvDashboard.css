@@ -346,10 +346,33 @@
   background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45);
   box-shadow: 0 0 22px rgba(239,68,68,.18) inset;
 }
+
+/* --- Ticker outage/sicurezza: singola riga a scorrimento continuo --- */
+.tvx-isp-ticker {
+  margin: 0 0 14px; overflow: hidden; white-space: nowrap; position: relative;
+  border-radius: 10px; padding: 9px 0;
+  background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45);
+  box-shadow: 0 0 22px rgba(239,68,68,.18) inset;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+          mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 97%, transparent 100%);
+}
+.tvx-ticker-track { display: inline-flex; align-items: center; will-change: transform; animation: tvxTicker 45s linear infinite; }
+.tvx-isp-ticker:hover .tvx-ticker-track { animation-play-state: paused; }
+.tvx-ticker-seq { display: inline-flex; align-items: center; }
+.tvx-ticker-item {
+  display: inline-flex; align-items: center; gap: 12px; padding: 0 34px;
+  border-right: 2px solid rgba(239,68,68,.30);
+}
+.tvx-ticker-item.tvx-sec-row {
+  background: transparent; box-shadow: none; border: none;
+  border-right: 2px solid rgba(217,70,239,.35);
+}
+@keyframes tvxTicker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
 .tvx-isp-dot { width: 12px; height: 12px; border-radius: 50%; background: #ef4444; animation: tvxpulse 1.2s infinite; flex: none; }
-.tvx-isp-tag { font-size: 12px; font-weight: 800; letter-spacing: .12em; color: #fff; background: #dc2626; padding: 3px 10px; border-radius: 6px; }
-.tvx-isp-name { font-size: 18px; font-weight: 800; color: #fecaca; }
-.tvx-isp-clients { font-size: 15px; font-weight: 600; color: #fde68a; }
+.tvx-isp-tag { font-size: 13px; font-weight: 800; letter-spacing: .12em; color: #fff; background: #dc2626; padding: 3px 10px; border-radius: 6px; flex: none; }
+.tvx-isp-name { font-size: 19px; font-weight: 800; color: #fecaca; }
+.tvx-isp-clients { font-size: 16px; font-weight: 600; color: #fde68a; }
 .tvx-sec-row { background: rgba(217,70,239,.10); border-color: rgba(217,70,239,.45); box-shadow: 0 0 22px rgba(217,70,239,.16) inset; }
 .tvx-sec-row .tvx-isp-dot { background: #d946ef; }
 .tvx-sec-tag { background: #a21caf; }

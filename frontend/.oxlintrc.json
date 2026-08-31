@@ -1,0 +1,6 @@
+{
+  "ignorePatterns": [
+    "build/**",
+    "public/argus-desktop-preview/**"
+  ]
+}

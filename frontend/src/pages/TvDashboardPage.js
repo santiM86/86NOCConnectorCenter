@@ -218,27 +218,41 @@ export default function TvDashboardPage() {
         </div>
       </header>
 
-      {/* Banner PERSISTENTE outage operatore + sicurezza (solo eventi di oggi) */}
+      {/* Banner PERSISTENTE outage operatore + sicurezza — ticker a scorrimento (eventi di oggi) */}
       {((data.isp_outages || []).length > 0 || (data.security_incidents || []).length > 0) && (
-        <div className="tvx-isp-banner" data-testid="tv-isp-banner">
-          {(data.isp_outages || []).map(o => (
-            <div key={o.id} className="tvx-isp-row" data-testid="tv-isp-banner-row">
-              <span className="tvx-isp-dot" />
-              <span className="tvx-isp-tag">GUASTO OPERATORE</span>
-              <span className="tvx-isp-name">{o.title}</span>
-              {(o.clients || []).length > 0 && (
-                <span className="tvx-isp-clients">Clienti a rischio: {(o.clients || []).join(", ")}</span>
-              )}
-            </div>
-          ))}
-          {(data.security_incidents || []).map(s => (
-            <div key={s.id} className="tvx-isp-row tvx-sec-row" data-testid="tv-sec-banner-row">
-              <span className="tvx-isp-dot" />
-              <span className="tvx-isp-tag tvx-sec-tag">SICUREZZA</span>
-              <span className="tvx-isp-name">{s.title}</span>
-              <span className="tvx-isp-clients">{s.client_name}</span>
-            </div>
-          ))}
+        <div className="tvx-isp-ticker" data-testid="tv-isp-banner">
+          <div className="tvx-ticker-track">
+            {[0, 1].map((dup) => (
+              <div className="tvx-ticker-seq" key={dup} aria-hidden={dup === 1}>
+                {(data.isp_outages || []).map((o) => (
+                  <span
+                    key={`${o.id}-${dup}`}
+                    className="tvx-ticker-item"
+                    data-testid={dup === 0 ? "tv-isp-banner-row" : undefined}
+                  >
+                    <span className="tvx-isp-dot" />
+                    <span className="tvx-isp-tag">GUASTO OPERATORE</span>
+                    <span className="tvx-isp-name">{o.title}</span>
+                    {(o.clients || []).length > 0 && (
+                      <span className="tvx-isp-clients">Clienti a rischio: {(o.clients || []).join(", ")}</span>
+                    )}
+                  </span>
+                ))}
+                {(data.security_incidents || []).map((s) => (
+                  <span
+                    key={`${s.id}-${dup}`}
+                    className="tvx-ticker-item tvx-sec-row"
+                    data-testid={dup === 0 ? "tv-sec-banner-row" : undefined}
+                  >
+                    <span className="tvx-isp-dot" />
+                    <span className="tvx-isp-tag tvx-sec-tag">SICUREZZA</span>
+                    <span className="tvx-isp-name">{s.title}</span>
+                    <span className="tvx-isp-clients">{s.client_name}</span>
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
