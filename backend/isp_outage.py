@@ -164,7 +164,6 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         out = {}
 
     if out.get("ioda_asn"):
-        widespread = True
         signals.append(f"IODA: rilevato outage attivo sull'operatore AS{asn_n} ({len(out['ioda_asn'])} evento/i)")
         sources.append("IODA")
     if out.get("ioda_country"):
@@ -180,7 +179,6 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         signals.append(f"RIPEstat: AS{asn_n} annuncia regolarmente le rotte BGP (nessun crollo di routing)")
         sources.append("RIPEstat")
     if out.get("cf"):
-        widespread = True
         signals.append(f"Cloudflare Radar: {len(out['cf'])} outage annotato nell'ultima 24h")
         sources.append("Cloudflare Radar")
 
@@ -191,7 +189,6 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
         dd = await check_downdetector(isp_name, (country_code or "IT"))
         if dd.get("configured"):
             if dd.get("problem"):
-                widespread = True
                 signals.append(f"Downdetector: segnalazioni utenti elevate su {dd.get('company') or isp_name} (stato {dd.get('status')})")
                 sources.append("Downdetector")
             elif dd.get("status") == "success":
@@ -200,36 +197,56 @@ async def check_isp_outage(asn=None, isp_name: Optional[str] = None,
     except Exception as e:  # noqa: BLE001
         logger.debug("downdetector correlation failed: %s", e)
 
-    # VERDETTO — evita il falso "CONFERMATO" quando l'UNICO segnale è il BGP
-    # (volatile) ed è CONTRADDETTO dalle segnalazioni utenti (Downdetector).
+    # VERDETTO — richiede ALMENO 2 fonti INDIPENDENTI che confermano l'outage
+    # (soglia CONFIRM_MIN). Un singolo segnale (es. solo BGP, volatile, o solo
+    # IODA) → "sospetto NON confermato", nessun alert. Questo elimina i falsi
+    # positivi (es. RIPEstat withdrawn transitorio smentito da Downdetector).
+    try:
+        CONFIRM_MIN = max(1, int(os.environ.get("ISP_OUTAGE_CONFIRM_MIN", "2")))
+    except Exception:  # noqa: BLE001
+        CONFIRM_MIN = 2
     dd_configured = bool(dd and dd.get("configured"))
     dd_problem = bool(dd and dd.get("problem"))
     dd_no_problem = dd_configured and not dd_problem and dd.get("status") == "success"
-    other_widespread = bool(out.get("ioda_asn") or out.get("ioda_country") or out.get("cf") or dd_problem)
-    src_txt = ", ".join(sorted({s for s in sources if s != "RIPEstat" or bgp_withdrawn})) or "fonti esterne"
 
-    if bgp_withdrawn and not other_widespread and dd_no_problem:
-        # Contraddizione: RIPEstat dice withdrawn ma Downdetector non vede picchi.
-        widespread = national = bgp_withdrawn = False
-        summary = ("⚠️ Segnale BGP incerto (RIPEstat) NON confermato dalle segnalazioni utenti "
-                   "(Downdetector non rileva picchi su questo operatore): probabile falso allarme o "
-                   "problema in evoluzione — verifica manuale prima di dichiarare l'outage.")
-    elif other_widespread or bgp_withdrawn:
+    # Fonti indipendenti che CONFERMANO un guasto diffuso (IODA conta 1 sola volta
+    # anche se scattano sia asn sia country: stesso provider di dati).
+    confirmations = []
+    if bgp_withdrawn:
+        confirmations.append("RIPEstat (BGP)")
+    if out.get("ioda_asn") or out.get("ioda_country"):
+        confirmations.append("IODA")
+    if out.get("cf"):
+        confirmations.append("Cloudflare Radar")
+    if dd_problem:
+        confirmations.append("Downdetector")
+    n_conf = len(confirmations)
+
+    if n_conf >= CONFIRM_MIN:
         widespread = True
-        summary = (f"🌐 GUASTO DIFFUSO CONFERMATO ({src_txt}): l'interruzione è rilevata da fonti "
-                   "esterne → NON è un problema della singola sede, ma un outage dell'operatore"
-                   + (" a livello nazionale." if national else "."))
-    elif ripe is True and asn_n:
-        summary = ("✅ Nessun outage diffuso rilevato dalle fonti esterne (IODA/RIPEstat/Downdetector): l'operatore è "
-                   "operativo altrove → il guasto è probabilmente ISOLATO alla linea/sede del cliente.")
+        summary = (f"🌐 GUASTO DIFFUSO CONFERMATO da {n_conf} fonti indipendenti "
+                   f"({', '.join(confirmations)}): NON è un problema della singola sede, "
+                   "ma un outage dell'operatore" + (" a livello nazionale." if national else "."))
+    elif n_conf == 1:
+        widespread = national = False
+        extra = " (Downdetector non rileva picchi di segnalazioni)" if dd_no_problem else ""
+        summary = (f"⚠️ Possibile problema operatore segnalato da 1 sola fonte ({confirmations[0]}){extra}: "
+                   f"NON confermato — servono almeno {CONFIRM_MIN} riscontri indipendenti. "
+                   "Probabile falso allarme o evento in evoluzione: verifica manuale consigliata.")
     else:
-        summary = "Correlazione outage esterno non conclusiva (dati insufficienti sull'operatore)."
+        widespread = national = False
+        if ripe is True and asn_n:
+            summary = ("✅ Nessun outage diffuso rilevato dalle fonti esterne (IODA/RIPEstat/Downdetector): "
+                       "l'operatore è operativo altrove → il guasto è probabilmente ISOLATO alla linea/sede del cliente.")
+        else:
+            summary = "Correlazione outage esterno non conclusiva (dati insufficienti sull'operatore)."
 
     return {
         "widespread": widespread, "national": national, "bgp_withdrawn": bgp_withdrawn,
         "asn": f"AS{asn_n}" if asn_n else None, "isp_name": isp_name, "country": country_code,
         "signals": signals, "summary": summary,
         "sources": sorted(set(sources)),
+        "confirmations": confirmations, "confirm_count": n_conf, "confirm_min": CONFIRM_MIN,
         "downdetector": dd,
         "external_links": _external_links(isp_name, country_code, asn_n),
         "checked_at": int(time.time()),
