@@ -9028,3 +9028,27 @@ già presente, dynamic/syslog gestibili via config (UI toggle dedicata = backlog
 - TESTATO: testing_agent iter_136 (frontend 5/5 pass, login 2FA). In preview c'è
   1 solo firewall (site '700H') → multi-sede visibile solo in produzione, ma la
   logica per-firewall del tag sede + l'elenco nel tab WAN sono verificati.
+
+## 2026-08-31 — FIX BUG "salvo ma non mantiene / non categorizza il server" (managed_devices duplicati)
+RADICE: per lo stesso IP coesistono in managed_devices un doc CANONICO (`ip`
+valorizzato) e uno/piu' doc LEGACY (solo `ip_address`, `ip` null → tollerati
+dall'indice unico (client_id, ip)). Le scritture (Tipo Macchina, device_type via
+move-category, SNMP, is_vital, silence) finivano su doc diversi; la LETTURA
+/api/devices sceglieva UN doc:
+  - poll branch: managed_by_ip per punteggio (che NON includeva device_type)
+  - managed-only branch (riga 645): primo-visto tra i doc GREZZI
+→ impostazioni e categoria salvate sul doc "perdente" sparivano ("quasi sempre").
+FIX:
+- managed_device_dedup.py (NEW): merge_duplicate_managed_devices() fonde i
+  duplicati in un unico canonico (priorita' valori non vuoti canonico, buchi
+  riempiti dai legacy → nessuna perdita), poi elimina i legacy. Idempotente.
+- routes/devices.py: READ-MERGE in ENTRAMBI i branch. managed_by_ip ora FONDE i
+  doc duplicati; il branch managed-only usa `md = managed_by_ip.get(md_ip, md)`.
+- server.py startup: chiama merge_duplicate_managed_devices(db) → sana il DB
+  produzione al deploy (no-op se pulito).
+- device_info_card.py /devices/normalize-ip-fields: ora FONDE i duplicati
+  (prima copiava solo ip_address→ip, rischiando collisione indice unico).
+VERIFICATO E2E (preview, login 2FA): device con canonico(device_type=server) +
+legacy(virtualization=hyperv,is_vital,hyperv_vm_name) → /api/devices ritorna UN
+device con TUTTI i campi fusi (categoria server + VM settings + community). Merge
+helper unit-tested. Nessuna regressione (36 device preview OK).
