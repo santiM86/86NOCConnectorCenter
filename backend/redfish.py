@@ -709,9 +709,9 @@ class RedfishPoller:
                         # Logical drives (HP SmartStorage + DMTF Volumes)
                         for ld_sub in ["LogicalDrives/", "Volumes/"]:
                             ld_path = ref['@odata.id'].rstrip('/') + '/' + ld_sub
-                            lds = await self._get(client, f"{base_url}{ld_path}", auth)
-                            if lds and lds.get("Members"):
-                                for ldref in lds["Members"]:
+                            ld_members = await self._get_members(client, f"{base_url}{ld_path}", auth, base_url)
+                            if ld_members:
+                                for ldref in ld_members:
                                     ld = await self._get(client, f"{base_url}{ldref['@odata.id']}", auth)
                                     if ld:
                                         cap_mib = ld.get("CapacityMiB")
@@ -728,9 +728,9 @@ class RedfishPoller:
                         drive_refs = []
                         for dr_sub in ["DiskDrives/", "Drives/"]:
                             dr_path = ref['@odata.id'].rstrip('/') + '/' + dr_sub
-                            drives = await self._get(client, f"{base_url}{dr_path}", auth)
-                            if drives and drives.get("Members"):
-                                drive_refs.extend(drives["Members"])
+                            dr_members = await self._get_members(client, f"{base_url}{dr_path}", auth, base_url)
+                            if dr_members:
+                                drive_refs.extend(dr_members)
                         # DMTF: controller may have Drives[] inline
                         for dr_inline in (ctrl.get("Drives") or []):
                             if isinstance(dr_inline, dict) and "@odata.id" in dr_inline:
@@ -755,29 +755,38 @@ class RedfishPoller:
                             storage_found_any = True
 
                 # HPE: dischi presenti ma non assegnati ad alcun array (spare/unconfigured)
+                # + dischi in modalità HBA (non-RAID). Entrambi gli endpoint vanno letti:
+                # prima si fermava dopo il primo → i dischi HBA potevano sparire.
                 try:
+                    spare = {"name": "Dischi non assegnati / spare / HBA", "firmware": None,
+                             "status": "OK", "health": "ok", "logical_drives": [], "drives": []}
+                    seen_slots = {d.get("slot") for c in result["storage_controllers"] for d in c.get("drives", [])}
                     for unc_uri in [
                         f"{base_url}/redfish/v1/Systems/1/SmartStorage/UnconfiguredDrives/",
                         f"{base_url}/redfish/v1/Systems/1/SmartStorage/HostBusAdapters/",
                     ]:
-                        unc = await self._get(client, unc_uri, auth)
-                        if not (unc and unc.get("Members")):
-                            continue
-                        seen_slots = {d.get("slot") for c in result["storage_controllers"] for d in c.get("drives", [])}
-                        spare = {"name": "Dischi non assegnati / spare", "firmware": None,
-                                 "status": "OK", "health": "ok", "logical_drives": [], "drives": []}
-                        for uref in unc["Members"][:32]:
+                        unc_members = await self._get_members(client, unc_uri, auth, base_url)
+                        for uref in unc_members[:64]:
                             dr = await self._get(client, f"{base_url}{uref['@odata.id']}", auth)
                             if not dr:
                                 continue
                             pd = _parse_redfish_drive(dr)
                             if pd["slot"] not in seen_slots:
+                                seen_slots.add(pd["slot"])
                                 spare["drives"].append(pd)
-                        if spare["drives"]:
-                            result["storage_controllers"].append(spare)
-                        break
+                    if spare["drives"]:
+                        result["storage_controllers"].append(spare)
                 except Exception as _ue:
                     logger.debug(f"unconfigured drives fetch failed {device_ip}: {_ue}")
+
+                # Riepilogo raccolta storage (utile per verificare "dischi mancanti")
+                try:
+                    _nc = len(result["storage_controllers"])
+                    _nd = sum(len(c.get("drives", [])) for c in result["storage_controllers"])
+                    _nl = sum(len(c.get("logical_drives", [])) for c in result["storage_controllers"])
+                    logger.info(f"iLO storage {device_ip}: {_nc} controller, {_nd} dischi fisici, {_nl} volumi logici")
+                except Exception:
+                    pass
 
         except httpx.TimeoutException:
             logger.warning(f"Timeout polling {device_ip}")
@@ -1254,18 +1263,60 @@ class RedfishPoller:
                 except Exception as _e:
                     logger.debug(f"WS broadcast failed: {_e}")
 
-    async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple, timeout: float = None) -> Optional[dict]:
-        """Safe GET request with error handling. Optional per-call timeout override."""
-        try:
-            if timeout is not None:
-                r = await client.get(url, auth=auth, timeout=timeout)
-            else:
-                r = await client.get(url, auth=auth)
-            if r.status_code == 200:
-                return r.json()
-        except Exception:
-            pass
+    async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple, timeout: float = None, retries: int = 2) -> Optional[dict]:
+        """Safe GET request con RETRY sui fallimenti transitori.
+
+        v2026-06: prima scartava OGNI errore silenziosamente (except: pass → None)
+        senza ritentare → su iLO raggiunte via WAN i singoli GET (es. ogni disco è
+        una richiesta separata) andavano in timeout/reset e la risorsa spariva →
+        dati parziali (es. "5 dischi ma ne mostro 2"). Ora:
+          - 200 → ritorna JSON
+          - 401/403/404 → None immediato (permanente, non ritenta)
+          - ConnectError → None immediato (host giù, fail-fast)
+          - timeout / 5xx / altro transitorio → ritenta fino a `retries` volte
+        """
+        for attempt in range(retries + 1):
+            try:
+                if timeout is not None:
+                    r = await client.get(url, auth=auth, timeout=timeout)
+                else:
+                    r = await client.get(url, auth=auth)
+                if r.status_code == 200:
+                    return r.json()
+                if r.status_code in (401, 403, 404):
+                    return None  # errore permanente → inutile ritentare
+                # 5xx / 429 / altro → transitorio, ritenta
+            except httpx.ConnectError:
+                return None  # host irraggiungibile → fail-fast (no retry lento)
+            except Exception:
+                pass  # timeout / reset / parse → ritenta
+            if attempt < retries:
+                await asyncio.sleep(0.4 * (attempt + 1))
         return None
+
+    async def _get_members(self, client: httpx.AsyncClient, url: str, auth: tuple,
+                           base_url: str, timeout: float = None, max_pages: int = 20) -> list:
+        """GET di una collection Redfish seguendo Members@odata.nextLink (paginazione).
+        Ritorna la lista COMPLETA dei Members. Senza questo, collection paginate
+        (dischi/DIMM su chassis densi) venivano troncate alla prima pagina."""
+        members: list = []
+        next_url = url
+        pages = 0
+        seen = set()
+        while next_url and pages < max_pages:
+            if next_url in seen:
+                break
+            seen.add(next_url)
+            coll = await self._get(client, next_url, auth, timeout=timeout)
+            if not coll:
+                break
+            members.extend(coll.get("Members") or [])
+            nl = coll.get("Members@odata.nextLink")
+            if not nl:
+                break
+            next_url = nl if str(nl).startswith("http") else f"{base_url}{nl}"
+            pages += 1
+        return members
 
     # ==================== PUBLIC API ====================
 

@@ -1,6 +1,25 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
-## 2026-06 🐞 FIX P0 — Agent v4 offline (STALE) non generava NESSUN avviso + niente Telegram
+## 2026-06 🐞 FIX — Dati iLO/Redfish parziali (es. "5 dischi ma ne mostra 2")
+**Causa (RCA sul codice)**: `RedfishPoller._get` scartava OGNI errore silenziosamente (`except: pass →
+None`) SENZA retry. Su iLO raggiunte via WAN ogni disco è un GET separato: timeout/reset transitori
+facevano sparire la singola risorsa → dischi/DIMM/NIC parziali. Inoltre nessuna gestione della
+paginazione `Members@odata.nextLink` (collection troncate) e i dischi HBA/unconfigured si fermavano al
+primo endpoint (`break`). La UI NON tronca (verificato: `IloServerPanel.js` renderizza tutti i drive).
+**Fix** (`redfish.py`):
+- `_get` ora RITENTA i fallimenti transitori (timeout/5xx, fino a 2 retry con backoff), mentre 401/403/404
+  e ConnectError falliscono subito (no rallentamenti su host giù).
+- Nuovo `_get_members` che segue `Members@odata.nextLink` → collection complete (dischi/volumi).
+- Dischi fisici e logici ora letti con paginazione; UnconfiguredDrives + HostBusAdapters letti ENTRAMBI
+  (prima `break` dopo il primo) con dedup per slot.
+- Log riepilogativo per server: "iLO storage <ip>: N controller, M dischi fisici, K volumi logici".
+**Testing**: `backend/tests/test_redfish_robustness.py` — 4/4 PASS (retry recupera dato, 401 no-retry,
+ConnectError fail-fast, paginazione 5/5). Backend sano.
+⚠️ **Non verificabile sulle iLO di produzione da qui**: dopo Save to GitHub + redeploy, lanciare "Polla
+iLO ora" e ricontrollare la tab iLO. Il log mostrerà il conteggio dischi reale per server. Se ancora
+parziale su un modello specifico, aggiungeremo un dump storage live nel pulsante Diagnostica.
+
+
 **Problema reale (RCA da screenshot prod)**: dispositivi in stato **STALE** (`agent_offline`) senza alcun
 avviso. Causa: lo stato STALE è guidato dall'heartbeat di `managed_agents` (Agent v4), ma l'unico watchdog
 "CONNETTORE OFFLINE" (`connector_watchdog.py`) leggeva SOLO `connector_status` (connector legacy). Gli
