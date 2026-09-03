@@ -47,7 +47,7 @@ async def is_device_silenced(db, client_id: Optional[str], device_ip: Optional[s
         return cached[0]
     try:
         doc = await db.managed_devices.find_one(
-            {"client_id": client_id, "ip": device_ip},
+            {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
             {"_id": 0, "alerts_silenced": 1, "is_vital": 1},
         )
         if not doc:
@@ -88,10 +88,15 @@ def invalidate_silence_cache(client_id: Optional[str] = None, device_ip: Optiona
         _SILENCE_CACHE.pop(k, None)
 
 
-async def insert_alert_if_emit(db, alert_doc: dict) -> bool:
+async def insert_alert_if_emit(db, alert_doc: dict, force: bool = False) -> bool:
     """Wrapper drop-in per `db.alerts.insert_one(alert_doc)` che skippa l'insert
     se il device target ha alerts_silenced=true. Estrae client_id e device_ip
     dal documento alert. Restituisce True se inserito, False se silenziato.
+
+    `force=True` → BYPASSA silenziamento e finestra di manutenzione. Da usare per
+    i GUASTI HARDWARE FISICI (disco/RAID/alimentatore/DIMM/temperatura critica):
+    non sono "rumore" e NON vanno mai soppressi, nemmeno su device non-vitali o
+    in manutenzione, altrimenti si perdono allarmi critici (es. disco guasto).
 
     Convenzione campi alert_doc:
       - client_id: id del cliente (managed_devices.client_id)
@@ -102,11 +107,11 @@ async def insert_alert_if_emit(db, alert_doc: dict) -> bool:
     """
     cid = alert_doc.get("client_id")
     ip = alert_doc.get("device_ip") or alert_doc.get("ip")
-    if cid and ip:
+    if not force and cid and ip:
         if await is_device_silenced(db, cid, ip):
             return False
     # Finestra di manutenzione attiva → non creare l'alert (device o cliente).
-    if cid:
+    if not force and cid:
         try:
             from maintenance_gate import is_in_maintenance
             if await is_in_maintenance(db, cid, ip):
