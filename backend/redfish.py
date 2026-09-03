@@ -1125,19 +1125,20 @@ class RedfishPoller:
                 "message": f"Server {device_name} ({device_ip}) stato salute: {result['health_status']}",
             })
 
-        # Temperature sensors
+        # Temperature sensors — titolo STABILE (il valore va nel messaggio, non nel
+        # titolo, altrimenti 78°C→79°C aprirebbe un nuovo alert ad ogni grado → flood).
         for t in result["temperatures"]:
             if t["value"] > 75:
                 alerts.append({
                     "severity": "critical",
-                    "title": f"Temperatura critica: {t['value']}C",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C",
+                    "title": "Temperatura critica",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia critica 75C)",
                 })
             elif t["value"] > 65:
                 alerts.append({
                     "severity": "high",
-                    "title": f"Temperatura elevata: {t['value']}C",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C",
+                    "title": "Temperatura elevata",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia 65C)",
                 })
 
         # Fans
@@ -1280,6 +1281,32 @@ class RedfishPoller:
                     await _mgr.broadcast({"type": "new_alert", "alert": _broadcast_alert})
                 except Exception as _e:
                     logger.debug(f"WS broadcast failed: {_e}")
+
+        # AUTO-RESOLVE + RIENTRO: chiudi gli alert iLO attivi la cui condizione non
+        # è più presente in questo poll (es. PSU tornato OK). Invia UN messaggio di
+        # rientro su Telegram solo se il problema era stato notificato. Gira solo su
+        # poll RIUSCITO (dati freschi), quindi non risolve per errore se l'iLO è giù.
+        try:
+            current_titles = {a["title"] for a in alerts}
+            active = await self.db.alerts.find(
+                {"device_ip": device_ip, "source_type": "redfish_direct", "status": "active"},
+                {"_id": 0},
+            ).to_list(200)
+            for act in active:
+                if act.get("title") in current_titles:
+                    continue  # ancora in corso → non toccare
+                await self.db.alerts.update_one(
+                    {"id": act["id"]},
+                    {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                if act.get("telegram_notified"):
+                    try:
+                        from alert_engine import notify_recovery_telegram
+                        await notify_recovery_telegram(self.db, act)
+                    except Exception as _re:
+                        logger.debug(f"iLO recovery telegram failed: {_re}")
+        except Exception as _are:
+            logger.debug(f"iLO auto-resolve failed {device_ip}: {_are}")
 
     async def _get(self, client: httpx.AsyncClient, url: str, auth: tuple, timeout: float = None, retries: int = 2) -> Optional[dict]:
         """Safe GET request con RETRY sui fallimenti transitori.

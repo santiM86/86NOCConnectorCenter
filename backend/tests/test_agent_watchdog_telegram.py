@@ -76,7 +76,8 @@ async def run():
         assert n_active == 1, f"atteso 1 alert attivo (no duplicati), trovato {n_active}"
         print("[OK] Idempotente: nessun alert/Telegram duplicato")
 
-        # Ripristino heartbeat → auto-resolve + record recovery
+        # Ripristino heartbeat → auto-resolve + record recovery + 1 msg di RIENTRO
+        TG_CALLS.clear()
         await db.managed_agents.update_one(
             {"agent_id": "ag-1"}, {"$set": {"last_heartbeat_at": datetime.now(timezone.utc).isoformat()}})
         await wd.check_all_agents()
@@ -84,7 +85,9 @@ async def run():
         recovery = await db.alerts.find_one({"client_id": CID, "source_type": "agent_recovery"})
         assert still_active is None, "l'alert deve essere risolto al ripristino"
         assert recovery is not None, "atteso record di recovery"
-        print("[OK] Ripristino heartbeat → alert risolto + record recovery")
+        assert len(TG_CALLS) == 1, f"atteso 1 msg di rientro su Telegram, trovato {len(TG_CALLS)}"
+        assert TG_CALLS[0].get("severity") == "recovery"
+        print("[OK] Ripristino heartbeat → alert risolto + record recovery + 1 msg RIENTRO su Telegram")
 
         print("\nTUTTI I TEST PASSATI")
     finally:

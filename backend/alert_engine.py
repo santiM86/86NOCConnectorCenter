@@ -266,9 +266,54 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
             client_name=client_name,
             device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
         )
+        # Marca l'alert come "notificato su Telegram": serve per inviare UN SOLO
+        # messaggio di rientro alla risoluzione (evita chat intasata).
+        try:
+            if alert_doc.get("id"):
+                await db.alerts.update_one({"id": alert_doc["id"]}, {"$set": {"telegram_notified": True}})
+        except Exception:
+            pass
         return True
     except Exception as e:  # noqa: BLE001
         logger.debug("notify_alert_telegram failed: %s", e)
+        return False
+
+
+async def notify_recovery_telegram(db, alert_doc: Dict[str, Any]) -> bool:
+    """Invia UN messaggio di RIENTRO su Telegram quando un problema si risolve.
+    Va chiamata SOLO se l'alert originale era stato notificato (telegram_notified):
+    così ogni problema notificato ha esattamente 1 msg di apertura + 1 di rientro,
+    senza intasare la chat. È istantaneo (accoppia il messaggio di apertura)."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return False
+    channels = cfg.get("channels") or ["push"]
+    if "telegram" not in channels or not cfg.get("telegram_enabled"):
+        return False
+    try:
+        from telegram_notifier import send_alert_telegram
+        client_name = alert_doc.get("client_name")
+        if not client_name and alert_doc.get("client_id"):
+            try:
+                c = await db.clients.find_one({"id": alert_doc["client_id"]}, {"_id": 0, "name": 1})
+                client_name = (c or {}).get("name")
+            except Exception:
+                client_name = None
+        orig_title = alert_doc.get("title", "Alert")
+        await send_alert_telegram(
+            db,
+            title=f"RIENTRATO: {orig_title}",
+            message=f"La condizione è rientrata (problema risolto).",
+            severity="recovery",
+            chat_id=cfg.get("telegram_chat_id") or None,
+            token=cfg.get("telegram_bot_token") or None,
+            client_name=client_name,
+            device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("notify_recovery_telegram failed: %s", e)
         return False
 
 

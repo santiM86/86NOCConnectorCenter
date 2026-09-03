@@ -201,6 +201,13 @@ class ConnectorWatchdog:
                             {"client_id": client_id},
                             {"$set": {"is_offline": False, "offline_since": None}}
                         )
+                        # Rientro su Telegram (1 solo msg) se l'offline era stato notificato
+                        if existing_alert.get("telegram_notified"):
+                            try:
+                                from alert_engine import notify_recovery_telegram
+                                await notify_recovery_telegram(self.db, existing_alert)
+                            except Exception as _re:
+                                logger.debug(f"connector recovery telegram failed: {_re}")
                         logger.info(f"Connector recovery: {hostname} (client={client_name})")
         except Exception as e:
             logger.error(f"Connector watchdog error: {e}", exc_info=True)
@@ -327,6 +334,12 @@ class ConnectorWatchdog:
                             "resolved_at": now.isoformat(),
                             "created_at": now.isoformat(),
                         })
+                        if existing.get("telegram_notified"):
+                            try:
+                                from alert_engine import notify_recovery_telegram
+                                await notify_recovery_telegram(self.db, existing)
+                            except Exception as _re:
+                                logger.debug(f"agent recovery telegram failed: {_re}")
                         logger.info(f"Agent recovery: client={cname}")
         except Exception as e:
             logger.error(f"Agent watchdog error: {e}", exc_info=True)
