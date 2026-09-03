@@ -2246,6 +2246,29 @@ async def correlate_connectivity(
     return {"client_id": client_id, **summary}
 
 
+@router.post("/clients/{client_id}/ilo-link")
+async def link_ilo_to_host(client_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Associa una credenziale iLO (ilo_ip) al server host (host_ip): stesso
+    server fisico con IP management iLO diverso dall'IP del SO. Dopo il link i
+    dati Redfish dell'iLO vengono mostrati sotto il server host nella tab Server.
+    payload: {"ilo_ip": "10.10.10.203", "host_ip": "10.10.10.200"}.
+    host_ip vuoto/None → rimuove l'associazione.
+    """
+    ilo_ip = (payload or {}).get("ilo_ip")
+    host_ip = (payload or {}).get("host_ip") or None
+    if not ilo_ip:
+        raise HTTPException(status_code=400, detail="ilo_ip mancante")
+    res = await db.device_credentials.update_one(
+        {"client_id": client_id, "credential_type": "ilo", "device_ip": ilo_ip},
+        {"$set": {"host_ip": host_ip}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail=f"Credenziale iLO {ilo_ip} non trovata per il cliente")
+    return {"ok": True, "ilo_ip": ilo_ip, "host_ip": host_ip,
+            "message": f"iLO {ilo_ip} associata al server {host_ip}" if host_ip else f"Associazione iLO {ilo_ip} rimossa"}
+
+
+
 
 @router.get("/clients/{client_id}/ilo-health")
 async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get_current_user)):
@@ -2282,9 +2305,16 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
     # 3) Credenziali iLO esistenti per questo client (per flag ilo_configured)
     ilo_creds = await db.device_credentials.find(
         {"client_id": client_id, "credential_type": "ilo"},
-        {"_id": 0, "device_ip": 1, "external_url": 1, "connector_only": 1}
+        {"_id": 0, "device_ip": 1, "external_url": 1, "connector_only": 1, "host_ip": 1}
     ).to_list(500)
     ilo_creds_map = {c.get("device_ip"): c for c in ilo_creds if c.get("device_ip")}
+    # v2026-09: associazione iLO↔host. Una credenziale iLO puo' avere `host_ip`
+    # (IP del SO/host, diverso dall'IP di management iLO). In tal caso i dati
+    # Redfish letti sull'IP iLO vanno MOSTRATI sotto il server host, non come
+    # entita' separata. host_to_ilo: {host_ip: ilo_device_ip}.
+    host_to_ilo = {c["host_ip"]: c["device_ip"] for c in ilo_creds if c.get("host_ip") and c.get("device_ip")}
+    linked_ilo_ips = set(host_to_ilo.values())
+    poll_by_ip = {d.get("device_ip"): d for d in docs}
 
     result = []
     seen_ips = set()
@@ -2293,6 +2323,8 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
         seen_ips.add(ip)
         if ip in vm_ips:
             continue  # VM (impostata dall'admin): esclusa dalla lista iLO
+        if ip in linked_ilo_ips:
+            continue  # IP iLO collegato a un host: i suoi dati vengono mostrati sotto il server host (sez.4)
         rf = d.get("redfish", {}) or {}
         hw = d.get("hardware", {}) or {}
         cred = ilo_creds_map.get(ip)
@@ -2349,37 +2381,46 @@ async def get_client_ilo_health(client_id: str, current_user: dict = Depends(get
         if (m.get("virtualization") or "") in ("hyperv", "vmware", "vm_generic"):
             continue
         cred = ilo_creds_map.get(ip)
+        # Merge iLO collegata via host_ip: se questo server host ha una iLO
+        # associata, mostra i suoi dati Redfish qui (invece di "senza iLO").
+        linked_ilo_ip = host_to_ilo.get(ip)
+        ld = poll_by_ip.get(linked_ilo_ip) if linked_ilo_ip else None
+        lrf = (ld or {}).get("redfish", {}) or {}
+        lhw = (ld or {}).get("hardware", {}) or {}
+        linked_cred = ilo_creds_map.get(linked_ilo_ip) if linked_ilo_ip else None
+        has_linked_data = bool(lrf.get("server_model") or lrf.get("bios_version"))
         result.append({
             "device_ip": ip,
             "device_name": m.get("name") or ip,
-            "polling_mode": "not_configured",
-            "last_poll": None,
-            "reachable": None,
-            "server_model": m.get("model"),
-            "serial_number": None,
-            "bios_version": None,
-            "ilo_firmware": None,
-            "ilo_license": None,
-            "power_watts": None,
-            "total_memory_gb": None,
-            "memory_dimms": [],
-            "network_adapters": [],
-            "storage_controllers": [],
-            "health_status": "unknown",
-            "temperatures": [],
-            "fans": [],
-            "power_supplies": [],
-            "uuid": None,
-            "power_state": None,
-            "indicator_led": None,
-            "post_state": None,
-            "processors": [],
-            "processor_summary": None,
-            "ilo_configured": bool(cred),
-            "ilo_external_url": (cred or {}).get("external_url"),
-            "ilo_connector_only": bool((cred or {}).get("connector_only")),
-            "has_redfish_data": False,
-            "needs_ilo_setup": not bool(cred),
+            "ilo_ip": linked_ilo_ip,
+            "polling_mode": (ld or {}).get("monitor_type", "not_configured") if linked_ilo_ip else "not_configured",
+            "last_poll": (ld or {}).get("last_poll"),
+            "reachable": (ld or {}).get("reachable") if linked_ilo_ip else None,
+            "server_model": lrf.get("server_model") or m.get("model"),
+            "serial_number": lrf.get("serial_number"),
+            "bios_version": lrf.get("bios_version"),
+            "ilo_firmware": lrf.get("ilo_firmware"),
+            "ilo_license": lrf.get("ilo_license"),
+            "power_watts": lrf.get("power_watts"),
+            "total_memory_gb": lrf.get("total_memory_gb"),
+            "memory_dimms": lrf.get("memory_dimms", []),
+            "network_adapters": lrf.get("network_adapters", []),
+            "storage_controllers": lrf.get("storage_controllers", []),
+            "health_status": lhw.get("health_status", "unknown"),
+            "temperatures": lhw.get("temperatures", []),
+            "fans": lhw.get("fans", []),
+            "power_supplies": lhw.get("power_supplies", []),
+            "uuid": lrf.get("uuid"),
+            "power_state": lrf.get("power_state"),
+            "indicator_led": lrf.get("indicator_led"),
+            "post_state": lrf.get("post_state"),
+            "processors": lrf.get("processors", []),
+            "processor_summary": lrf.get("processor_summary"),
+            "ilo_configured": bool(cred or linked_cred),
+            "ilo_external_url": (cred or linked_cred or {}).get("external_url"),
+            "ilo_connector_only": bool((cred or linked_cred or {}).get("connector_only")),
+            "has_redfish_data": has_linked_data,
+            "needs_ilo_setup": not bool(cred or linked_cred),
         })
 
     return result
