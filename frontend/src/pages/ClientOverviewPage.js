@@ -912,6 +912,32 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
   // richiedono ancora la configurazione delle credenziali iLO.
   const configuredServers = (iloHealth || []).filter(s => s.has_redfish_data);
   const pendingServers = (iloHealth || []).filter(s => s.needs_ilo_setup || (!s.has_redfish_data && !s.ilo_configured));
+  // v2026-09: server con credenziali iLO CONFIGURATE e polling attivo MA senza
+  // dati Redfish ricevuti. Prima cadevano in NESSUNA lista (contati ma invisibili)
+  // → "iLO agganciata ma non vedo i dati". Ora hanno una sezione con diagnostica.
+  const awaitingServers = (iloHealth || []).filter(
+    s => !s.has_redfish_data && !s.needs_ilo_setup && (s.ilo_configured || s.polling_mode === "redfish_direct")
+  );
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(null);
+  const runDiagnose = async (ip) => {
+    setDiagLoading(ip);
+    try {
+      const r = await axios.get(`${API}/redfish/diagnose/${ip}`, { params: { client_id: clientId } });
+      setDiag({ ip, ...r.data });
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore diagnostica iLO");
+    } finally { setDiagLoading(null); }
+  };
+  const pollOne = async () => {
+    try {
+      await axios.post(`${API}/redfish/poll-now`, {});
+      toast.success("Polling iLO avviato — risultati tra 10-30s");
+      setTimeout(() => onRefresh?.(), 12000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore avvio polling iLO");
+    }
+  };
 
   // KPI aggregati top-bar (solo server configurati)
   const totalRamGb = configuredServers.reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
@@ -1020,6 +1046,59 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       </div>
 
       {/* Le card hardware live sono state spostate nella tab dedicata "iLO" */}
+
+      {/* v2026-09: Server con iLO configurata e polling attivo ma SENZA dati
+          Redfish ancora ricevuti — prima invisibili. Ora visibili con diagnostica. */}
+      {awaitingServers.length > 0 && (
+        <div className="noc-panel p-4 border-orange-500/30" data-testid="awaiting-ilo-servers">
+          <div className="flex items-center gap-2 mb-2">
+            <HardDrives size={14} weight="bold" className="text-orange-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-[0.15em] text-orange-400">
+              iLO configurata ma nessun dato ricevuto ({awaitingServers.length})
+            </h3>
+          </div>
+          <p className="text-[11px] text-[var(--text-muted)] mb-3">
+            Le credenziali iLO sono configurate e il polling risulta attivo, ma Argus non ha ancora
+            letto i dati Redfish (modello, dischi, sensori). Per questo il server non compare nella tab <b className="text-cyan-300">iLO</b>.
+            Avvia un poll o usa <b>Diagnostica</b> per capire il motivo (spesso: porta/URL Redfish errata — di norma 443 — o credenziali/timeout).
+          </p>
+          <div className="space-y-2">
+            {awaitingServers.map((s) => (
+              <div key={s.device_ip} className="rounded-md border border-orange-500/20 bg-orange-500/5 p-3" data-testid={`awaiting-server-${s.device_ip}`}>
+                <div className="flex items-start justify-between gap-2 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[var(--text-primary)]">{s.device_name} <span className="font-mono text-[10px] text-[var(--text-muted)]">{s.device_ip}</span></p>
+                    <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                      Modalità: <b>{s.polling_mode || "n/d"}</b> · Raggiungibile: <b>{s.reachable === true ? "sì" : s.reachable === false ? "no" : "n/d"}</b> · Ultimo poll: <b>{s.last_poll ? new Date(s.last_poll).toLocaleString("it-IT") : "mai"}</b>
+                    </p>
+                    {s.ilo_external_url && <p className="text-[10px] text-[var(--text-muted)] font-mono truncate">URL: {s.ilo_external_url}</p>}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <Button size="sm" variant="outline" className="h-7 text-[11px] gap-1 border-orange-500/40 text-orange-300 hover:bg-orange-500/10"
+                      onClick={() => runDiagnose(s.device_ip)} disabled={diagLoading === s.device_ip} data-testid={`diagnose-ilo-${s.device_ip}`}>
+                      {diagLoading === s.device_ip ? "Analizzo..." : "Diagnostica"}
+                    </Button>
+                    <Button size="sm" className="h-7 text-[11px] gap-1 bg-cyan-600 hover:bg-cyan-700 text-white"
+                      onClick={pollOne} data-testid={`poll-ilo-${s.device_ip}`}>
+                      <ArrowClockwise size={12} weight="bold" /> Polla ora
+                    </Button>
+                  </div>
+                </div>
+                {diag && diag.ip === s.device_ip && (
+                  <div className="mt-3 rounded-md border border-[var(--bg-border)] bg-[var(--bg-elevated)] p-2.5 space-y-1" data-testid={`diag-result-${s.device_ip}`}>
+                    {diag.recommendation && <p className="text-[11px] text-cyan-300 font-semibold">💡 {diag.recommendation}</p>}
+                    {(diag.checks || []).map((c, i) => (
+                      <p key={i} className="text-[10px]" style={{ color: c.status === "error" ? "#f87171" : c.status === "warn" ? "#fbbf24" : c.status === "ok" ? "#34d399" : "var(--text-muted)" }}>
+                        {c.status === "error" ? "✕" : c.status === "ok" ? "✓" : c.status === "warn" ? "⚠" : "•"} {c.label}: {c.detail}{c.fix ? ` → ${c.fix}` : ""}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Pending servers (need iLO setup) */}
       {pendingServers.length > 0 && (
