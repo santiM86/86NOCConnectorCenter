@@ -1,6 +1,23 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
-## 2026-06 🐞 FIX P0 — Guasti hardware iLO (PSU/disco/RAID/DIMM) NON arrivavano su Telegram
+## 2026-06 ✨ Auto-link iLO ↔ Server Host (serial number / hostname)
+**Richiesta utente**: collegare in automatico ogni iLO al suo server host, eliminando il link manuale.
+**Backend** (`routes/devices.py`): nuovo `POST /api/clients/{client_id}/ilo-autolink?dry_run=`. Confronta
+il serial del chassis (Redfish `SerialNumber`) — fallback hostname SO (Redfish `HostName`) — con gli
+identificatori dei `managed_devices`: serial da Datto RMM (via `datto_uid`→`datto_devices.serial`) o
+`serial`/`hostname`/`name`. Serial normalizzato (solo alfanumerici, scarta i placeholder tipo
+"To Be Filled By O.E.M."); hostname normalizzato (minuscolo, senza dominio). Esclude match su se stesso
+(host_ip==ilo_ip) e le VM. Se trova corrispondenza imposta `device_credentials.host_ip`. `dry_run=true`
+ritorna solo i suggerimenti. Idempotente (già collegate → skip). Aggiunta estrazione+persistenza di
+`redfish.host_name` in `redfish.py` (per il fallback hostname; si popola al prossimo poll iLO).
+**Frontend** (`ClientOverviewPage.js`, tab Server): pulsante "Auto-collega iLO"
+(`servers-autolink-ilo-btn`) che chiama l'endpoint e mostra toast riassuntivo (N collegate / già
+collegate / nessun match). Il link manuale resta disponibile come fallback.
+**Testing**: `backend/tests/test_ilo_autolink.py` (DB preview reale, con cleanup) — 3/3 PASS: dry_run 2
+match (serial+hostname) senza modifiche; apply collega davvero (serial→.200, hostname→.210); idempotenza
+(0 nuovi, 2 già collegate). Frontend compila. ⚠️ PROD dopo Save to GitHub + redeploy.
+
+
 **Bug reale trovato**: contrariamente a quanto confermato in una sessione precedente, il percorso
 alert iLO/Redfish (`redfish.py::_check_alerts` + `_send_both_channels_alert`) inseriva l'alert e
 inviava SOLO web-push + broadcast WebSocket, **senza mai chiamare Telegram** (`notify_alert_telegram`/

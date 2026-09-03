@@ -9,7 +9,7 @@ import {
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
   Phone, DeviceMobile, Desktop, Network, Key, Star, Check, Pulse,
-  FilePdf, Spinner,
+  FilePdf, Spinner, LinkSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -184,10 +184,8 @@ export default function ClientOverviewPage() {
       ));
       // Se il rename riguarda il device aperto nel Dialog, aggiorna anche
       // il titolo immediatamente.
-      setInfoCardName(prev => {
-        // Solo se stiamo guardando proprio quel device
-        return device_ip ? new_name : prev;
-      });
+      // Se il rename riguarda il device aperto nella scheda, ci pensa
+      // DevicesTab (che possiede lo stato infoCardName) ad aggiornare il titolo.
       // Forza fetchAll per coerenza con backend (display_name resolver)
       fetchAll();
     };
@@ -331,7 +329,7 @@ export default function ClientOverviewPage() {
           </div>
           <div className="flex flex-col gap-1">
             <button
-              onClick={() => diagnoseOffline()}
+              onClick={() => fetchAll()}
               className="text-[10px] px-2 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 whitespace-nowrap"
               data-testid="diagnosis-detail-btn"
             >
@@ -952,6 +950,28 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
       toast.error(e.response?.data?.detail || "Errore collegamento iLO");
     }
   };
+  const [autoLinking, setAutoLinking] = useState(false);
+  const autoLinkIlo = async () => {
+    setAutoLinking(true);
+    try {
+      const { data } = await axios.post(`${API}/clients/${clientId}/ilo-autolink`, {});
+      const n = data?.summary?.linked || 0;
+      const already = data?.summary?.already_linked || 0;
+      const noCred = data?.summary?.no_credential || 0;
+      if (n > 0) {
+        toast.success(`${n} iLO collegate automaticamente ai rispettivi server` +
+          (already ? ` · ${already} già collegate` : ""));
+      } else if (already > 0) {
+        toast.info(`Tutte le iLO risultano già collegate (${already})`);
+      } else {
+        toast.warning("Nessuna corrispondenza trovata (serial/hostname). " +
+          (noCred ? `${noCred} iLO senza credenziale.` : "Serve un poll iLO + dati host da Datto/SNMP."));
+      }
+      onRefresh?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore auto-collegamento iLO");
+    } finally { setAutoLinking(false); }
+  };
 
   // KPI aggregati top-bar (solo server configurati)
   const totalRamGb = configuredServers.reduce((sum, s) => sum + (Number(s.total_memory_gb) || 0), 0);
@@ -1046,6 +1066,18 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
           >
             {polling ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} weight="bold" />}
             {polling ? "Polling..." : "Polla iLO ora"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs gap-1 border-violet-500/30 text-violet-300 hover:bg-violet-500/10"
+            onClick={autoLinkIlo}
+            disabled={autoLinking}
+            data-testid="servers-autolink-ilo-btn"
+            title="Collega automaticamente ogni iLO al suo server host tramite serial number / hostname"
+          >
+            {autoLinking ? <ArrowClockwise size={12} className="animate-spin" /> : <LinkSimple size={12} weight="bold" />}
+            {autoLinking ? "Collego..." : "Auto-collega iLO"}
           </Button>
           <Button
             size="sm"
@@ -2416,6 +2448,7 @@ function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort,
 
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
+  const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);

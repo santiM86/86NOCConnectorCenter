@@ -349,6 +349,7 @@ class RedfishPoller:
             "server_model": None,
             "serial_number": None,
             "uuid": None,
+            "host_name": None,
             "ilo_firmware": None,
             "ilo_license": None,
             "total_memory_gb": None,
@@ -377,6 +378,7 @@ class RedfishPoller:
                     result["server_model"] = sys_data.get("Model")
                     result["serial_number"] = sys_data.get("SerialNumber")
                     result["uuid"] = sys_data.get("UUID")
+                    result["host_name"] = sys_data.get("HostName")
                     result["bios_version"] = sys_data.get("BiosVersion")
                     if sys_data.get("MemorySummary"):
                         result["total_memory_gb"] = sys_data["MemorySummary"].get("TotalSystemMemoryGiB")
@@ -833,6 +835,7 @@ class RedfishPoller:
                     "server_model": result["server_model"],
                     "serial_number": result["serial_number"],
                     "uuid": result["uuid"],
+                    "host_name": result.get("host_name"),
                     "ilo_firmware": result["ilo_firmware"],
                     "ilo_license": result["ilo_license"],
                     "total_memory_gb": result["total_memory_gb"],
