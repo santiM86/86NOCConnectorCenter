@@ -14,6 +14,8 @@ inviava il messaggio di RIENTRO** su Telegram (non esisteva proprio la funzione)
   poll riuscito → invio rientro (se notificato). Titoli temperatura resi STABILI (valore nel messaggio)
   per non aprire un nuovo alert ad ogni grado (evita flood su fluttuazioni).
 - `connector_watchdog.py`: rientro Telegram su recovery di AGENT OFFLINE e CONNETTORE OFFLINE.
+- Il messaggio di rientro riporta la **durata del disservizio** (`_outage_duration_str`, formato "42 min",
+  "3 h 12 min", "2 g 4 h") calcolata da created_at→resolved_at — utile per report SLA.
 **Testing**: `test_ilo_recovery.py` (1 apertura, 0 su persistenza, 1 rientro, 0 su ok) +
 `test_agent_watchdog_telegram.py` esteso (rientro→1 msg). Tutti i test correlati PASS.
 **Copertura rientro attiva su**: iLO hardware (tutte le condizioni), Agent offline, Connettore offline.

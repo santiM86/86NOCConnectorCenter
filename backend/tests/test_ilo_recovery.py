@@ -76,9 +76,16 @@ async def run():
         await poller._check_alerts(IP, "TESTSRV", _res(psu_ok=True), client_id="ctest")
         assert len(TG) == 1, f"atteso 1 msg di rientro, {len(TG)}"
         assert TG[0].get("severity") == "recovery" and "RIENTRAT" in TG[0]["title"].upper()
+        assert "Disservizio durato" in (TG[0].get("message") or ""), "il rientro deve riportare la durata"
         still = await db.alerts.find_one({"device_ip": IP, "status": "active"})
         assert still is None, "l'alert deve risultare risolto"
-        print("[OK] Poll 3 (PSU rientrato): 1 messaggio di RIENTRO + alert risolto")
+        print("[OK] Poll 3 (PSU rientrato): 1 messaggio di RIENTRO (con durata) + alert risolto")
+
+        # Unit: formattazione durata SLA
+        assert alert_engine._outage_duration_str("2026-06-01T10:00:00+00:00", "2026-06-01T10:42:00+00:00") == "42 min"
+        assert alert_engine._outage_duration_str("2026-06-01T10:00:00+00:00", "2026-06-01T13:12:00+00:00") == "3 h 12 min"
+        assert alert_engine._outage_duration_str("2026-06-01T10:00:00+00:00", "2026-06-03T14:00:00+00:00") == "2 g 4 h"
+        print("[OK] _outage_duration_str: 42 min / 3 h 12 min / 2 g 4 h")
 
         # Poll 4: tutto ok → nessun messaggio
         TG.clear()
