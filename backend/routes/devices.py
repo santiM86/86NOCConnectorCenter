@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List, Optional, Dict, Any
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 
 from database import db
@@ -2266,6 +2267,143 @@ async def link_ilo_to_host(client_id: str, payload: dict, current_user: dict = D
         raise HTTPException(status_code=404, detail=f"Credenziale iLO {ilo_ip} non trovata per il cliente")
     return {"ok": True, "ilo_ip": ilo_ip, "host_ip": host_ip,
             "message": f"iLO {ilo_ip} associata al server {host_ip}" if host_ip else f"Associazione iLO {ilo_ip} rimossa"}
+
+
+def _norm_serial(s: Optional[str]) -> str:
+    """Normalizza un serial number per il match (solo alfanumerici maiuscoli)."""
+    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+def _norm_host(s: Optional[str]) -> str:
+    """Normalizza un hostname per il match: minuscolo, senza dominio, trim."""
+    v = (s or "").strip().lower()
+    return v.split(".")[0] if v else ""
+
+
+# Serial/hostname troppo generici da NON usare per il match (falsi positivi Datto/DMI)
+_BAD_SERIALS = {"", "NONE", "NULL", "SYSTEMSERIALNUMBER", "TOBEFILLEDBYOEM",
+                "DEFAULTSTRING", "NOTSPECIFIED", "NOTAPPLICABLE", "0", "NA", "N"}
+
+
+@router.post("/clients/{client_id}/ilo-autolink")
+async def autolink_ilo_hosts(client_id: str, dry_run: bool = False,
+                             current_user: dict = Depends(get_current_user)):
+    """Collega AUTOMATICAMENTE ogni iLO al suo server host, confrontando il
+    serial number del chassis (Redfish `SerialNumber`) — e in fallback l'hostname
+    del SO (Redfish `HostName`) — con gli identificatori dei `managed_devices`
+    (serial da Datto RMM / nome host). Elimina il collegamento manuale iLO↔host.
+
+    `dry_run=true` → ritorna solo le corrispondenze proposte senza applicarle.
+    """
+    # 1) iLO con dati Redfish (serial/host_name)
+    ilo_docs = await db.device_poll_status.find(
+        {"client_id": client_id, "$or": [
+            {"device_class": "hpe-ilo"},
+            {"monitor_type": "redfish_direct"},
+            {"redfish.serial_number": {"$nin": [None, ""]}},
+        ]},
+        {"_id": 0, "device_ip": 1, "device_name": 1, "redfish": 1},
+    ).to_list(300)
+
+    # 2) Credenziali iLO (il link vive qui: campo host_ip)
+    ilo_creds = await db.device_credentials.find(
+        {"client_id": client_id, "credential_type": "ilo"},
+        {"_id": 0, "device_ip": 1, "host_ip": 1},
+    ).to_list(500)
+    cred_by_ip = {c["device_ip"]: c for c in ilo_creds if c.get("device_ip")}
+
+    # 3) Candidati host (managed_devices non-VM) + 4) serial Datto per uid
+    managed = await db.managed_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "ip": 1, "name": 1, "device_type": 1, "virtualization": 1,
+         "datto_uid": 1, "serial": 1, "hostname": 1, "datto_name": 1},
+    ).to_list(3000)
+    datto = await db.datto_devices.find(
+        {"client_id": client_id},
+        {"_id": 0, "uid": 1, "serial": 1, "name": 1, "hostname_short": 1, "fqdn": 1},
+    ).to_list(5000)
+    datto_by_uid = {d["uid"]: d for d in datto if d.get("uid")}
+
+    _VM = {"hyperv", "vmware", "vm_generic"}
+    hosts = []
+    for m in managed:
+        ip = m.get("ip")
+        if not ip or (m.get("virtualization") or "") in _VM:
+            continue
+        serial = m.get("serial")
+        hn = m.get("hostname") or m.get("name") or m.get("datto_name")
+        du = m.get("datto_uid")
+        if du and du in datto_by_uid:
+            dd = datto_by_uid[du]
+            serial = serial or dd.get("serial")
+            hn = hn or dd.get("name") or dd.get("hostname_short")
+        sn = _norm_serial(serial)
+        if sn in _BAD_SERIALS:
+            sn = ""
+        hosts.append({
+            "ip": ip, "name": m.get("name") or ip,
+            "device_type": (m.get("device_type") or "").lower(),
+            "serial_n": sn, "host_n": _norm_host(hn),
+        })
+
+    linked, suggestions, skipped = [], [], []
+    for d in ilo_docs:
+        ilo_ip = d.get("device_ip")
+        if not ilo_ip:
+            continue
+        rf = d.get("redfish") or {}
+        ilo_serial_n = _norm_serial(rf.get("serial_number"))
+        if ilo_serial_n in _BAD_SERIALS:
+            ilo_serial_n = ""
+        ilo_host_n = _norm_host(rf.get("host_name"))
+
+        match, match_by = None, None
+        if ilo_serial_n:
+            c = [h for h in hosts if h["serial_n"] and h["serial_n"] == ilo_serial_n and h["ip"] != ilo_ip]
+            if c:
+                match, match_by = c[0], "serial"
+        if not match and ilo_host_n:
+            c = [h for h in hosts if h["host_n"] and h["host_n"] == ilo_host_n and h["ip"] != ilo_ip]
+            if c:
+                match, match_by = c[0], "hostname"
+        if not match:
+            continue
+
+        cred = cred_by_ip.get(ilo_ip)
+        entry = {
+            "ilo_ip": ilo_ip, "ilo_name": d.get("device_name") or ilo_ip,
+            "host_ip": match["ip"], "host_name": match["name"],
+            "match_by": match_by, "ilo_serial": rf.get("serial_number"),
+            "ilo_host_name": rf.get("host_name"),
+        }
+        if (cred or {}).get("host_ip") == match["ip"]:
+            entry["status"] = "already_linked"
+            skipped.append(entry)
+            continue
+        if not cred:
+            entry["status"] = "no_credential"  # iLO senza credenziale → link non memorizzabile
+            skipped.append(entry)
+            continue
+        if dry_run:
+            entry["status"] = "suggested"
+            suggestions.append(entry)
+        else:
+            await db.device_credentials.update_one(
+                {"client_id": client_id, "credential_type": "ilo", "device_ip": ilo_ip},
+                {"$set": {"host_ip": match["ip"]}},
+            )
+            entry["status"] = "linked"
+            linked.append(entry)
+
+    return {
+        "ok": True, "dry_run": dry_run,
+        "linked": linked, "suggestions": suggestions, "skipped": skipped,
+        "summary": {
+            "linked": len(linked), "suggested": len(suggestions),
+            "already_linked": len([s for s in skipped if s.get("status") == "already_linked"]),
+            "no_credential": len([s for s in skipped if s.get("status") == "no_credential"]),
+        },
+    }
 
 
 

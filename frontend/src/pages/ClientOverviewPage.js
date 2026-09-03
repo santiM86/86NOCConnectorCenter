@@ -9,7 +9,7 @@ import {
   CheckCircle, Warning, ArrowClockwise, Bell, BellSlash, ChartLine, Monitor, Cpu,
   Plus, Trash, Lock, MagnifyingGlass, Info, PencilSimple, NetworkSlash,
   Phone, DeviceMobile, Desktop, Network, Key, Star, Check, Pulse,
-  FilePdf, Spinner,
+  FilePdf, Spinner, LinkSimple,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,7 +33,7 @@ import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
 import WanClientTab from "@/components/WanClientTab";
 import {
-  ProbeVendorButton, TryDefaultCredsButton, BulkCredentialsDialog,
+  ProbeVendorButton, BulkCredentialsDialog,
   HealthScoreWidget, LifecyclePanel, IloEventsButton,
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
@@ -184,10 +184,8 @@ export default function ClientOverviewPage() {
       ));
       // Se il rename riguarda il device aperto nel Dialog, aggiorna anche
       // il titolo immediatamente.
-      setInfoCardName(prev => {
-        // Solo se stiamo guardando proprio quel device
-        return device_ip ? new_name : prev;
-      });
+      // Se il rename riguarda il device aperto nella scheda, ci pensa
+      // DevicesTab (che possiede lo stato infoCardName) ad aggiornare il titolo.
       // Forza fetchAll per coerenza con backend (display_name resolver)
       fetchAll();
     };
@@ -331,7 +329,7 @@ export default function ClientOverviewPage() {
           </div>
           <div className="flex flex-col gap-1">
             <button
-              onClick={() => diagnoseOffline()}
+              onClick={() => fetchAll()}
               className="text-[10px] px-2 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30 whitespace-nowrap"
               data-testid="diagnosis-detail-btn"
             >
@@ -939,18 +937,27 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
     }
   };
   // Candidate iLO da collegare a un server host (IP management iLO ≠ IP host).
-  const iloCandidates = (iloHealth || []).filter(s => s.ilo_configured || s.polling_mode === "redfish_direct" || s.has_redfish_data);
-  const [linkChoice, setLinkChoice] = useState({});
-  const linkIlo = async (hostIp) => {
-    const iloIp = linkChoice[hostIp];
-    if (!iloIp) { toast.error("Seleziona l'IP dell'iLO da collegare"); return; }
+  const [autoLinking, setAutoLinking] = useState(false);
+  const autoLinkIlo = async () => {
+    setAutoLinking(true);
     try {
-      await axios.post(`${API}/clients/${clientId}/ilo-link`, { ilo_ip: iloIp, host_ip: hostIp });
-      toast.success(`iLO ${iloIp} collegata al server ${hostIp}`);
+      const { data } = await axios.post(`${API}/clients/${clientId}/ilo-autolink`, {});
+      const n = data?.summary?.linked || 0;
+      const already = data?.summary?.already_linked || 0;
+      const noCred = data?.summary?.no_credential || 0;
+      if (n > 0) {
+        toast.success(`${n} iLO collegate automaticamente ai rispettivi server` +
+          (already ? ` · ${already} già collegate` : ""));
+      } else if (already > 0) {
+        toast.info(`Tutte le iLO risultano già collegate (${already})`);
+      } else {
+        toast.warning("Nessuna corrispondenza trovata (serial/hostname). " +
+          (noCred ? `${noCred} iLO senza credenziale.` : "Serve un poll iLO + dati host da Datto/SNMP."));
+      }
       onRefresh?.();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore collegamento iLO");
-    }
+      toast.error(e.response?.data?.detail || "Errore auto-collegamento iLO");
+    } finally { setAutoLinking(false); }
   };
 
   // KPI aggregati top-bar (solo server configurati)
@@ -1038,6 +1045,18 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
           >
             {polling ? <ArrowClockwise size={12} className="animate-spin" /> : <Lightning size={12} weight="bold" />}
             {polling ? "Polling..." : "Polla iLO ora"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs gap-1 border-violet-500/30 text-violet-300 hover:bg-violet-500/10"
+            onClick={autoLinkIlo}
+            disabled={autoLinking}
+            data-testid="servers-autolink-ilo-btn"
+            title="Collega automaticamente ogni iLO al suo server host tramite serial number / hostname"
+          >
+            {autoLinking ? <ArrowClockwise size={12} className="animate-spin" /> : <LinkSimple size={12} weight="bold" />}
+            {autoLinking ? "Collego..." : "Auto-collega iLO"}
           </Button>
           <Button
             size="sm"
@@ -1137,32 +1156,6 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
                 </div>
                 {s.server_model && (
                   <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate">{s.server_model}</p>
-                )}
-                <div className="mt-2 flex items-center gap-1.5">
-                  <TryDefaultCredsButton
-                    server={{ ip: s.device_ip, vendor_guess: s.vendor_guess || s.server_vendor }}
-                    onSuccess={() => onRefresh?.()}
-                  />
-                </div>
-                {iloCandidates.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-yellow-500/10 flex items-center gap-1.5 flex-wrap" data-testid={`link-ilo-${s.device_ip}`}>
-                    <span className="text-[9px] text-[var(--text-muted)]">iLO su IP diverso?</span>
-                    <select
-                      className="text-[10px] bg-[var(--bg-elevated)] border border-[var(--bg-border)] rounded px-1.5 py-1 text-[var(--text-primary)]"
-                      value={linkChoice[s.device_ip] || ""}
-                      onChange={(e) => setLinkChoice(p => ({ ...p, [s.device_ip]: e.target.value }))}
-                      data-testid={`link-ilo-select-${s.device_ip}`}
-                    >
-                      <option value="">Scegli iLO…</option>
-                      {iloCandidates.filter(c => c.device_ip !== s.device_ip).map(c => (
-                        <option key={c.device_ip} value={c.device_ip}>{c.device_ip} {c.server_model ? `(${c.server_model})` : ""}</option>
-                      ))}
-                    </select>
-                    <Button size="sm" className="h-6 text-[10px] px-2 bg-cyan-600 hover:bg-cyan-700 text-white"
-                      onClick={() => linkIlo(s.device_ip)} data-testid={`link-ilo-btn-${s.device_ip}`}>
-                      Collega
-                    </Button>
-                  </div>
                 )}
               </div>
             ))}
@@ -2184,6 +2177,7 @@ function DeviceActionsBar({ d, testingId, onWebConsole, showWebConsole, webPort,
 
 /* ==================== DEVICES TAB ==================== */
 function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
+  const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
   const [profileTarget, setProfileTarget] = useState(null);
   const [infoTarget, setInfoTarget] = useState(null);

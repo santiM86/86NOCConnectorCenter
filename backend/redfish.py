@@ -264,6 +264,13 @@ class RedfishPoller:
             await _wp.notify_new_alert(self.db, alert_doc)
         except Exception:
             pass
+        # Telegram istantaneo: perdita totale iLO = guasto critico, mai in quiet queue.
+        try:
+            from alert_engine import notify_alert_telegram
+            alert_doc["instant"] = True
+            await notify_alert_telegram(self.db, alert_doc)
+        except Exception:
+            pass
         logger.critical(f"iLO BOTH CHANNELS DOWN: {device_name} ({device_ip})")
 
     async def _resolve_both_channels_alert(self, device_ip: str) -> None:
@@ -342,6 +349,7 @@ class RedfishPoller:
             "server_model": None,
             "serial_number": None,
             "uuid": None,
+            "host_name": None,
             "ilo_firmware": None,
             "ilo_license": None,
             "total_memory_gb": None,
@@ -370,6 +378,7 @@ class RedfishPoller:
                     result["server_model"] = sys_data.get("Model")
                     result["serial_number"] = sys_data.get("SerialNumber")
                     result["uuid"] = sys_data.get("UUID")
+                    result["host_name"] = sys_data.get("HostName")
                     result["bios_version"] = sys_data.get("BiosVersion")
                     if sys_data.get("MemorySummary"):
                         result["total_memory_gb"] = sys_data["MemorySummary"].get("TotalSystemMemoryGiB")
@@ -826,6 +835,7 @@ class RedfishPoller:
                     "server_model": result["server_model"],
                     "serial_number": result["serial_number"],
                     "uuid": result["uuid"],
+                    "host_name": result.get("host_name"),
                     "ilo_firmware": result["ilo_firmware"],
                     "ilo_license": result["ilo_license"],
                     "total_memory_gb": result["total_memory_gb"],
@@ -1053,7 +1063,22 @@ class RedfishPoller:
                             "created_at": datetime.now(timezone.utc).isoformat(),
                             "raw_data": "",
                         }
-                        await insert_alert_if_emit(self.db, alert_doc)
+                        _fw_emitted = await insert_alert_if_emit(self.db, alert_doc)
+                        if _fw_emitted:
+                            try:
+                                import webpush as _wp
+                                await _wp.notify_new_alert(self.db, alert_doc)
+                            except Exception:
+                                pass
+                            # Firmware critico obsoleto → Telegram (force_telegram
+                            # bypassa la soglia). NON instant: rispetta le quiet hours
+                            # (non è un guasto live, può attendere il digest notturno).
+                            try:
+                                from alert_engine import notify_alert_telegram
+                                alert_doc["force_telegram"] = True
+                                await notify_alert_telegram(self.db, alert_doc)
+                            except Exception as _te:
+                                logger.debug(f"iLO firmware telegram dispatch failed: {_te}")
             except Exception as _fe:
                 logger.warning(f"firmware compliance check failed for {device_ip}: {_fe}")
 
@@ -1197,7 +1222,8 @@ class RedfishPoller:
                 # Guasti hardware fisici (disco/RAID/PSU/DIMM/temperatura/salute)
                 # → force=True: bypassano silenziamento e manutenzione (un disco
                 # guasto NON deve mai essere soppresso). NIC link → silenziabile.
-                _emitted = await insert_alert_if_emit(self.db, _rf_alert, force=alert.get("force", True))
+                _force = alert.get("force", True)
+                _emitted = await insert_alert_if_emit(self.db, _rf_alert, force=_force)
                 if not _emitted:
                     continue
                 try:
@@ -1205,6 +1231,18 @@ class RedfishPoller:
                     await _wp.notify_new_alert(self.db, _rf_alert)
                 except Exception:
                     pass
+                # Telegram: TUTTI i guasti hardware iLO sono importanti → arrivano
+                # sempre su Telegram (force_telegram bypassa la soglia "critical") e
+                # sono ISTANTANEI (bypassano quiet hours e manutenzione). Il NIC-link
+                # (force=False) resta comunque silenziabile a livello di device
+                # tramite insert_alert_if_emit sopra.
+                try:
+                    from alert_engine import notify_alert_telegram
+                    _rf_alert["instant"] = True
+                    _rf_alert["force_telegram"] = True
+                    await notify_alert_telegram(self.db, _rf_alert)
+                except Exception as _te:
+                    logger.debug(f"iLO telegram dispatch failed: {_te}")
                 # CRITICAL: broadcast WebSocket per UI live-refresh (altrimenti gli
                 # alert iLO appaiono solo al prossimo refresh manuale della pagina).
                 # Gli altri moduli (alerts, ingestion, backup) fanno gia' questo.

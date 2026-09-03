@@ -1,5 +1,80 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🐞 FIX P0 — Agent v4 offline (STALE) non generava NESSUN avviso + niente Telegram
+**Problema reale (RCA da screenshot prod)**: dispositivi in stato **STALE** (`agent_offline`) senza alcun
+avviso. Causa: lo stato STALE è guidato dall'heartbeat di `managed_agents` (Agent v4), ma l'unico watchdog
+"CONNETTORE OFFLINE" (`connector_watchdog.py`) leggeva SOLO `connector_status` (connector legacy). Gli
+Agent v4 NON scrivono su `connector_status` → quando cade un Agent v4, nessun watchdog se ne accorgeva →
+zero alert. In più, l'alert connettore legacy inviava solo web-push, MAI Telegram.
+**Fix (scelta utente = C, a+b)**:
+- `connector_watchdog.py`: nuovo metodo `check_all_agents` schedulato ogni 60s. Se un cliente resta senza
+  alcun Agent v4 con heartbeat fresco (>180s), genera UN SOLO alert critico "AGENT OFFLINE: <cliente>"
+  (esclude agent con `uninstall_status=completed`; ignora clienti mai visti in heartbeat). Auto-resolve +
+  record `agent_recovery` al ripristino. I singoli device STALE restano SENZA alert (evita valanga falsi).
+- Telegram istantaneo (`instant=True`, bypassa quiet hours) aggiunto SIA al nuovo "AGENT OFFLINE" SIA
+  all'esistente "CONNETTORE OFFLINE" (prima muti su Telegram).
+**Testing**: `backend/tests/test_agent_watchdog_telegram.py` — 3/3 PASS (stale→alert+Telegram; idempotenza;
+ripristino→resolve+recovery). Log conferma "Connector + Agent watchdog started".
+
+## 2026-06 🧹 UI — Rimossi controlli manuali iLO ridondanti (tab Server)
+Su richiesta utente, rimossi dalle card "Server senza credenziali iLO": il pulsante **Try Default** e il
+selettore manuale **"iLO su IP diverso? / Collega"** (ora superflui grazie al pulsante Auto-collega iLO).
+Rimosse anche le dichiarazioni inutilizzate (`iloCandidates`, `linkChoice`, `linkIlo`) e l'import
+`TryDefaultCredsButton`. Restano Probe Vendor + Bulk Credentials nell'header. Frontend: 0 errori oxlint.
+
+
+**Richiesta utente**: collegare in automatico ogni iLO al suo server host, eliminando il link manuale.
+**Backend** (`routes/devices.py`): nuovo `POST /api/clients/{client_id}/ilo-autolink?dry_run=`. Confronta
+il serial del chassis (Redfish `SerialNumber`) — fallback hostname SO (Redfish `HostName`) — con gli
+identificatori dei `managed_devices`: serial da Datto RMM (via `datto_uid`→`datto_devices.serial`) o
+`serial`/`hostname`/`name`. Serial normalizzato (solo alfanumerici, scarta i placeholder tipo
+"To Be Filled By O.E.M."); hostname normalizzato (minuscolo, senza dominio). Esclude match su se stesso
+(host_ip==ilo_ip) e le VM. Se trova corrispondenza imposta `device_credentials.host_ip`. `dry_run=true`
+ritorna solo i suggerimenti. Idempotente (già collegate → skip). Aggiunta estrazione+persistenza di
+`redfish.host_name` in `redfish.py` (per il fallback hostname; si popola al prossimo poll iLO).
+**Frontend** (`ClientOverviewPage.js`, tab Server): pulsante "Auto-collega iLO"
+(`servers-autolink-ilo-btn`) che chiama l'endpoint e mostra toast riassuntivo (N collegate / già
+collegate / nessun match). Il link manuale resta disponibile come fallback.
+**Testing**: `backend/tests/test_ilo_autolink.py` (DB preview reale, con cleanup) — 3/3 PASS: dry_run 2
+match (serial+hostname) senza modifiche; apply collega davvero (serial→.200, hostname→.210); idempotenza
+(0 nuovi, 2 già collegate). Frontend compila. ⚠️ PROD dopo Save to GitHub + redeploy.
+
+
+**Bug reale trovato**: contrariamente a quanto confermato in una sessione precedente, il percorso
+alert iLO/Redfish (`redfish.py::_check_alerts` + `_send_both_channels_alert`) inseriva l'alert e
+inviava SOLO web-push + broadcast WebSocket, **senza mai chiamare Telegram** (`notify_alert_telegram`/
+`_dispatch_notification`), a differenza di TUTTI gli altri moduli (zyxel_nebula, hardware_alerts SNMP,
+cascade_alerts, external_monitor). Quindi un guasto PSU rilevato via iLO NON generava notifica Telegram.
+In più, anche aggiungendo l'invio, durante le quiet hours (22:00–07:00) l'alert (source_type
+`redfish_direct`, non nelle instant-keywords) sarebbe stato ACCODATO al digest → niente notifica notturna.
+**Fix**:
+- `redfish.py`: dopo l'insert, i guasti hardware fisici (force=True → PSU/disco/RAID/DIMM/temp/salute)
+  ora chiamano `notify_alert_telegram` con `instant=True`. Anche l'alert "iLO TOTAL LOSS" (both channels
+  down) è instant. Il NIC-link (force=False, silenziabile) resta soppresso se il device è silenziato.
+- `alert_engine.py::notify_alert_telegram`: nuovo flag `alert_doc["instant"]` che bypassa SIA le quiet
+  hours SIA la finestra di manutenzione (coerente con `insert_alert_if_emit(force=True)`). La soglia
+  severità Telegram e l'abilitazione canale restano rispettate.
+**Testing**: `backend/tests/test_ilo_telegram_instant.py` (3/3 PASS) — PSU instant inviato anche in quiet
+hours + manutenzione; alert non-instant in quiet hours correttamente accodato; percorso reale
+`redfish._check_alerts(PSU critical)` invia Telegram. Backend sano.
+⚠️ **PROD**: attivo su argus.86bit.it SOLO dopo Save to GitHub + redeploy Center. La consegna Telegram
+richiede token/chat_id configurati e `telegram_enabled=true` nella config Alert Engine (già presenti).
+
+### 2026-06 (agg.) — Copertura Telegram iLO COMPLETA (tutti i guasti, anche "high")
+Su richiesta utente (a+b): TUTTI i guasti hardware iLO devono arrivare su Telegram, anche i "high",
+perché importanti. Nuovo flag `alert_doc["force_telegram"]` in `notify_alert_telegram` che bypassa la
+soglia minima Telegram (`telegram_min_severity`, default "critical"). `redfish._check_alerts` ora
+imposta `instant=True` + `force_telegram=True` su TUTTI gli alert emessi → PSU, disco guasto/offline,
+RAID, DIMM, temp critica/elevata, ventola guasta, disco SMART predicted, salute iLO, NIC link down
+(quest'ultimo resta silenziabile a livello device via `insert_alert_if_emit force=False`). Aggiunto anche
+il dispatch push+Telegram per l'alert "Firmware critical outdated" (prima muto): `force_telegram=True`
+ma NON instant (rispetta le quiet hours, non è un guasto live).
+**Testing**: `test_ilo_telegram_instant.py` esteso a 6/6 PASS (PSU instant; non-instant accodato; PSU via
+_check_alerts; high+force_telegram bypassa soglia; ventola high→Telegram; disco SMART high→Telegram).
+
+
+
+
 ## 2026-06 ✨ Priorità VM Backup (Altaro) sulle card backup
 Richiesta: dove un cliente ha backup di virtual machine, mostrare QUELLI come priorità sulla card.
 - `routes/overview.py` (dashboard desktop): esiste già `vm_by_client` (conteggi solo-VM). A riga ~509
