@@ -266,10 +266,92 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
             client_name=client_name,
             device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
         )
+        # Marca l'alert come "notificato su Telegram": serve per inviare UN SOLO
+        # messaggio di rientro alla risoluzione (evita chat intasata).
+        try:
+            if alert_doc.get("id"):
+                await db.alerts.update_one({"id": alert_doc["id"]}, {"$set": {"telegram_notified": True}})
+        except Exception:
+            pass
         return True
     except Exception as e:  # noqa: BLE001
         logger.debug("notify_alert_telegram failed: %s", e)
         return False
+
+
+async def notify_recovery_telegram(db, alert_doc: Dict[str, Any]) -> bool:
+    """Invia UN messaggio di RIENTRO su Telegram quando un problema si risolve.
+    Va chiamata SOLO se l'alert originale era stato notificato (telegram_notified):
+    così ogni problema notificato ha esattamente 1 msg di apertura + 1 di rientro,
+    senza intasare la chat. È istantaneo (accoppia il messaggio di apertura).
+    In fondo riporta la DURATA del disservizio (utile per i report SLA)."""
+    try:
+        cfg = await get_config(db)
+    except Exception:
+        return False
+    channels = cfg.get("channels") or ["push"]
+    if "telegram" not in channels or not cfg.get("telegram_enabled"):
+        return False
+    try:
+        from telegram_notifier import send_alert_telegram
+        client_name = alert_doc.get("client_name")
+        if not client_name and alert_doc.get("client_id"):
+            try:
+                c = await db.clients.find_one({"id": alert_doc["client_id"]}, {"_id": 0, "name": 1})
+                client_name = (c or {}).get("name")
+            except Exception:
+                client_name = None
+        orig_title = alert_doc.get("title", "Alert")
+        msg = "La condizione è rientrata (problema risolto)."
+        dur = _outage_duration_str(alert_doc.get("created_at"), alert_doc.get("resolved_at"))
+        if dur:
+            msg += f"\nDisservizio durato {dur}."
+        await send_alert_telegram(
+            db,
+            title=f"RIENTRATO: {orig_title}",
+            message=msg,
+            severity="recovery",
+            chat_id=cfg.get("telegram_chat_id") or None,
+            token=cfg.get("telegram_bot_token") or None,
+            client_name=client_name,
+            device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.debug("notify_recovery_telegram failed: %s", e)
+        return False
+
+
+def _outage_duration_str(created_at, resolved_at=None) -> Optional[str]:
+    """Durata del disservizio in formato umano (es. '42 min', '3 h 12 min',
+    '2 g 4 h'). Calcolata da created_at → resolved_at (o adesso se assente)."""
+    def _p(v):
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    start = _p(created_at)
+    if not start:
+        return None
+    end = _p(resolved_at) or datetime.now(timezone.utc)
+    secs = (end - start).total_seconds()
+    if secs < 0:
+        return None
+    mins = int(secs // 60)
+    if mins < 1:
+        return "meno di 1 min"
+    if mins < 60:
+        return f"{mins} min"
+    hours, rem_min = divmod(mins, 60)
+    if hours < 24:
+        return f"{hours} h {rem_min} min" if rem_min else f"{hours} h"
+    days, rem_h = divmod(hours, 24)
+    return f"{days} g {rem_h} h" if rem_h else f"{days} g"
 
 
 async def telegram_quiet_digest_tick(db) -> dict:

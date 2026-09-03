@@ -1,5 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+
+## 2026-06 ✨ Telegram: 1 messaggio all'apertura + 1 al RIENTRO (niente flood)
+**Richiesta utente**: "1 solo messaggio quando c'è il problema (no loop) + 1 messaggio al rientro, così
+la chat non si intasa." Audit su tutti i 21 moduli che generano alert: la **deduplica in apertura** era
+già presente (i poller controllano l'alert attivo prima di reinviare → nessun loop), MA **nessun modulo
+inviava il messaggio di RIENTRO** su Telegram (non esisteva proprio la funzione).
+**Implementato**:
+- `alert_engine.py`: `notify_alert_telegram` ora marca l'alert con `telegram_notified=True` dopo l'invio.
+  Nuova `notify_recovery_telegram(db, alert_doc)` che invia UN messaggio "RIENTRATO: <titolo>"
+  (severity `recovery`), da chiamare solo se l'alert era stato notificato → 1 apertura + 1 rientro esatti.
+- `redfish.py` (`_check_alerts`): AUTO-RESOLVE degli alert iLO la cui condizione non è più presente al
+  poll riuscito → invio rientro (se notificato). Titoli temperatura resi STABILI (valore nel messaggio)
+  per non aprire un nuovo alert ad ogni grado (evita flood su fluttuazioni).
+- `connector_watchdog.py`: rientro Telegram su recovery di AGENT OFFLINE e CONNETTORE OFFLINE.
+- Il messaggio di rientro riporta la **durata del disservizio** (`_outage_duration_str`, formato "42 min",
+  "3 h 12 min", "2 g 4 h") calcolata da created_at→resolved_at — utile per report SLA.
+**Testing**: `test_ilo_recovery.py` (1 apertura, 0 su persistenza, 1 rientro, 0 su ok) +
+`test_agent_watchdog_telegram.py` esteso (rientro→1 msg). Tutti i test correlati PASS.
+**Copertura rientro attiva su**: iLO hardware (tutte le condizioni), Agent offline, Connettore offline.
+**Ancora NON su Telegram**: backup falliti (locale/365/VM), soglie CPU/Mem/Temp, loop di rete,
+stampanti/toner, device OFFLINE non-vitali. Da estendere su richiesta con lo stesso modello 1+1.
+
 ## 2026-06 🐞 FIX — Dati iLO/Redfish parziali (es. "5 dischi ma ne mostra 2")
 **Causa (RCA sul codice)**: `RedfishPoller._get` scartava OGNI errore silenziosamente (`except: pass →
 None`) SENZA retry. Su iLO raggiunte via WAN ogni disco è un GET separato: timeout/reset transitori
