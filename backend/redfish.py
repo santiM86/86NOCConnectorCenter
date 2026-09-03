@@ -1451,6 +1451,20 @@ class RedfishPoller:
             else:
                 polling_mode = "connector"
 
+            # Esito reale dell'ultimo poll diretto (da ilo_channel_health): serve a
+            # capire perché non arrivano dati anche se "Test OK" (es. poll schedulato
+            # fallisce: URL/porta, timeout, auth). Senza questo il pannello mostrava
+            # solo un verde fuorviante.
+            ch = await self.db.ilo_channel_health.find_one(
+                {"device_ip": device_ip},
+                {"_id": 0, "direct_last_success": 1, "direct_last_failure": 1, "direct_last_error": 1, "direct_consecutive_failures": 1},
+            ) or {}
+            ps = await self.db.device_poll_status.find_one(
+                {"device_ip": device_ip}, {"_id": 0, "redfish": 1, "last_poll": 1}
+            ) or {}
+            rf = ps.get("redfish") or {}
+            has_data = bool(rf.get("server_model") or rf.get("bios_version"))
+
             result.append({
                 "device_ip": device_ip,
                 "device_name": cred.get("device_name"),
@@ -1459,6 +1473,12 @@ class RedfishPoller:
                 "connector_only": connector_only,
                 "connector_offline": connector_offline,
                 "polling_mode": polling_mode,
+                "has_redfish_data": has_data,
+                "direct_last_success": ch.get("direct_last_success"),
+                "direct_last_failure": ch.get("direct_last_failure"),
+                "direct_last_error": ch.get("direct_last_error"),
+                "direct_consecutive_failures": ch.get("direct_consecutive_failures") or 0,
+                "last_poll": ps.get("last_poll"),
             })
 
         return result
