@@ -125,6 +125,46 @@ async def run():
     assert "Alimentatore" in TG_CALLS[0].get("title", "")
     print("[OK] redfish._check_alerts(PSU critical) → Telegram inviato istantaneamente")
 
+    # 4) Alert "high" con force_telegram → deve INVIARE nonostante soglia "critical"
+    TG_CALLS.clear()
+    high_alert = dict(psu_alert)
+    high_alert["severity"] = "high"
+    high_alert["source_type"] = "redfish_direct"
+    high_alert["instant"] = True
+    high_alert["force_telegram"] = True
+    res4 = await alert_engine.notify_alert_telegram(db, high_alert)
+    assert res4 is True, f"high+force_telegram deve inviare, invece: {res4}"
+    assert len(TG_CALLS) == 1
+    print("[OK] Alert 'high' con force_telegram: Telegram inviato (bypassa soglia critical)")
+
+    # 5) redfish._check_alerts con VENTOLA guasta (severity high) → Telegram
+    TG_CALLS.clear()
+    db.alerts.inserted.clear()
+    result_fan = {
+        "health_status": "ok", "temperatures": [], "power_supplies": [],
+        "storage_controllers": [], "memory_dimms": [], "network_adapters": [],
+        "fans": [{"condition": "critical", "locale": "Fan 3"}],
+    }
+    await poller._check_alerts("10.0.0.5", "GALVANSRV", result_fan, client_id="c1")
+    assert len(TG_CALLS) == 1, f"ventola high deve andare su Telegram, trovato {len(TG_CALLS)}"
+    print("[OK] redfish._check_alerts(ventola high) → Telegram inviato")
+
+    # 6) redfish._check_alerts con DISCO SMART predicted (high) → Telegram
+    TG_CALLS.clear()
+    db.alerts.inserted.clear()
+    result_smart = {
+        "health_status": "ok", "temperatures": [], "power_supplies": [],
+        "memory_dimms": [], "network_adapters": [], "fans": [],
+        "storage_controllers": [{
+            "name": "Smart Array", "health": "ok",
+            "drives": [{"model": "HP 900GB", "slot": "1", "health": "ok",
+                        "state": "enabled", "failure_predicted": True}],
+        }],
+    }
+    await poller._check_alerts("10.0.0.5", "GALVANSRV", result_smart, client_id="c1")
+    assert len(TG_CALLS) == 1, f"disco SMART high deve andare su Telegram, trovato {len(TG_CALLS)}"
+    print("[OK] redfish._check_alerts(disco SMART predicted high) → Telegram inviato")
+
     print("\nTUTTI I TEST PASSATI")
 
 

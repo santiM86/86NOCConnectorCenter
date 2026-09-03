@@ -21,6 +21,19 @@ hours + manutenzione; alert non-instant in quiet hours correttamente accodato; p
 ⚠️ **PROD**: attivo su argus.86bit.it SOLO dopo Save to GitHub + redeploy Center. La consegna Telegram
 richiede token/chat_id configurati e `telegram_enabled=true` nella config Alert Engine (già presenti).
 
+### 2026-06 (agg.) — Copertura Telegram iLO COMPLETA (tutti i guasti, anche "high")
+Su richiesta utente (a+b): TUTTI i guasti hardware iLO devono arrivare su Telegram, anche i "high",
+perché importanti. Nuovo flag `alert_doc["force_telegram"]` in `notify_alert_telegram` che bypassa la
+soglia minima Telegram (`telegram_min_severity`, default "critical"). `redfish._check_alerts` ora
+imposta `instant=True` + `force_telegram=True` su TUTTI gli alert emessi → PSU, disco guasto/offline,
+RAID, DIMM, temp critica/elevata, ventola guasta, disco SMART predicted, salute iLO, NIC link down
+(quest'ultimo resta silenziabile a livello device via `insert_alert_if_emit force=False`). Aggiunto anche
+il dispatch push+Telegram per l'alert "Firmware critical outdated" (prima muto): `force_telegram=True`
+ma NON instant (rispetta le quiet hours, non è un guasto live).
+**Testing**: `test_ilo_telegram_instant.py` esteso a 6/6 PASS (PSU instant; non-instant accodato; PSU via
+_check_alerts; high+force_telegram bypassa soglia; ventola high→Telegram; disco SMART high→Telegram).
+
+
 
 
 ## 2026-06 ✨ Priorità VM Backup (Altaro) sulle card backup

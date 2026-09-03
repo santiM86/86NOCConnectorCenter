@@ -225,7 +225,10 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
         except Exception:
             pass
     if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
-        return False
+        # I guasti hardware (alert_doc["force_telegram"]=True, es. iLO ventola/SMART/
+        # firmware) bypassano la soglia minima Telegram: sono importanti a prescindere.
+        if not alert_doc.get("force_telegram"):
+            return False
     # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra.
     # I guasti hardware fisici (instant) bypassano SEMPRE le quiet hours.
     if _in_quiet_hours(cfg) and not _instant:
