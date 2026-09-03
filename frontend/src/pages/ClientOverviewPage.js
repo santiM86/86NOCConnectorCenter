@@ -34,7 +34,7 @@ import VulnerabilityPage from "./VulnerabilityPage";
 import LanScannerPage from "./LanScannerPage";
 import WanClientTab from "@/components/WanClientTab";
 import {
-  ProbeVendorButton, TryDefaultCredsButton, BulkCredentialsDialog,
+  ProbeVendorButton, BulkCredentialsDialog,
   HealthScoreWidget, LifecyclePanel, IloEventsButton,
   HyperVPanel, VCenterPanel,
 } from "@/components/ServerIntelligenceHub";
@@ -937,19 +937,6 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
     }
   };
   // Candidate iLO da collegare a un server host (IP management iLO ≠ IP host).
-  const iloCandidates = (iloHealth || []).filter(s => s.ilo_configured || s.polling_mode === "redfish_direct" || s.has_redfish_data);
-  const [linkChoice, setLinkChoice] = useState({});
-  const linkIlo = async (hostIp) => {
-    const iloIp = linkChoice[hostIp];
-    if (!iloIp) { toast.error("Seleziona l'IP dell'iLO da collegare"); return; }
-    try {
-      await axios.post(`${API}/clients/${clientId}/ilo-link`, { ilo_ip: iloIp, host_ip: hostIp });
-      toast.success(`iLO ${iloIp} collegata al server ${hostIp}`);
-      onRefresh?.();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Errore collegamento iLO");
-    }
-  };
   const [autoLinking, setAutoLinking] = useState(false);
   const autoLinkIlo = async () => {
     setAutoLinking(true);
@@ -1195,32 +1182,6 @@ function ServersTab({ iloHealth, clientId, clientName, onRefresh }) {
                 </div>
                 {s.server_model && (
                   <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate">{s.server_model}</p>
-                )}
-                <div className="mt-2 flex items-center gap-1.5">
-                  <TryDefaultCredsButton
-                    server={{ ip: s.device_ip, vendor_guess: s.vendor_guess || s.server_vendor }}
-                    onSuccess={() => onRefresh?.()}
-                  />
-                </div>
-                {iloCandidates.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-yellow-500/10 flex items-center gap-1.5 flex-wrap" data-testid={`link-ilo-${s.device_ip}`}>
-                    <span className="text-[9px] text-[var(--text-muted)]">iLO su IP diverso?</span>
-                    <select
-                      className="text-[10px] bg-[var(--bg-elevated)] border border-[var(--bg-border)] rounded px-1.5 py-1 text-[var(--text-primary)]"
-                      value={linkChoice[s.device_ip] || ""}
-                      onChange={(e) => setLinkChoice(p => ({ ...p, [s.device_ip]: e.target.value }))}
-                      data-testid={`link-ilo-select-${s.device_ip}`}
-                    >
-                      <option value="">Scegli iLO…</option>
-                      {iloCandidates.filter(c => c.device_ip !== s.device_ip).map(c => (
-                        <option key={c.device_ip} value={c.device_ip}>{c.device_ip} {c.server_model ? `(${c.server_model})` : ""}</option>
-                      ))}
-                    </select>
-                    <Button size="sm" className="h-6 text-[10px] px-2 bg-cyan-600 hover:bg-cyan-700 text-white"
-                      onClick={() => linkIlo(s.device_ip)} data-testid={`link-ilo-btn-${s.device_ip}`}>
-                      Collega
-                    </Button>
-                  </div>
                 )}
               </div>
             ))}

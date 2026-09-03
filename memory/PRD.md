@@ -1,6 +1,28 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
-## 2026-06 ✨ Auto-link iLO ↔ Server Host (serial number / hostname)
+## 2026-06 🐞 FIX P0 — Agent v4 offline (STALE) non generava NESSUN avviso + niente Telegram
+**Problema reale (RCA da screenshot prod)**: dispositivi in stato **STALE** (`agent_offline`) senza alcun
+avviso. Causa: lo stato STALE è guidato dall'heartbeat di `managed_agents` (Agent v4), ma l'unico watchdog
+"CONNETTORE OFFLINE" (`connector_watchdog.py`) leggeva SOLO `connector_status` (connector legacy). Gli
+Agent v4 NON scrivono su `connector_status` → quando cade un Agent v4, nessun watchdog se ne accorgeva →
+zero alert. In più, l'alert connettore legacy inviava solo web-push, MAI Telegram.
+**Fix (scelta utente = C, a+b)**:
+- `connector_watchdog.py`: nuovo metodo `check_all_agents` schedulato ogni 60s. Se un cliente resta senza
+  alcun Agent v4 con heartbeat fresco (>180s), genera UN SOLO alert critico "AGENT OFFLINE: <cliente>"
+  (esclude agent con `uninstall_status=completed`; ignora clienti mai visti in heartbeat). Auto-resolve +
+  record `agent_recovery` al ripristino. I singoli device STALE restano SENZA alert (evita valanga falsi).
+- Telegram istantaneo (`instant=True`, bypassa quiet hours) aggiunto SIA al nuovo "AGENT OFFLINE" SIA
+  all'esistente "CONNETTORE OFFLINE" (prima muti su Telegram).
+**Testing**: `backend/tests/test_agent_watchdog_telegram.py` — 3/3 PASS (stale→alert+Telegram; idempotenza;
+ripristino→resolve+recovery). Log conferma "Connector + Agent watchdog started".
+
+## 2026-06 🧹 UI — Rimossi controlli manuali iLO ridondanti (tab Server)
+Su richiesta utente, rimossi dalle card "Server senza credenziali iLO": il pulsante **Try Default** e il
+selettore manuale **"iLO su IP diverso? / Collega"** (ora superflui grazie al pulsante Auto-collega iLO).
+Rimosse anche le dichiarazioni inutilizzate (`iloCandidates`, `linkChoice`, `linkIlo`) e l'import
+`TryDefaultCredsButton`. Restano Probe Vendor + Bulk Credentials nell'header. Frontend: 0 errori oxlint.
+
+
 **Richiesta utente**: collegare in automatico ogni iLO al suo server host, eliminando il link manuale.
 **Backend** (`routes/devices.py`): nuovo `POST /api/clients/{client_id}/ilo-autolink?dry_run=`. Confronta
 il serial del chassis (Redfish `SerialNumber`) — fallback hostname SO (Redfish `HostName`) — con gli
