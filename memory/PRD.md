@@ -9148,3 +9148,36 @@ Aggiunto componente SlaBadge (WanClientTab.jsx): recupera uptime_today da
 lista firewall (verde >=99.5, giallo >=97, rosso sotto). data-testid wan-fw-sla-<id>.
 Così lo stato SLA di ogni sede si vede a colpo d'occhio senza aprire il dettaglio.
 VERIFICATO (screenshot): 2 badge in lista, primo firewall 100.0%.
+
+## 2026-09-02 — FIX allarmi iLO/Redfish: guasto disco non segnalato
+RADICE (perché un disco guasto di notte non ha allertato):
+1. alert_filter.is_device_silenced: qualsiasi device con is_vital=False (non "vitale")
+   veniva SILENZIATO per TUTTI gli alert → guasto disco critico soppresso. Anche le
+   finestre di manutenzione sopprimevano tutto. Match silence solo su `ip` (non ip_address).
+2. redfish._check_alerts: rilevamento disco basato SOLO su health → un disco
+   Failed/StandbyOffline/Offline/Absent con Health OK/null (array degradato HPE) non allertava.
+FIX:
+- insert_alert_if_emit(db, doc, force=False): force=True BYPASSA silenziamento+manutenzione.
+- redfish: guasti hardware fisici (disco/RAID/PSU/DIMM/temp/salute) → force=True (mai soppressi);
+  NIC/link → force=False (silenziabili). Push inviata solo se alert realmente creato.
+- Nuovo rilevamento disco per STATO (bad_states = failed/standbyoffline/unavailableoffline/
+  offline/absent) → alert CRITICO "Disco GUASTO/OFFLINE" anche con health OK.
+- is_device_silenced match ip OR ip_address.
+VERIFICATO (test): disco StandbyOffline su device non-vitale → CRITICO emesso (bypass);
+NIC linkdown su non-vitale → resta soppresso. Effetto in prod dopo redeploy.
+NB: resta la dipendenza dal POLL: se di notte l'iLO non è stato interrogato (connector OFF
+e direct poll non raggiungibile) non c'è dato → verificare direct polling/connector.
+
+## 2026-09-03 — FIX iLO "agganciata ma non vista": server invisibile in tab Server
+BUG (ClientOverviewPage.ServersTab): i server erano divisi in configuredServers
+(has_redfish_data) e pendingServers (needs_ilo_setup || (!has_redfish_data && !ilo_configured)).
+Un server con credenziali iLO CONFIGURATE + polling_mode redfish_direct ma SENZA dati
+Redfish (server_model/bios vuoti) NON rientrava in nessuna delle due liste → contato
+(Server (1)) ma NON renderizzato → "iLO agganciata, la raggiungiamo ma non vedo i dati".
+FIX: nuova categoria awaitingServers = !has_redfish_data && !needs_ilo_setup &&
+(ilo_configured || polling_mode==redfish_direct). Sezione UI "iLO configurata ma nessun
+dato ricevuto" con modalità/raggiungibilità/ultimo poll/URL + pulsanti "Diagnostica"
+(GET /redfish/diagnose/{ip}) e "Polla ora" (POST /redfish/poll-now).
+CAUSA DATI MANCANTI probabile in prod: porta/URL Redfish errata (17990 invece di 443) o
+credenziali/timeout → la Diagnostica ora lo mostra esplicitamente.
+VERIFICATO (screenshot preview, server sintetico): sezione visibile con azioni.

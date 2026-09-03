@@ -1122,15 +1122,24 @@ class RedfishPoller:
                 drive_state = (dr.get("state") or "").lower()
                 drive_failed = bool(dr.get("failure_predicted"))
                 label = dr.get("model") or dr.get("name") or "disco"
+                # Stati che indicano un disco GUASTO/OFFLINE anche quando l'health
+                # resta "ok"/null (comune su HPE: array degradato ma health drive OK).
+                bad_states = {"failed", "standbyoffline", "unavailableoffline", "offline", "absent"}
                 if drive_health and drive_health not in ("ok", "unknown", ""):
                     alerts.append({
-                        "severity": "critical",
+                        "severity": "critical", "force": True,
                         "title": f"Disco {drive_health.upper()}: {label}",
                         "message": f"Disco {label} (slot {dr.get('slot','?')}) su {device_name} ({device_ip}): health={drive_health}, state={drive_state or 'n/a'}",
                     })
+                elif drive_state in bad_states:
+                    alerts.append({
+                        "severity": "critical", "force": True,
+                        "title": f"Disco GUASTO/OFFLINE: {label}",
+                        "message": f"Disco {label} (slot {dr.get('slot','?')}) su {device_name} ({device_ip}): stato={drive_state} (health riportato: {drive_health or 'n/a'}). Verifica RAID/array.",
+                    })
                 elif drive_failed:
                     alerts.append({
-                        "severity": "high",
+                        "severity": "high", "force": True,
                         "title": f"Disco guasto previsto: {label}",
                         "message": f"Disco {label} (slot {dr.get('slot','?')}) su {device_name} ({device_ip}): SMART prevede guasto imminente",
                     })
@@ -1153,13 +1162,13 @@ class RedfishPoller:
             # Alert only on configured/connected NICs that went down
             if link_status == "linkdown" and nic.get("speed_mbps"):
                 alerts.append({
-                    "severity": "high",
+                    "severity": "high", "force": False,
                     "title": f"Link LAN DOWN: {nic_name}",
                     "message": f"Interfaccia {nic_name} ({nic.get('mac','?')}) su {device_name} ({device_ip}): link DOWN",
                 })
             elif nic_health and nic_health not in ("ok", "unknown", ""):
                 alerts.append({
-                    "severity": "high",
+                    "severity": "high", "force": False,
                     "title": f"NIC {nic_health.upper()}: {nic_name}",
                     "message": f"Interfaccia {nic_name} su {device_name} ({device_ip}): health={nic_health}",
                 })
@@ -1185,7 +1194,12 @@ class RedfishPoller:
                     "status": "active",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
-                await insert_alert_if_emit(self.db, _rf_alert)
+                # Guasti hardware fisici (disco/RAID/PSU/DIMM/temperatura/salute)
+                # → force=True: bypassano silenziamento e manutenzione (un disco
+                # guasto NON deve mai essere soppresso). NIC link → silenziabile.
+                _emitted = await insert_alert_if_emit(self.db, _rf_alert, force=alert.get("force", True))
+                if not _emitted:
+                    continue
                 try:
                     import webpush as _wp
                     await _wp.notify_new_alert(self.db, _rf_alert)
