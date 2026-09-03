@@ -546,6 +546,17 @@ export default function VaultPage({ scopedClientId = null, scopedClientName = ""
                     {fi.connector_offline && !fi.external_url && (
                       <div className="text-[8px] text-[var(--critical)]">Configura URL esterna!</div>
                     )}
+                    {/* Esito reale ultimo poll: senza questo, un poll che fallisce
+                        ogni minuto restava invisibile dietro il badge verde. */}
+                    {fi.has_redfish_data ? (
+                      <div className="text-[8px] text-[var(--ok)]">✓ Dati Redfish ricevuti{fi.last_poll ? ` · ${new Date(fi.last_poll).toLocaleString("it-IT")}` : ""}</div>
+                    ) : fi.direct_last_error ? (
+                      <div className="text-[8px] text-[var(--critical)]" title={fi.direct_last_error}>
+                        ✕ Poll fallito ({fi.direct_consecutive_failures}x): {String(fi.direct_last_error).slice(0, 80)}
+                      </div>
+                    ) : (
+                      <div className="text-[8px] text-amber-400">⚠ Nessun dato Redfish ancora ricevuto — premi "Polling Manuale"</div>
+                    )}
                   </div>
                 </div>
               );
