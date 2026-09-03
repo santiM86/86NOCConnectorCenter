@@ -9181,3 +9181,21 @@ dato ricevuto" con modalità/raggiungibilità/ultimo poll/URL + pulsanti "Diagno
 CAUSA DATI MANCANTI probabile in prod: porta/URL Redfish errata (17990 invece di 443) o
 credenziali/timeout → la Diagnostica ora lo mostra esplicitamente.
 VERIFICATO (screenshot preview, server sintetico): sezione visibile con azioni.
+
+## 2026-09-03 — Associazione iLO↔host (IP management ≠ IP SO) + visibilità esito poll
+INCONGRUENZA: iLO su 10.10.10.203, server host su 10.10.10.200 (stesso server fisico) →
+ARGUS li teneva separati: .200 "senza iLO", dati Redfish .203 scollegati/invisibili.
+FIX:
+- device_credentials.host_ip: associa la credenziale iLO all'IP host.
+- POST /api/clients/{cid}/ilo-link {ilo_ip, host_ip} (host_ip vuoto = scollega).
+- ilo-health: se un host ha una iLO collegata via host_ip, MERGE dei dati Redfish
+  (modello/dischi/sensori/health) sotto il server host; l'entry separata dell'IP iLO
+  viene soppressa (linked_ilo_ips skip in sez.1).
+- Frontend ServersTab: select "Scegli iLO…" + "Collega" sui server "senza iLO"
+  (data-testid link-ilo-select-<ip>, link-ilo-btn-<ip>).
+- Pannello Credenziali (VaultPage): mostra esito reale ultimo poll (✓ dati / ✕ errore
+  con conteggio / ⚠ nessun dato) da failover-status arricchito (direct_last_error ecc.).
+VERIFICATO E2E (preview): pre-link host senza dati; post-link host con server_model,
+dischi (storage_controllers), health, ilo_ip; entry .203 non più separata.
+NB attivo in prod dopo REDEPLOY. Il Test iLO legge "ProLiant ML110 Gen10" → Redfish ok;
+Health null è normale HPE (usa i sottosistemi).
