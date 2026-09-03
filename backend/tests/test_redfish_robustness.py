@@ -71,6 +71,23 @@ async def run():
     assert len(members) == 5, f"attesi 5 dischi (paginazione seguita), trovati {len(members)}"
     print("[OK] _get_members: segue Members@odata.nextLink → 5/5 dischi (niente troncamento)")
 
+    # 5) Rinforzo (scelta A): retries=3 recupera dopo 3 timeout (default 2 fallirebbe)
+    fc5 = FakeClient({
+        "http://x/disk2": [httpx.TimeoutException("t"), httpx.TimeoutException("t"),
+                            httpx.TimeoutException("t"), FakeResp(200, {"slot": 2})],
+    })
+    r5 = await poller._get(fc5, "http://x/disk2", ("u", "p"), retries=3)
+    assert r5 == {"slot": 2}, f"retries=3 deve recuperare, invece {r5}"
+    assert fc5.calls["http://x/disk2"] == 4, f"attesi 4 tentativi, {fc5.calls}"
+    # controprova: con retries=2 lo stesso disco resterebbe perso
+    fc5b = FakeClient({
+        "http://x/disk2": [httpx.TimeoutException("t"), httpx.TimeoutException("t"),
+                           httpx.TimeoutException("t"), FakeResp(200, {"slot": 2})],
+    })
+    r5b = await poller._get(fc5b, "http://x/disk2", ("u", "p"), retries=2)
+    assert r5b is None, "con retries=2 il disco lento verrebbe perso (conferma il senso del rinforzo)"
+    print("[OK] _get retries=3: recupera il disco 'lento' che con retries=2 andava perso")
+
     print("\nTUTTI I TEST PASSATI")
 
 

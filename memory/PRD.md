@@ -13,8 +13,12 @@ primo endpoint (`break`). La UI NON tronca (verificato: `IloServerPanel.js` rend
 - Dischi fisici e logici ora letti con paginazione; UnconfiguredDrives + HostBusAdapters letti ENTRAMBI
   (prima `break` dopo il primo) con dedup per slot.
 - Log riepilogativo per server: "iLO storage <ip>: N controller, M dischi fisici, K volumi logici".
-**Testing**: `backend/tests/test_redfish_robustness.py` — 4/4 PASS (retry recupera dato, 401 no-retry,
-ConnectError fail-fast, paginazione 5/5). Backend sano.
+**Testing**: `backend/tests/test_redfish_robustness.py` — 5/5 PASS (retry recupera dato, 401 no-retry,
+ConnectError fail-fast, paginazione 5/5, retries=3 recupera disco lento che con 2 andava perso).
+**Rinforzo (scelta utente A, 2026-06)**: le chiamate ai SINGOLI dischi/DIMM/volumi ora usano
+`RESOURCE_TIMEOUT=30s` + `RESOURCE_RETRIES=3` (le più soggette a 500/503 "resource busy" su iLO5 sotto
+carico). Confermato dallo screenshot utente: server con Smart Array P408i-p mostrava dischi #1/#3/#5
+(mancavano #2/#4) e 2 DIMM su 4 (128GB) → tipico drop ~50% da timeout per-risorsa senza retry.
 ⚠️ **Non verificabile sulle iLO di produzione da qui**: dopo Save to GitHub + redeploy, lanciare "Polla
 iLO ora" e ricontrollare la tab iLO. Il log mostrerà il conteggio dischi reale per server. Se ancora
 parziale su un modello specifico, aggiungeremo un dump storage live nel pulsante Diagnostica.

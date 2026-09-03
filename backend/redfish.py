@@ -20,6 +20,12 @@ from alert_filter import insert_alert_if_emit
 
 logger = logging.getLogger("redfish")
 
+# Le chiamate ai SINGOLI dischi/DIMM sono le più soggette a 500/503 "resource busy"
+# o timeout su iLO5 sotto carico → timeout e retry dedicati (più generosi) per
+# evitare di perdere risorse (es. "5 dischi ma ne arrivano 3", "4 DIMM ma 2").
+RESOURCE_TIMEOUT = 30.0
+RESOURCE_RETRIES = 3
+
 FAILOVER_THRESHOLD_SECONDS = 120  # 2 minutes without heartbeat = connector offline
 
 
@@ -564,11 +570,14 @@ class RedfishPoller:
 
                 # 5. Memory DIMMs — raccogli TUTTI i banchi popolati (CapacityMiB>0),
                 #    non solo quelli con State "Enabled" (alcuni iLO riportano stati diversi).
-                mem_col = await self._get(client, f"{base_url}/redfish/v1/Systems/1/Memory/", auth)
-                if mem_col and mem_col.get("Members"):
+                mem_members = await self._get_members(
+                    client, f"{base_url}/redfish/v1/Systems/1/Memory/", auth, base_url,
+                    timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
+                if mem_members:
                     _mem_total = 0.0
-                    for ref in mem_col["Members"][:64]:
-                        dimm = await self._get(client, f"{base_url}{ref['@odata.id']}", auth)
+                    for ref in mem_members[:128]:
+                        dimm = await self._get(client, f"{base_url}{ref['@odata.id']}", auth,
+                                               timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                         if not dimm:
                             continue
                         cap_mib = dimm.get("CapacityMiB") or 0
@@ -709,10 +718,13 @@ class RedfishPoller:
                         # Logical drives (HP SmartStorage + DMTF Volumes)
                         for ld_sub in ["LogicalDrives/", "Volumes/"]:
                             ld_path = ref['@odata.id'].rstrip('/') + '/' + ld_sub
-                            ld_members = await self._get_members(client, f"{base_url}{ld_path}", auth, base_url)
+                            ld_members = await self._get_members(
+                                client, f"{base_url}{ld_path}", auth, base_url,
+                                timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                             if ld_members:
                                 for ldref in ld_members:
-                                    ld = await self._get(client, f"{base_url}{ldref['@odata.id']}", auth)
+                                    ld = await self._get(client, f"{base_url}{ldref['@odata.id']}", auth,
+                                                         timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                                     if ld:
                                         cap_mib = ld.get("CapacityMiB")
                                         cap_bytes = ld.get("CapacityBytes")
@@ -728,7 +740,9 @@ class RedfishPoller:
                         drive_refs = []
                         for dr_sub in ["DiskDrives/", "Drives/"]:
                             dr_path = ref['@odata.id'].rstrip('/') + '/' + dr_sub
-                            dr_members = await self._get_members(client, f"{base_url}{dr_path}", auth, base_url)
+                            dr_members = await self._get_members(
+                                client, f"{base_url}{dr_path}", auth, base_url,
+                                timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                             if dr_members:
                                 drive_refs.extend(dr_members)
                         # DMTF: controller may have Drives[] inline
@@ -744,7 +758,8 @@ class RedfishPoller:
                                 seen_ids.add(did)
                                 unique_refs.append(dref)
                         for drref in unique_refs[:64]:
-                            dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth)
+                            dr = await self._get(client, f"{base_url}{drref['@odata.id']}", auth,
+                                                 timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                             if not dr:
                                 continue
                             ctrl_info["drives"].append(_parse_redfish_drive(dr))
@@ -765,9 +780,12 @@ class RedfishPoller:
                         f"{base_url}/redfish/v1/Systems/1/SmartStorage/UnconfiguredDrives/",
                         f"{base_url}/redfish/v1/Systems/1/SmartStorage/HostBusAdapters/",
                     ]:
-                        unc_members = await self._get_members(client, unc_uri, auth, base_url)
+                        unc_members = await self._get_members(
+                            client, unc_uri, auth, base_url,
+                            timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                         for uref in unc_members[:64]:
-                            dr = await self._get(client, f"{base_url}{uref['@odata.id']}", auth)
+                            dr = await self._get(client, f"{base_url}{uref['@odata.id']}", auth,
+                                                 timeout=RESOURCE_TIMEOUT, retries=RESOURCE_RETRIES)
                             if not dr:
                                 continue
                             pd = _parse_redfish_drive(dr)
@@ -1295,7 +1313,7 @@ class RedfishPoller:
         return None
 
     async def _get_members(self, client: httpx.AsyncClient, url: str, auth: tuple,
-                           base_url: str, timeout: float = None, max_pages: int = 20) -> list:
+                           base_url: str, timeout: float = None, retries: int = 2, max_pages: int = 20) -> list:
         """GET di una collection Redfish seguendo Members@odata.nextLink (paginazione).
         Ritorna la lista COMPLETA dei Members. Senza questo, collection paginate
         (dischi/DIMM su chassis densi) venivano troncate alla prima pagina."""
@@ -1307,7 +1325,7 @@ class RedfishPoller:
             if next_url in seen:
                 break
             seen.add(next_url)
-            coll = await self._get(client, next_url, auth, timeout=timeout)
+            coll = await self._get(client, next_url, auth, timeout=timeout, retries=retries)
             if not coll:
                 break
             members.extend(coll.get("Members") or [])
