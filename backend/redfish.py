@@ -264,6 +264,13 @@ class RedfishPoller:
             await _wp.notify_new_alert(self.db, alert_doc)
         except Exception:
             pass
+        # Telegram istantaneo: perdita totale iLO = guasto critico, mai in quiet queue.
+        try:
+            from alert_engine import notify_alert_telegram
+            alert_doc["instant"] = True
+            await notify_alert_telegram(self.db, alert_doc)
+        except Exception:
+            pass
         logger.critical(f"iLO BOTH CHANNELS DOWN: {device_name} ({device_ip})")
 
     async def _resolve_both_channels_alert(self, device_ip: str) -> None:
@@ -1197,7 +1204,8 @@ class RedfishPoller:
                 # Guasti hardware fisici (disco/RAID/PSU/DIMM/temperatura/salute)
                 # → force=True: bypassano silenziamento e manutenzione (un disco
                 # guasto NON deve mai essere soppresso). NIC link → silenziabile.
-                _emitted = await insert_alert_if_emit(self.db, _rf_alert, force=alert.get("force", True))
+                _force = alert.get("force", True)
+                _emitted = await insert_alert_if_emit(self.db, _rf_alert, force=_force)
                 if not _emitted:
                     continue
                 try:
@@ -1205,6 +1213,15 @@ class RedfishPoller:
                     await _wp.notify_new_alert(self.db, _rf_alert)
                 except Exception:
                     pass
+                # Telegram: i guasti hardware fisici (force=True) sono ISTANTANEI
+                # (bypassano anche le quiet hours). Il canale/soglia Telegram sono
+                # comunque rispettati da notify_alert_telegram.
+                try:
+                    from alert_engine import notify_alert_telegram
+                    _rf_alert["instant"] = bool(_force)
+                    await notify_alert_telegram(self.db, _rf_alert)
+                except Exception as _te:
+                    logger.debug(f"iLO telegram dispatch failed: {_te}")
                 # CRITICAL: broadcast WebSocket per UI live-refresh (altrimenti gli
                 # alert iLO appaiono solo al prossimo refresh manuale della pagina).
                 # Gli altri moduli (alerts, ingestion, backup) fanno gia' questo.

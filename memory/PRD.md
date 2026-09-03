@@ -1,5 +1,28 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
+## 2026-06 🐞 FIX P0 — Guasti hardware iLO (PSU/disco/RAID/DIMM) NON arrivavano su Telegram
+**Bug reale trovato**: contrariamente a quanto confermato in una sessione precedente, il percorso
+alert iLO/Redfish (`redfish.py::_check_alerts` + `_send_both_channels_alert`) inseriva l'alert e
+inviava SOLO web-push + broadcast WebSocket, **senza mai chiamare Telegram** (`notify_alert_telegram`/
+`_dispatch_notification`), a differenza di TUTTI gli altri moduli (zyxel_nebula, hardware_alerts SNMP,
+cascade_alerts, external_monitor). Quindi un guasto PSU rilevato via iLO NON generava notifica Telegram.
+In più, anche aggiungendo l'invio, durante le quiet hours (22:00–07:00) l'alert (source_type
+`redfish_direct`, non nelle instant-keywords) sarebbe stato ACCODATO al digest → niente notifica notturna.
+**Fix**:
+- `redfish.py`: dopo l'insert, i guasti hardware fisici (force=True → PSU/disco/RAID/DIMM/temp/salute)
+  ora chiamano `notify_alert_telegram` con `instant=True`. Anche l'alert "iLO TOTAL LOSS" (both channels
+  down) è instant. Il NIC-link (force=False, silenziabile) resta soppresso se il device è silenziato.
+- `alert_engine.py::notify_alert_telegram`: nuovo flag `alert_doc["instant"]` che bypassa SIA le quiet
+  hours SIA la finestra di manutenzione (coerente con `insert_alert_if_emit(force=True)`). La soglia
+  severità Telegram e l'abilitazione canale restano rispettate.
+**Testing**: `backend/tests/test_ilo_telegram_instant.py` (3/3 PASS) — PSU instant inviato anche in quiet
+hours + manutenzione; alert non-instant in quiet hours correttamente accodato; percorso reale
+`redfish._check_alerts(PSU critical)` invia Telegram. Backend sano.
+⚠️ **PROD**: attivo su argus.86bit.it SOLO dopo Save to GitHub + redeploy Center. La consegna Telegram
+richiede token/chat_id configurati e `telegram_enabled=true` nella config Alert Engine (già presenti).
+
+
+
 ## 2026-06 ✨ Priorità VM Backup (Altaro) sulle card backup
 Richiesta: dove un cliente ha backup di virtual machine, mostrare QUELLI come priorità sulla card.
 - `routes/overview.py` (dashboard desktop): esiste già `vm_by_client` (conteggi solo-VM). A riga ~509

@@ -212,18 +212,23 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
     channels = cfg.get("channels") or ["push"]
     if "telegram" not in channels or not cfg.get("telegram_enabled"):
         return False
-    # Finestra di manutenzione attiva → nessuna notifica Telegram.
-    try:
-        from maintenance_gate import is_in_maintenance
-        if await is_in_maintenance(db, alert_doc.get("client_id"),
-                                   alert_doc.get("device_ip") or alert_doc.get("ip")):
-            return False
-    except Exception:
-        pass
+    # Finestra di manutenzione attiva → nessuna notifica Telegram, TRANNE i guasti
+    # hardware fisici istantanei (alert_doc["instant"]=True): un disco/PSU guasto
+    # non va soppresso nemmeno in manutenzione (coerente con insert_alert_if_emit force).
+    _instant = bool(alert_doc.get("instant")) or _is_instant_source(alert_doc.get("source_type"))
+    if not _instant:
+        try:
+            from maintenance_gate import is_in_maintenance
+            if await is_in_maintenance(db, alert_doc.get("client_id"),
+                                       alert_doc.get("device_ip") or alert_doc.get("ip")):
+                return False
+        except Exception:
+            pass
     if not _telegram_severity_ok(cfg, alert_doc.get("severity")):
         return False
-    # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra
-    if _in_quiet_hours(cfg) and not _is_instant_source(alert_doc.get("source_type")):
+    # Quiet hours: accoda gli alert non-"down" per il riepilogo di fine finestra.
+    # I guasti hardware fisici (instant) bypassano SEMPRE le quiet hours.
+    if _in_quiet_hours(cfg) and not _instant:
         try:
             await db.telegram_quiet_queue.insert_one({
                 "id": str(uuid.uuid4()),
