@@ -80,20 +80,40 @@ async def run():
         assert await db.alerts.find_one({"dedup_key": DK, "status": "active"}) is None
         print("[OK] Switch ventola rientrata: 1 messaggio di RIENTRO + alert risolto")
 
-        # 4) Allarme 'high' bloccato dalla soglia (non aperto su Telegram) →
-        #    alla risoluzione NON deve partire un rientro spurio
+        # 4) Allarme 'high' (CPU) ora VA su Telegram (force_telegram) → 1 apertura + 1 rientro
         TG.clear()
         await hardware_alerts._emit_or_update(
             db, cfg, client_id="ctest", client_name="TEST", device_name="SWITCH1",
             device_ip=IP, device_type="switch", dedup_key=DK_HIGH, severity="high",
             title="CPU elevata su SWITCH1", message="CPU 85%")
-        assert len(TG) == 0, "high sotto soglia critical: nessuna apertura su Telegram"
+        assert len(TG) == 1, f"high deve aprire su Telegram (force), {len(TG)}"
         act_h = await db.alerts.find_one({"dedup_key": DK_HIGH, "status": "active"})
-        assert act_h and not act_h.get("telegram_notified")
+        assert act_h and act_h.get("telegram_notified") is True
+        print("[OK] Switch 'high' (CPU): 1 messaggio di apertura su Telegram")
+
+        # 4b) Cambio SOLO messaggio (CPU 85%→86%) → NESSUN nuovo messaggio (no flood)
+        TG.clear()
+        await hardware_alerts._emit_or_update(
+            db, cfg, client_id="ctest", client_name="TEST", device_name="SWITCH1",
+            device_ip=IP, device_type="switch", dedup_key=DK_HIGH, severity="high",
+            title="CPU elevata su SWITCH1", message="CPU 86%")
+        assert len(TG) == 0, f"cambio solo messaggio NON deve rinotificare, {len(TG)}"
+        print("[OK] Switch 'high' variazione valore: 0 messaggi (no flood)")
+
+        # 4c) ESCALATION high→critical → 1 messaggio (peggioramento)
+        TG.clear()
+        await hardware_alerts._emit_or_update(
+            db, cfg, client_id="ctest", client_name="TEST", device_name="SWITCH1",
+            device_ip=IP, device_type="switch", dedup_key=DK_HIGH, severity="critical",
+            title="CPU critica su SWITCH1", message="CPU 97%")
+        assert len(TG) == 1, f"escalation deve notificare, {len(TG)}"
+        print("[OK] Switch escalation high→critical: 1 messaggio")
+
+        # 4d) Rientro CPU → 1 messaggio di RIENTRO
         TG.clear()
         await hardware_alerts._resolve_alert(db, cfg, DK_HIGH, "CPU rientrata su SWITCH1.")
-        assert len(TG) == 0, "nessun rientro se l'apertura non era su Telegram"
-        print("[OK] Switch 'high' non notificato: nessun rientro spurio (coppia 1+1 rispettata)")
+        assert len(TG) == 1 and TG[0].get("severity") == "recovery"
+        print("[OK] Switch CPU rientrata: 1 messaggio di RIENTRO")
 
         print("\nTUTTI I TEST PASSATI")
     finally:

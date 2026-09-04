@@ -27,6 +27,13 @@ esattamente 1 apertura + 1 rientro; gli allarmi "high" bloccati dalla soglia non
 recovery), high-non-notificato→nessun rientro spurio. Tutti i test correlati PASS.
 `notify_recovery_telegram` ora accetta `detail` opzionale (testo specifico es. "CPU rientrata al 30%").
 
+### 2026-06 (agg.) — Switch "high" (CPU/memoria/temperatura) ora su Telegram + anti-flood
+Gli allarmi hardware switch ora impostano `force_telegram=True` → anche i "high" bypassano la soglia
+Telegram e arrivano in chat (come iLO). Per evitare flood, il path di update di `_emit_or_update`
+ri-notifica su Telegram SOLO in caso di ESCALATION di severità (es. high→critical), NON a ogni cambio di
+messaggio (CPU 85%→86%, temperatura che oscilla). Test esteso (7 scenari): apertura=1, valore che
+varia=0 (no flood), escalation=1, rientro=1.
+
 
 ## 2026-06 🐞 FIX — Dashboard TV: non arrivavano tutti gli allarmi + conteggi errati
 **Problema**: `routes/tv_dashboard.py` prendeva solo i **50 alert attivi più recenti** (`.to_list(50)`),
