@@ -1,6 +1,20 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Igiene allarmi + Riepilogo giornaliero Telegram (21:00)
+Nuovo modulo `alert_hygiene.py` + scheduler in `server.py`:
+- **expire_stale_alerts**: auto-risolve gli alert MEDIUM/LOW attivi più vecchi di N ore (default 24,
+  configurabile via `settings.alert_hygiene_medium_hours`). NON tocca critical/high. Chiusura silenziosa
+  (`auto_expired=True`, resolution_note), nessun messaggio di rientro. Gira ogni 60 min + all'avvio.
+  Effetto immediato in preview: attivi 7357→1651, medium 5748→43. Così TV e console mostrano solo
+  problemi reali attuali (i critici/high restano finché non rientrano davvero).
+- **send_daily_summary**: CronTrigger 21:00 Europe/Rome → invia su Telegram un riepilogo compatto
+  "🔴 aperti oggi / 🟢 rientrati oggi / ⏱ durata media disservizio / attivi critici·high" via
+  `send_telegram_text`. Rispetta channels+telegram_enabled. Giornata calcolata in ora italiana (zoneinfo).
+**Testing**: `test_alert_hygiene.py` — medium/low vecchi risolti, recente/critical/high intatti, note
+igiene; riepilogo inviato con le voci attese. Scheduler confermato nei log. Backend HTTP 200.
+
+
 ## 2026-06 ✨ Switch (hardware SNMP): rientro Telegram col modello 1+1
 `hardware_alerts.py` già deduplicava in apertura (1 msg via `_emit_or_update`), ma il RIENTRO
 (`_resolve_alert`) veniva inviato con `severity="low"` tramite `_dispatch_notification` → bloccato dalla
