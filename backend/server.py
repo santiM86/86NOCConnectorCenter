@@ -200,6 +200,7 @@ async def health_detailed():
 # ==================== INCLUDE ALL ROUTE MODULES ====================
 
 from routes.auth import router as auth_router
+from routes.webauthn_routes import router as webauthn_router
 from routes.admin import router as admin_router
 from routes.clients import router as clients_router
 from routes.devices import router as devices_router
@@ -271,6 +272,7 @@ from routes.freshness_audit import router as freshness_audit_router  # Audit pip
 from routes.snmp_diagnostics import router as snmp_diagnostics_router  # Diagnosi SNMP per device
 
 app.include_router(auth_router)
+app.include_router(webauthn_router)
 app.include_router(admin_router)
 app.include_router(clients_router)
 app.include_router(devices_router)
