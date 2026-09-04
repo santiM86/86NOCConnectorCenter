@@ -1,6 +1,20 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 🐞 FIX — Dashboard TV: non arrivavano tutti gli allarmi + conteggi errati
+**Problema**: `routes/tv_dashboard.py` prendeva solo i **50 alert attivi più recenti** (`.to_list(50)`),
+e i contatori per-cliente + globali erano calcolati su quel campione. Con molti alert attivi (nel DB
+preview: **7357 attivi** — 11 critical, 1597 high, 5748 medium) i critici più vecchi sparivano dalla TV
+e i numeri erano sballati.
+**Fix**: i CONTATORI (per-cliente e globali) ora vengono da un'**aggregazione MongoDB su TUTTI** gli
+alert attivi (esatti a qualsiasi volume). La LISTA mostrata dà **priorità critical→high→medium** (fetch
+300 crit + 500 high + 200 med, riordino per severità) così nessun allarme importante viene tagliato;
+`alerts[:20]` mostra sempre prima tutti i critici. Verificato via curl: global total_alerts=7357,
+critical=11 (tutti presenti nella lista), high=1597 — coincide col DB.
+**Nota/backlog**: 7357 alert attivi è anomalo → molti tipi di alert NON si auto-risolvono (solo iLO lo fa
+ora). Serve igiene alert (auto-resolve/scadenza medium) per non intasare TV e Telegram.
+
+
 ## 2026-06 ✨ Telegram: 1 messaggio all'apertura + 1 al RIENTRO (niente flood)
 **Richiesta utente**: "1 solo messaggio quando c'è il problema (no loop) + 1 messaggio al rientro, così
 la chat non si intasa." Audit su tutti i 21 moduli che generano alert: la **deduplica in apertura** era

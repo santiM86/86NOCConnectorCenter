@@ -199,10 +199,38 @@ async def tv_dashboard_data():
         return best_display_name(md, pd, ip)
 
     # 5. Active alerts - enriched with device/client names
+    # v2026-06 FIX: prima si prendevano solo i 50 alert PIÙ RECENTI (.to_list(50)) e i
+    # contatori per-cliente erano calcolati su quel campione → con molti alert attivi i
+    # critici più vecchi sparivano dalla TV e i numeri erano SBAGLIATI. Ora:
+    #  - i CONTATORI (per-cliente + globali) arrivano da un'AGGREGAZIONE su TUTTI gli
+    #    alert attivi (esatti, qualunque sia il volume);
+    #  - la LISTA mostrata dà priorità a critical→high→medium così nessun allarme
+    #    importante viene tagliato.
     severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    active_alerts_raw = await db.alerts.find(
-        {"status": "active"}, {"_id": 0}
-    ).sort("created_at", -1).to_list(50)
+
+    # Conteggi esatti per cliente/severità su TUTTI gli alert attivi
+    counts_by_client: dict = {}
+    try:
+        _agg = await db.alerts.aggregate([
+            {"$match": {"status": "active"}},
+            {"$group": {"_id": {"c": "$client_id", "s": "$severity"}, "n": {"$sum": 1}}},
+        ]).to_list(20000)
+        for _row in _agg:
+            _cid = _row["_id"].get("c")
+            _sev = _row["_id"].get("s") or "low"
+            _n = _row.get("n", 0)
+            _d = counts_by_client.setdefault(_cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
+            if _sev in _d:
+                _d[_sev] += _n
+            _d["total"] += _n
+    except Exception as _ae:
+        logger.debug(f"alert count aggregation failed: {_ae}")
+
+    # Lista da mostrare: prima tutti i critici, poi high, infine un po' di medium.
+    _crit = await db.alerts.find({"status": "active", "severity": "critical"}, {"_id": 0}).sort("created_at", -1).to_list(300)
+    _high = await db.alerts.find({"status": "active", "severity": "high"}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    _med = await db.alerts.find({"status": "active", "severity": "medium"}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    active_alerts_raw = _crit + _high + _med
     active_alerts_raw.sort(key=lambda a: severity_order.get(a.get("severity", "low"), 4))
 
     # Build device_id -> info map for enrichment
@@ -321,9 +349,12 @@ async def tv_dashboard_data():
         total_offline += offline
         total_devices_count += len(client_units)
 
+        # Contatori ESATTI dall'aggregazione (non dal campione mostrato)
+        _cc = counts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
         client_alerts = [a for a in enriched_alerts if a.get("client_id") == cid]
-        critical_count = sum(1 for a in client_alerts if a.get("severity") == "critical")
-        high_count = sum(1 for a in client_alerts if a.get("severity") == "high")
+        critical_count = _cc["critical"]
+        high_count = _cc["high"]
+        client_alert_total = _cc["total"]
 
         connector = connector_map.get(cid)
         connector_online = cid in online_sonda_clients  # v2026-06: fonte primaria managed_agents
@@ -396,7 +427,7 @@ async def tv_dashboard_data():
             "online": online,
             "offline": offline,
             "health_pct": health,
-            "alert_count": len(client_alerts),
+            "alert_count": client_alert_total,
             "critical_alerts": critical_count,
             "high_alerts": high_count,
             "connector_online": connector_online,
@@ -582,9 +613,9 @@ async def tv_dashboard_data():
             "total_devices": total_devices_count,
             "total_online": total_online,
             "total_offline": total_offline,
-            "total_alerts": len(enriched_alerts),
-            "critical_alerts": sum(1 for a in enriched_alerts if a.get("severity") == "critical"),
-            "high_alerts": sum(1 for a in enriched_alerts if a.get("severity") == "high"),
+            "total_alerts": sum(v["total"] for v in counts_by_client.values()),
+            "critical_alerts": sum(v["critical"] for v in counts_by_client.values()),
+            "high_alerts": sum(v["high"] for v in counts_by_client.values()),
             "open_incidents": len(open_incidents),
             "total_printers": len(all_printers),
             "printers_online": printers_online,
