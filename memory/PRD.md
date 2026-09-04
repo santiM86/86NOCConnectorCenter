@@ -1,6 +1,19 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Switch (hardware SNMP): rientro Telegram col modello 1+1
+`hardware_alerts.py` già deduplicava in apertura (1 msg via `_emit_or_update`), ma il RIENTRO
+(`_resolve_alert`) veniva inviato con `severity="low"` tramite `_dispatch_notification` → bloccato dalla
+soglia Telegram "critical" → **il messaggio di rientro non arrivava su Telegram**.
+**Fix**: `_resolve_alert` ora, oltre al web-push, invia il rientro via `notify_recovery_telegram` (bypassa
+la soglia, include la durata del disservizio e il dettaglio specifico via nuovo param `detail`), ma SOLO
+se l'apertura era stata notificata (`telegram_notified`). Così ogni allarme switch aperto su Telegram ha
+esattamente 1 apertura + 1 rientro; gli allarmi "high" bloccati dalla soglia non generano rientri spuri.
+**Testing**: `test_switch_hw_recovery.py` — apertura=1, persistenza=0 (no loop), rientro=1 (severity
+recovery), high-non-notificato→nessun rientro spurio. Tutti i test correlati PASS.
+`notify_recovery_telegram` ora accetta `detail` opzionale (testo specifico es. "CPU rientrata al 30%").
+
+
 ## 2026-06 🐞 FIX — Dashboard TV: non arrivavano tutti gli allarmi + conteggi errati
 **Problema**: `routes/tv_dashboard.py` prendeva solo i **50 alert attivi più recenti** (`.to_list(50)`),
 e i contatori per-cliente + globali erano calcolati su quel campione. Con molti alert attivi (nel DB

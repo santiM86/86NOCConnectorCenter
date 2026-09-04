@@ -279,12 +279,13 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
         return False
 
 
-async def notify_recovery_telegram(db, alert_doc: Dict[str, Any]) -> bool:
+async def notify_recovery_telegram(db, alert_doc: Dict[str, Any], detail: str = None) -> bool:
     """Invia UN messaggio di RIENTRO su Telegram quando un problema si risolve.
     Va chiamata SOLO se l'alert originale era stato notificato (telegram_notified):
     così ogni problema notificato ha esattamente 1 msg di apertura + 1 di rientro,
     senza intasare la chat. È istantaneo (accoppia il messaggio di apertura).
-    In fondo riporta la DURATA del disservizio (utile per i report SLA)."""
+    In fondo riporta la DURATA del disservizio (utile per i report SLA).
+    `detail` = testo specifico opzionale (es. 'CPU rientrata al 30%')."""
     try:
         cfg = await get_config(db)
     except Exception:
@@ -302,7 +303,7 @@ async def notify_recovery_telegram(db, alert_doc: Dict[str, Any]) -> bool:
             except Exception:
                 client_name = None
         orig_title = alert_doc.get("title", "Alert")
-        msg = "La condizione è rientrata (problema risolto)."
+        msg = detail.strip() if detail else "La condizione è rientrata (problema risolto)."
         dur = _outage_duration_str(alert_doc.get("created_at"), alert_doc.get("resolved_at"))
         if dur:
             msg += f"\nDisservizio durato {dur}."
