@@ -1,6 +1,22 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Allarme "Porta switch giù verso dispositivo vitale / uplink" (modello 1+1)
+Nuovo modulo `port_link_alerts.py`, agganciato in `routes/connector.py::store_switch_ports` (subito dopo
+loop_detection). Sulla transizione ifOperStatus **up→down** (con admin ancora up) genera 1 allarme SOLO
+per le porte CRITICHE:
+- **verso un dispositivo VITALE**: join affidabile via `mac_connections` (from_ip=switch, from_port=idx,
+  to_ip=device) → `managed_devices.is_vital=True` (match per ifIndex);
+- **uplink/trunk/LAG**: euristica sul nome/descr/alias della porta (`_UPLINK_RE`).
+Le porte normali (client, libere) sono IGNORATE (niente flood). Rientro su **down→up** con messaggio di
+rientro + durata. Riusa la macchina 1+1 di `hardware_alerts` (`_emit_or_update`/`_resolve_alert`,
+generalizzati con param `source_type`; force_telegram → bypassa soglia). Severità: critical.
+**Testing**: `test_port_link_alerts.py` — down: porta vitale + uplink = 2 allarmi (porta normale ignorata),
+2 msg; persistenza = 0 (no loop); recovery = 2 msg rientro + allarmi risolti. Regressione switch OK.
+Nota: la mappatura "verso vitale" dipende dalla presenza dei dati `mac_connections`/FDB per quel cliente;
+l'uplink funziona sempre (nome porta).
+
+
 ## 2026-06 ✨ Igiene allarmi + Riepilogo giornaliero Telegram (21:00)
 Nuovo modulo `alert_hygiene.py` + scheduler in `server.py`:
 - **expire_stale_alerts**: auto-risolve gli alert MEDIUM/LOW attivi più vecchi di N ore (default 24,
@@ -26,6 +42,13 @@ esattamente 1 apertura + 1 rientro; gli allarmi "high" bloccati dalla soglia non
 **Testing**: `test_switch_hw_recovery.py` — apertura=1, persistenza=0 (no loop), rientro=1 (severity
 recovery), high-non-notificato→nessun rientro spurio. Tutti i test correlati PASS.
 `notify_recovery_telegram` ora accetta `detail` opzionale (testo specifico es. "CPU rientrata al 30%").
+
+### 2026-06 (agg.) — Switch "high" (CPU/memoria/temperatura) ora su Telegram + anti-flood
+Gli allarmi hardware switch ora impostano `force_telegram=True` → anche i "high" bypassano la soglia
+Telegram e arrivano in chat (come iLO). Per evitare flood, il path di update di `_emit_or_update`
+ri-notifica su Telegram SOLO in caso di ESCALATION di severità (es. high→critical), NON a ogni cambio di
+messaggio (CPU 85%→86%, temperatura che oscilla). Test esteso (7 scenari): apertura=1, valore che
+varia=0 (no flood), escalation=1, rientro=1.
 
 
 ## 2026-06 🐞 FIX — Dashboard TV: non arrivavano tutti gli allarmi + conteggi errati
