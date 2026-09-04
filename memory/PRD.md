@@ -1,6 +1,22 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Allarme "Porta switch giù verso dispositivo vitale / uplink" (modello 1+1)
+Nuovo modulo `port_link_alerts.py`, agganciato in `routes/connector.py::store_switch_ports` (subito dopo
+loop_detection). Sulla transizione ifOperStatus **up→down** (con admin ancora up) genera 1 allarme SOLO
+per le porte CRITICHE:
+- **verso un dispositivo VITALE**: join affidabile via `mac_connections` (from_ip=switch, from_port=idx,
+  to_ip=device) → `managed_devices.is_vital=True` (match per ifIndex);
+- **uplink/trunk/LAG**: euristica sul nome/descr/alias della porta (`_UPLINK_RE`).
+Le porte normali (client, libere) sono IGNORATE (niente flood). Rientro su **down→up** con messaggio di
+rientro + durata. Riusa la macchina 1+1 di `hardware_alerts` (`_emit_or_update`/`_resolve_alert`,
+generalizzati con param `source_type`; force_telegram → bypassa soglia). Severità: critical.
+**Testing**: `test_port_link_alerts.py` — down: porta vitale + uplink = 2 allarmi (porta normale ignorata),
+2 msg; persistenza = 0 (no loop); recovery = 2 msg rientro + allarmi risolti. Regressione switch OK.
+Nota: la mappatura "verso vitale" dipende dalla presenza dei dati `mac_connections`/FDB per quel cliente;
+l'uplink funziona sempre (nome porta).
+
+
 ## 2026-06 ✨ Igiene allarmi + Riepilogo giornaliero Telegram (21:00)
 Nuovo modulo `alert_hygiene.py` + scheduler in `server.py`:
 - **expire_stale_alerts**: auto-risolve gli alert MEDIUM/LOW attivi più vecchi di N ore (default 24,

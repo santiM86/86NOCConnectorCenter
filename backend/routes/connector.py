@@ -3958,6 +3958,12 @@ async def store_switch_ports(client_id: str, switches: list) -> dict:
             await evaluate_and_alert(db, client_id, local_ip, ports)
         except Exception:
             pass
+        # Porte critiche giù (verso device vitali / uplink) — modello 1+1
+        try:
+            from port_link_alerts import evaluate_port_links
+            await evaluate_port_links(db, client_id, local_ip, prev_by_idx, ports)
+        except Exception:
+            pass
     return {"total_ports": total_stored, "flap_events": total_flaps, "per_switch": stored_per_switch}
 
 

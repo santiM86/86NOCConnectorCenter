@@ -189,7 +189,7 @@ _SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
                           device_name: str, device_ip: str, device_type: str,
                           dedup_key: str, severity: str, title: str,
-                          message: str) -> None:
+                          message: str, source_type: str = SOURCE_TYPE) -> None:
     active = await db.alerts.find_one({"dedup_key": dedup_key, "status": "active"}, {"_id": 0})
     if active:
         old_sev = active.get("severity")
@@ -212,7 +212,7 @@ async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
                 pass
         return
     alert = _mk_alert(client_id, client_name, device_name, device_ip,
-                      device_type, severity, SOURCE_TYPE, title, message)
+                      device_type, severity, source_type, title, message)
     alert["dedup_key"] = dedup_key
     # Gli allarmi hardware switch (ventole/PSU/temp/CPU/memoria) vanno SEMPRE su
     # Telegram, anche i "high", bypassando la soglia minima (come per iLO).
