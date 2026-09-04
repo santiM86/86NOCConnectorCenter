@@ -1,6 +1,47 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Igiene allarmi + Riepilogo giornaliero Telegram (21:00)
+Nuovo modulo `alert_hygiene.py` + scheduler in `server.py`:
+- **expire_stale_alerts**: auto-risolve gli alert MEDIUM/LOW attivi più vecchi di N ore (default 24,
+  configurabile via `settings.alert_hygiene_medium_hours`). NON tocca critical/high. Chiusura silenziosa
+  (`auto_expired=True`, resolution_note), nessun messaggio di rientro. Gira ogni 60 min + all'avvio.
+  Effetto immediato in preview: attivi 7357→1651, medium 5748→43. Così TV e console mostrano solo
+  problemi reali attuali (i critici/high restano finché non rientrano davvero).
+- **send_daily_summary**: CronTrigger 21:00 Europe/Rome → invia su Telegram un riepilogo compatto
+  "🔴 aperti oggi / 🟢 rientrati oggi / ⏱ durata media disservizio / attivi critici·high" via
+  `send_telegram_text`. Rispetta channels+telegram_enabled. Giornata calcolata in ora italiana (zoneinfo).
+**Testing**: `test_alert_hygiene.py` — medium/low vecchi risolti, recente/critical/high intatti, note
+igiene; riepilogo inviato con le voci attese. Scheduler confermato nei log. Backend HTTP 200.
+
+
+## 2026-06 ✨ Switch (hardware SNMP): rientro Telegram col modello 1+1
+`hardware_alerts.py` già deduplicava in apertura (1 msg via `_emit_or_update`), ma il RIENTRO
+(`_resolve_alert`) veniva inviato con `severity="low"` tramite `_dispatch_notification` → bloccato dalla
+soglia Telegram "critical" → **il messaggio di rientro non arrivava su Telegram**.
+**Fix**: `_resolve_alert` ora, oltre al web-push, invia il rientro via `notify_recovery_telegram` (bypassa
+la soglia, include la durata del disservizio e il dettaglio specifico via nuovo param `detail`), ma SOLO
+se l'apertura era stata notificata (`telegram_notified`). Così ogni allarme switch aperto su Telegram ha
+esattamente 1 apertura + 1 rientro; gli allarmi "high" bloccati dalla soglia non generano rientri spuri.
+**Testing**: `test_switch_hw_recovery.py` — apertura=1, persistenza=0 (no loop), rientro=1 (severity
+recovery), high-non-notificato→nessun rientro spurio. Tutti i test correlati PASS.
+`notify_recovery_telegram` ora accetta `detail` opzionale (testo specifico es. "CPU rientrata al 30%").
+
+
+## 2026-06 🐞 FIX — Dashboard TV: non arrivavano tutti gli allarmi + conteggi errati
+**Problema**: `routes/tv_dashboard.py` prendeva solo i **50 alert attivi più recenti** (`.to_list(50)`),
+e i contatori per-cliente + globali erano calcolati su quel campione. Con molti alert attivi (nel DB
+preview: **7357 attivi** — 11 critical, 1597 high, 5748 medium) i critici più vecchi sparivano dalla TV
+e i numeri erano sballati.
+**Fix**: i CONTATORI (per-cliente e globali) ora vengono da un'**aggregazione MongoDB su TUTTI** gli
+alert attivi (esatti a qualsiasi volume). La LISTA mostrata dà **priorità critical→high→medium** (fetch
+300 crit + 500 high + 200 med, riordino per severità) così nessun allarme importante viene tagliato;
+`alerts[:20]` mostra sempre prima tutti i critici. Verificato via curl: global total_alerts=7357,
+critical=11 (tutti presenti nella lista), high=1597 — coincide col DB.
+**Nota/backlog**: 7357 alert attivi è anomalo → molti tipi di alert NON si auto-risolvono (solo iLO lo fa
+ora). Serve igiene alert (auto-resolve/scadenza medium) per non intasare TV e Telegram.
+
+
 ## 2026-06 ✨ Telegram: 1 messaggio all'apertura + 1 al RIENTRO (niente flood)
 **Richiesta utente**: "1 solo messaggio quando c'è il problema (no loop) + 1 messaggio al rientro, così
 la chat non si intasa." Audit su tutti i 21 moduli che generano alert: la **deduplica in apertura** era

@@ -1058,6 +1058,36 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Datto RMM scheduler: {e}")
 
+    # === Igiene allarmi + Riepilogo giornaliero Telegram (v2026-06) ===
+    # - Igiene: auto-risolve i medium/low vecchi (backlog) ogni ora + all'avvio,
+    #   così TV e console mostrano solo problemi reali attuali.
+    # - Riepilogo: una volta al giorno alle 21:00 (ora italiana) su Telegram.
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _HgSched
+        from apscheduler.triggers.interval import IntervalTrigger as _HgTrig
+        from apscheduler.triggers.cron import CronTrigger as _HgCron
+        from alert_hygiene import expire_stale_alerts as _hg_expire, send_daily_summary as _hg_summary
+
+        global hygiene_scheduler
+        hygiene_scheduler = _HgSched()
+        hygiene_scheduler.add_job(
+            _hg_expire, args=[db],
+            trigger=_HgTrig(minutes=60),
+            id="alert_hygiene_expire",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+            max_instances=1, coalesce=True,
+        )
+        hygiene_scheduler.add_job(
+            _hg_summary, args=[db],
+            trigger=_HgCron(hour=21, minute=0, timezone="Europe/Rome"),
+            id="alert_daily_summary",
+            max_instances=1, coalesce=True,
+        )
+        hygiene_scheduler.start()
+        logger.info("Alert hygiene scheduler started (expire: 60min, daily summary: 21:00 Europe/Rome)")
+    except Exception as e:
+        logger.error(f"Failed to start alert hygiene scheduler: {e}")
+
     # === Zyxel Nebula (NCC OpenAPI) auto-sync scheduler ===
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler as _ZySched

@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from pymongo import ReturnDocument
 
-from alert_engine import _dispatch_notification, _mk_alert, get_config
+from alert_engine import _dispatch_notification, _mk_alert, get_config, notify_recovery_telegram
 from alert_filter import insert_alert_if_emit
 
 logger = logging.getLogger("hardware_alerts")
@@ -158,6 +158,7 @@ async def _resolve_alert(db, cfg, dedup_key: str, recovery_msg: str) -> None:
         {"id": active["id"]},
         {"$set": {"status": "resolved", "resolved_at": now}},
     )
+    # Web push di ripristino (best-effort)
     rec = dict(active)
     rec["status"] = "resolved"
     rec["resolved_at"] = now
@@ -165,9 +166,21 @@ async def _resolve_alert(db, cfg, dedup_key: str, recovery_msg: str) -> None:
     rec["message"] = recovery_msg
     rec["severity"] = "low"
     try:
-        await _dispatch_notification(db, cfg, rec)
+        import webpush as _wp
+        await _wp.notify_new_alert(db, rec)
     except Exception:  # noqa: BLE001
         pass
+    # Telegram: UN solo messaggio di rientro, SOLO se l'apertura era stata
+    # notificata su Telegram (mantiene 1 apertura + 1 rientro, chat non intasata).
+    # Passa per notify_recovery_telegram che bypassa la soglia severità (il rientro
+    # è "low" ma va comunque inviato) e riporta la durata del disservizio.
+    if active.get("telegram_notified"):
+        try:
+            _act = dict(active)
+            _act["resolved_at"] = now
+            await notify_recovery_telegram(db, _act, detail=recovery_msg)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
