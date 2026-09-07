@@ -392,3 +392,32 @@
 .tvx-new-tag { background: #0e7490; }
 .tvx-new-row .tvx-isp-name { color: #cffafe; }
 .tvx-new-row .tvx-isp-clients { color: #a5f3fc; }
+
+/* ---------- v2026-06 Item warn (allarmi high) + pannello Allarmi critici ---------- */
+.tvx-item.warn .dot { background: #f59e0b; animation: none; }
+.tvx-item.warn b { color: #fde68a; }
+
+.tvx-alertfeed { background: #10161f; border: 1px solid #3a1d1d; border-radius: 16px;
+  padding: 14px 16px; margin-bottom: 18px; }
+.tvx-alertfeed-h { display: flex; align-items: center; justify-content: space-between;
+  font-size: 10px; letter-spacing: 2px; color: #f87171; font-weight: 800; margin-bottom: 10px; }
+.tvx-alertfeed-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px;
+  grid-template-columns: 1fr 1fr; }
+.tvx-alertfeed-item { display: flex; align-items: center; gap: 10px; font-size: 13px;
+  padding: 6px 12px; border-radius: 10px; background: #171016; border: 1px solid #2a1618; }
+.tvx-alertfeed-item.crit { border-color: rgba(255,65,54,.5); box-shadow: 0 0 18px rgba(255,65,54,.12) inset; }
+.tvx-alertfeed-item.warn { border-color: rgba(245,158,11,.4); }
+.tvx-alertfeed-item .sev { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; flex: none; }
+.tvx-alertfeed-item.warn .sev { background: #f59e0b; }
+.tvx-alertfeed-item.crit .sev { animation: tvxpulse 1.4s infinite; }
+.tvx-alertfeed-item .cli { font-weight: 800; color: #e5edf7; flex: 0 0 auto; max-width: 180px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvx-alertfeed-item .ttl { color: #fecaca; flex: 1 1 auto; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.tvx-alertfeed-item.warn .ttl { color: #fde68a; }
+.tvx-alertfeed-item .dev { color: #93a4b8; font-size: 12px; flex: 0 0 auto; max-width: 160px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvx-alertfeed-item .ago { margin-left: auto; font-size: 11px; color: #7c8698;
+  font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+@media (max-width: 1100px) { .tvx-alertfeed-list { grid-template-columns: 1fr; } }
+

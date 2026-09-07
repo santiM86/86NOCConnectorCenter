@@ -14,6 +14,48 @@ router = APIRouter(prefix="/api/tv", tags=["tv-dashboard"])
 _RANK = {"critical": 3, "warning": 2, "ok": 1, "unknown": 0}
 _SUBSYSTEM_KEYS = ("system", "thermal", "fans", "power", "memory", "storage", "processors", "network")
 
+# --- Feed "Altri allarmi critici" per la TV ----------------------------------
+# Allarmi critical/high da mostrare sul wallboard che NON sono coperti dalle
+# sezioni esistenti (vitali offline / WAN / backup / ticker sicurezza-ISP).
+# Escludiamo i source_type ridondanti (già visibili altrove) e il rumore
+# (recovery, stale informativi, rogue/nuovi device, stampanti/toner).
+_TV_ALERT_EXCLUDE = {
+    # WAN / operatore: già nel ticker ISP o nella sezione WAN della card
+    "isp_outage_watch", "external_monitor", "external_monitor_line", "wan_public_ip_change",
+    # blackout / correlazioni sito: i device risultano già offline nei "vitali"
+    "site_blackout", "corr_site_power_down", "corr_site_isolated", "corr_backbone_down",
+    # backup: coperto dalla sezione BACKUP
+    "backup", "backup_failed",
+    # sicurezza / OSINT: già nel ticker sicurezza
+    "osint_c2", "osint", "kev_exposure", "traffic_anomaly", "movement_anomaly",
+    "latency_anomaly", "security_identity_change", "security_mac_change",
+    "security_mac_ip_roam", "security_ip_mac_change",
+    # rogue / nuovi device: già popup + sezione dedicata
+    "rogue_device", "new_devices_detected",
+    # ridondante con la sezione "vitali offline"
+    "vital_device_offline",
+    # recovery / stale informativi / test
+    "connector_recovery", "agent_recovery", "datto_sync_recovery", "datto_server_recovery",
+    "monitoring_stale", "datto_sync_stale", "pre_down_warning", "test",
+}
+
+
+def _tv_alert_included(sev: str, source_type: str, title: str) -> bool:
+    """True se l'allarme va nel feed 'altri allarmi critici' della TV."""
+    if sev not in ("critical", "high"):
+        return False
+    st = (source_type or "").lower()
+    if st in _TV_ALERT_EXCLUDE:
+        return False
+    t = (title or "").lower()
+    if "stampant" in t or "toner" in t:
+        return False
+    # NIC link iLO silenziabile: escluso (i guasti HW iLO restano inclusi)
+    if st in ("redfish", "redfish_direct", "redfish_health_monitor") and (
+        "nic" in t or "link" in t):
+        return False
+    return True
+
 
 def _norm_health(h):
     h = (h or "").lower().strip()
@@ -255,6 +297,7 @@ async def tv_dashboard_data():
         enriched_alerts.append({
             "id": a.get("id", ""),
             "severity": a.get("severity", "low"),
+            "source_type": a.get("source_type", ""),
             "title": a.get("title", a.get("trap_type", "")),
             "message": a.get("value", a.get("message", a.get("description", ""))),
             "device_name": dev_name,
@@ -264,6 +307,17 @@ async def tv_dashboard_data():
             "created_at": a.get("created_at", ""),
             "time_ago": _time_ago(a.get("created_at", "")),
         })
+
+    # Feed "altri allarmi critici" (critical+high, esclusi i tipi ridondanti):
+    # alimenta il pannello dedicato della TV + le righe nella card cliente + i
+    # popup/suono. Raggruppato anche per cliente.
+    tv_alert_feed = [
+        a for a in enriched_alerts
+        if _tv_alert_included(a["severity"], a["source_type"], a["title"])
+    ]
+    alerts_by_client: dict = {}
+    for a in tv_alert_feed:
+        alerts_by_client.setdefault(a["client_id"], []).append(a)
 
     # 6. Printer status
     low_toner_printers = []
@@ -440,6 +494,8 @@ async def tv_dashboard_data():
             "printer_count": sum(1 for p in all_printers if p.get("client_id") == cid),
             "hardware_health": hw_health,
             "ilo_server_count": len(ilo_docs),
+            "alerts": alerts_by_client.get(cid, [])[:6],
+            "alert_count_extra": len(alerts_by_client.get(cid, [])),
         })
 
     # 8. Open incidents (enriched)
@@ -625,6 +681,7 @@ async def tv_dashboard_data():
         "clients": client_summaries,
         "offline_devices": all_offline_devices,
         "alerts": enriched_alerts[:20],
+        "alert_feed": tv_alert_feed[:40],
         "incidents": open_incidents,
         "connectors": connector_list,
         "low_toner": low_toner_printers[:10],

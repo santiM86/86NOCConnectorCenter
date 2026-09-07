@@ -1,6 +1,33 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ TV Wallboard: ora mostra TUTTI gli allarmi critici (agent offline, uplink giù, iLO…)
+**Problema utente**: allarmi come "AGENT OFFLINE" e "UPLINK GIÙ" arrivavano su Telegram ma NON comparivano
+sul televisore. **Causa (RCA sul codice)**: `TvDashboardPage.js::issues()` costruiva i problemi SOLO da
+`vital_down` + `wan_targets` + `backup`, ignorando del tutto `data.alerts`. Un agent offline rende i device
+STALE (non "offline") → `vital_down` vuoto → niente sul TV; un "UPLINK GIÙ" è un allarme di PORTA (lo switch
+è online) → non è vitale/WAN/backup → ignorato. Idem iLO/soglie/loop.
+**Fix (scelte utente: entrambe le viste, suono+popup solo critical, severità critical+high, esclusi i
+ridondanti)**:
+- Backend `routes/tv_dashboard.py`: nuovo `_TV_ALERT_EXCLUDE` + `_tv_alert_included()`. Il payload ora
+  espone `alert_feed` (flat, critical+high, top 40) e ogni `client` ha `alerts[]` (top 6) + `alert_count_extra`.
+  Esclusi i tipi già coperti altrove (WAN/ISP ticker, blackout/correlazioni sito, backup, sicurezza/OSINT
+  già nel ticker, rogue/nuovi device, vital_device_offline) + rumore (recovery/stale/test) + stampanti/toner
+  (per titolo) + NIC-link iLO silenziabile. Inclusi: agent_watchdog, connector_watchdog/offline,
+  port_link_down, redfish HW (PSU/disco/DIMM/temp), threshold_*, hardware_snmp, vendor_* (UPS/RAID/disk),
+  hyperv_vm_down, datto_server_offline, ecc.
+- Frontend `TvDashboardPage.js`: (1) `issues()` considera gli alert (crit se ≥1 critical, warn se ≥1 high);
+  (2) nuova sezione "ALTRI ALLARMI" nella card cliente; (3) pannello dedicato "ALLARMI CRITICI ATTIVI" a
+  fondo pagina (griglia 2 colonne: cliente · titolo · device · da-quanto); (4) contatore header "ALTRI
+  ALLARMI"; (5) suono + popup ("ALLARME CRITICO") sui NUOVI alert **critical** (come i vitali down).
+  `TvDashboard.css`: stili `tvx-alertfeed*` + variante `tvx-item.warn` (dot ambra).
+**Testing**: verificato via curl con alert sintetici (agent_watchdog/port_link_down/connector_watchdog/
+threshold_cpu INCLUSI; backup + "toner stampante" ESCLUSI) + screenshot /tv (header "6 ALTRI ALLARMI",
+sezione card, pannello "ALLARMI CRITICI ATTIVI (6)"). Frontend compila. Dati di test rimossi.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Temperatura: soglie per TIPO di dispositivo
 `hardware_alerts.py`: nuova `_temp_thresholds(thresholds, device_type)` con default sensati per tipo
 (switch/router 68/82, firewall 70/85, server/ilo/hypervisor 70/88, ap 60/75, printer 55/70, nas/storage
