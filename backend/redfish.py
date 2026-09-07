@@ -1127,18 +1127,43 @@ class RedfishPoller:
 
         # Temperature sensors — titolo STABILE (il valore va nel messaggio, non nel
         # titolo, altrimenti 78°C→79°C aprirebbe un nuovo alert ad ogni grado → flood).
+        # Soglie: override device (inlet per i sensori di aria in ingresso, altrimenti
+        # generale) > cliente-per-tipo > profilo iLO > default 65/75.
+        _tw_gen, _tc_gen, _tw_in, _tc_in = 65.0, 75.0, 65.0, 75.0
+        try:
+            from hardware_alerts import resolve_temp_thresholds as _rtt
+            _md = await self.db.managed_devices.find_one(
+                {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1,
+                 "inlet_temp_warn_c": 1, "inlet_temp_crit_c": 1, "device_type": 1}) or {}
+            _dt = _md.get("device_type") or "ilo"
+            _dov = {"warn": _md.get("temp_warn_c"), "crit": _md.get("temp_crit_c"),
+                    "inlet_warn": _md.get("inlet_temp_warn_c"), "inlet_crit": _md.get("inlet_temp_crit_c")}
+            _cbt = {}
+            if client_id:
+                _at = await self.db.alert_thresholds.find_one(
+                    {"client_id": client_id}, {"_id": 0, "temp_by_type": 1}) or {}
+                _cbt = _at.get("temp_by_type") or {}
+            _tw_gen, _tc_gen = _rtt({}, _dt, _dov, _cbt, kind="general", fallback=(65.0, 75.0))
+            _tw_in, _tc_in = _rtt({}, _dt, _dov, _cbt, kind="inlet", fallback=(_tw_gen, _tc_gen))
+        except Exception:
+            pass
         for t in result["temperatures"]:
-            if t["value"] > 75:
+            _loc = (t.get("locale") or t.get("name") or "").lower()
+            _is_inlet = any(k in _loc for k in ("inlet", "intake", "ambient", "ingress"))
+            _tw = _tw_in if _is_inlet else _tw_gen
+            _tc = _tc_in if _is_inlet else _tc_gen
+            if _tc is not None and t["value"] > _tc:
                 alerts.append({
                     "severity": "critical",
                     "title": "Temperatura critica",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia critica 75C)",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia critica {_tc:.0f}C)",
                 })
-            elif t["value"] > 65:
+            elif _tw is not None and t["value"] > _tw:
                 alerts.append({
                     "severity": "high",
                     "title": "Temperatura elevata",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia 65C)",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia {_tw:.0f}C)",
                 })
 
         # Fans

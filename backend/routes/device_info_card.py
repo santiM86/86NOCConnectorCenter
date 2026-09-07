@@ -1330,12 +1330,15 @@ async def set_device_temp_thresholds(
 ):
     """Override soglie temperatura per SINGOLO dispositivo (°C).
 
-    Body: {"warn_c": float|null, "crit_c": float|null, "client_id"?: str}
-    Entrambi null → rimuove l'override (torna a soglia profilo / default per tipo).
+    Body: {
+      "warn_c": float|null, "crit_c": float|null,       # temperatura generale
+      "disk_warn_c"?: ..., "disk_crit_c"?: ...,         # temperatura dischi
+      "inlet_warn_c"?: ..., "inlet_crit_c"?: ...,       # aria in ingresso
+      "client_id"?: str
+    }
+    Valori null → rimuovono quello specifico override (torna a profilo/default).
     Hanno la MASSIMA priorità nella risoluzione delle soglie temperatura.
     """
-    warn = payload.get("warn_c")
-    crit = payload.get("crit_c")
     explicit_client_id = (payload.get("client_id") or "").strip() or None
 
     def _num(v):
@@ -1349,10 +1352,17 @@ async def set_device_temp_thresholds(
             raise HTTPException(status_code=400, detail="Soglia temperatura fuori range (0–150 °C)")
         return f
 
-    warn = _num(warn)
-    crit = _num(crit)
-    if warn is not None and crit is not None and warn >= crit:
-        raise HTTPException(status_code=400, detail="La soglia warning deve essere minore della critica")
+    # (chiave body → campo managed_devices)
+    pairs = {
+        "temp_warn_c": _num(payload.get("warn_c")), "temp_crit_c": _num(payload.get("crit_c")),
+        "disk_temp_warn_c": _num(payload.get("disk_warn_c")), "disk_temp_crit_c": _num(payload.get("disk_crit_c")),
+        "inlet_temp_warn_c": _num(payload.get("inlet_warn_c")), "inlet_temp_crit_c": _num(payload.get("inlet_crit_c")),
+    }
+    for w, c, lbl in (("temp_warn_c", "temp_crit_c", "generale"),
+                      ("disk_temp_warn_c", "disk_temp_crit_c", "disco"),
+                      ("inlet_temp_warn_c", "inlet_temp_crit_c", "inlet")):
+        if pairs[w] is not None and pairs[c] is not None and pairs[w] >= pairs[c]:
+            raise HTTPException(status_code=400, detail=f"Temperatura {lbl}: warning deve essere < critica")
 
     md_query = _ip_match(device_ip)
     if explicit_client_id:
@@ -1366,17 +1376,16 @@ async def set_device_temp_thresholds(
             )
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    if warn is None and crit is None:
-        r = await db.managed_devices.update_many(
-            md_query, {"$unset": {"temp_warn_c": "", "temp_crit_c": ""}})
-        set_msg = "Override temperatura RIMOSSO"
-    else:
-        r = await db.managed_devices.update_many(
-            md_query, {"$set": {"temp_warn_c": warn, "temp_crit_c": crit,
-                                "temp_thresholds_set_by": current_user.get("email"),
-                                "temp_thresholds_set_at": now_iso}})
-        set_msg = f"Override temperatura: warning {warn}°C / critica {crit}°C"
-
+    set_map = {k: v for k, v in pairs.items() if v is not None}
+    unset_map = {k: "" for k, v in pairs.items() if v is None}
+    update_doc = {}
+    if set_map:
+        set_map["temp_thresholds_set_by"] = current_user.get("email")
+        set_map["temp_thresholds_set_at"] = now_iso
+        update_doc["$set"] = set_map
+    if unset_map:
+        update_doc["$unset"] = unset_map
+    r = await db.managed_devices.update_many(md_query, update_doc)
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
 
@@ -1386,14 +1395,14 @@ async def set_device_temp_thresholds(
             action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
             resource_type="device", resource_id=device_ip,
             metadata={"action": "set_temp_thresholds", "device_ip": device_ip,
-                      "warn_c": warn, "crit_c": crit, "client_id": explicit_client_id},
+                      "values": pairs, "client_id": explicit_client_id},
             request=request,
         )
     except Exception:
         pass
 
-    return {"ok": True, "device_ip": device_ip, "temp_warn_c": warn, "temp_crit_c": crit,
-            "matched": r.matched_count, "message": set_msg}
+    return {"ok": True, "device_ip": device_ip, "values": pairs, "matched": r.matched_count,
+            "message": "Soglie temperatura aggiornate"}
 
 
 
@@ -1483,7 +1492,35 @@ async def bulk_apply_device_settings(
         set_fields["hyperv_vm_name"] = (apply.get("hyperv_vm_name") or "").strip()
         applied.append("nome VM")
 
-    if not set_fields:
+    # Override soglie temperatura (generale/disco/inlet) — null = rimuovi.
+    unset_fields: Dict[str, Any] = {}
+    if isinstance(apply.get("temp"), dict):
+        tmap = apply["temp"]
+        body_to_field = {
+            "warn": "temp_warn_c", "crit": "temp_crit_c",
+            "disk_warn": "disk_temp_warn_c", "disk_crit": "disk_temp_crit_c",
+            "inlet_warn": "inlet_temp_warn_c", "inlet_crit": "inlet_temp_crit_c",
+        }
+        touched = False
+        for bk, fld in body_to_field.items():
+            if bk not in tmap:
+                continue
+            touched = True
+            v = tmap.get(bk)
+            if v is None or v == "":
+                unset_fields[fld] = ""
+            else:
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="Soglia temperatura non numerica")
+                if fv < 0 or fv > 150:
+                    raise HTTPException(status_code=400, detail="Soglia temperatura fuori range (0–150 °C)")
+                set_fields[fld] = fv
+        if touched:
+            applied.append("soglie temperatura")
+
+    if not set_fields and not unset_fields:
         raise HTTPException(status_code=400, detail="Nessun campo valido da applicare")
 
     set_fields["bulk_settings_set_by"] = current_user.get("email")
@@ -1494,7 +1531,10 @@ async def bulk_apply_device_settings(
     # (salta switch/stampanti/host fisici) — utile per host/nome VM e alert VM.
     if bool(payload.get("vm_only")):
         q["virtualization"] = {"$in": ["hyperv", "vmware", "vm_generic"]}
-    res = await db.managed_devices.update_many(q, {"$set": set_fields})
+    update_ops: Dict[str, Any] = {"$set": set_fields}
+    if unset_fields:
+        update_ops["$unset"] = unset_fields
+    res = await db.managed_devices.update_many(q, update_ops)
 
     try:
         for ip in ips:

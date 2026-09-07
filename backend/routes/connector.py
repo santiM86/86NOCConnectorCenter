@@ -1944,8 +1944,19 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 })
 
         # --- Synology: disk temperature (table walk: diskTemperature)
-        disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
-        disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
+        # Soglie: override device (disk) > cliente-per-tipo > profilo > default 50/60
+        try:
+            from hardware_alerts import resolve_temp_thresholds as _rtt
+            _dmd = await db.managed_devices.find_one(
+                {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {"_id": 0, "disk_temp_warn_c": 1, "disk_temp_crit_c": 1}) or {}
+            _dov_disk = {"disk_warn": _dmd.get("disk_temp_warn_c"), "disk_crit": _dmd.get("disk_temp_crit_c")}
+            disk_temp_warn, disk_temp_crit = _rtt(
+                profile_thresholds, device_type, _dov_disk, th.get("temp_by_type") or {},
+                kind="disk", fallback=(50, 60))
+        except Exception:
+            disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
+            disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
         disk_temps = vendor_metrics.get("diskTemperature") or {}
         if isinstance(disk_temps, dict):
             for idx, t in disk_temps.items():

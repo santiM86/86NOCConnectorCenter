@@ -436,6 +436,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         _tc = md.get("temp_crit_c", d.get("temp_crit_c"))
         d["temp_warn_c"] = _tw if isinstance(_tw, (int, float)) else None
         d["temp_crit_c"] = _tc if isinstance(_tc, (int, float)) else None
+        for _k in ("disk_temp_warn_c", "disk_temp_crit_c", "inlet_temp_warn_c", "inlet_temp_crit_c"):
+            _v = md.get(_k, d.get(_k))
+            d[_k] = _v if isinstance(_v, (int, float)) else None
         d["virtualization"] = md.get("virtualization") or d.get("virtualization") or ""
         d["hyperv_vm_name"] = md.get("hyperv_vm_name") or d.get("hyperv_vm_name") or ""
         d["hyperv_host_hint"] = md.get("hyperv_host_hint") or d.get("hyperv_host_hint") or ""
@@ -612,6 +615,10 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
                 "temp_warn_c": md.get("temp_warn_c") if isinstance(md.get("temp_warn_c"), (int, float)) else None,
                 "temp_crit_c": md.get("temp_crit_c") if isinstance(md.get("temp_crit_c"), (int, float)) else None,
+                "disk_temp_warn_c": md.get("disk_temp_warn_c") if isinstance(md.get("disk_temp_warn_c"), (int, float)) else None,
+                "disk_temp_crit_c": md.get("disk_temp_crit_c") if isinstance(md.get("disk_temp_crit_c"), (int, float)) else None,
+                "inlet_temp_warn_c": md.get("inlet_temp_warn_c") if isinstance(md.get("inlet_temp_warn_c"), (int, float)) else None,
+                "inlet_temp_crit_c": md.get("inlet_temp_crit_c") if isinstance(md.get("inlet_temp_crit_c"), (int, float)) else None,
                 "virtualization": md.get("virtualization") or "",
                 "hyperv_vm_name": md.get("hyperv_vm_name") or "",
                 "hyperv_host_hint": md.get("hyperv_host_hint") or "",

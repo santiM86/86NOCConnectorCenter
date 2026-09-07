@@ -132,6 +132,10 @@ class DeviceResponse(BaseModel):
     # priorità nella risoluzione delle soglie temperatura.
     temp_warn_c: Optional[float] = None
     temp_crit_c: Optional[float] = None
+    disk_temp_warn_c: Optional[float] = None
+    disk_temp_crit_c: Optional[float] = None
+    inlet_temp_warn_c: Optional[float] = None
+    inlet_temp_crit_c: Optional[float] = None
     # v2026-06: tipo macchina impostabile dall'admin. "" = non impostato
     # (trattato come fisico). Valori VM: "hyperv" | "vmware" | "vm_generic".
     # Le VM sono escluse dalla lista "server senza credenziali iLO".

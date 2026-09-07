@@ -172,24 +172,45 @@ def _first_num(*vals) -> Optional[float]:
     return None
 
 
+# Chiavi per "tipo" di temperatura (generale / aria in ingresso / disco).
+_TEMP_KIND_KEYS = {
+    "general": {"pw": ("temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c"),
+                "pc": ("temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c"),
+                "dw": "warn", "dc": "crit", "cw": "warn", "cc": "crit"},
+    "inlet":   {"pw": ("inlet_temp_warn_c",), "pc": ("inlet_temp_crit_c",),
+                "dw": "inlet_warn", "dc": "inlet_crit", "cw": "inlet_warn", "cc": "inlet_crit"},
+    "disk":    {"pw": ("disk_temp_warn_c",), "pc": ("disk_temp_crit_c",),
+                "dw": "disk_warn", "dc": "disk_crit", "cw": "disk_warn", "cc": "disk_crit"},
+}
+
+
 def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type: Optional[str],
                             device_override: Optional[dict] = None,
-                            client_by_type: Optional[dict] = None) -> tuple:
+                            client_by_type: Optional[dict] = None,
+                            kind: str = "general",
+                            fallback: Optional[tuple] = None) -> tuple:
     """Risoluzione UNIFICATA delle soglie temperatura (warn_c, crit_c) con priorità:
-      1) override per SINGOLO dispositivo (managed_devices.temp_warn_c/temp_crit_c)
+      1) override per SINGOLO dispositivo (managed_devices)
       2) soglia per TIPO impostata dal cliente (alert_thresholds.temp_by_type[<type>])
-      3) soglia esplicita del PROFILO vendor (temp_warn_c/inlet/cpu…)
-      4) default per tipo di dispositivo (_DEFAULT_TEMP_THRESHOLDS) / fallback
-    warn e crit sono risolti in modo indipendente. Mai None."""
+      3) soglia esplicita del PROFILO vendor
+      4) default: per `kind='general'` = `_DEFAULT_TEMP_THRESHOLDS` per tipo; per
+         inlet/disk = `fallback` passato dal chiamante (può essere None).
+    `kind` = general|inlet|disk. warn e crit risolti indipendentemente."""
     dt = (device_type or "").lower()
-    base = _DEFAULT_TEMP_THRESHOLDS.get(dt, _DEFAULT_TEMP_FALLBACK)
+    km = _TEMP_KIND_KEYS.get(kind, _TEMP_KIND_KEYS["general"])
+    if kind == "general" and fallback is None:
+        base = _DEFAULT_TEMP_THRESHOLDS.get(dt, _DEFAULT_TEMP_FALLBACK)
+    else:
+        base = fallback
     pt = profile_thresholds or {}
-    prof_warn = _threshold(pt, "temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c")
-    prof_crit = _threshold(pt, "temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c")
+    prof_warn = _threshold(pt, *km["pw"])
+    prof_crit = _threshold(pt, *km["pc"])
     dov = device_override or {}
     cbt = (client_by_type or {}).get(dt) or {}
-    warn = _first_num(dov.get("warn"), cbt.get("warn"), prof_warn, base[0])
-    crit = _first_num(dov.get("crit"), cbt.get("crit"), prof_crit, base[1])
+    bw = base[0] if base else None
+    bc = base[1] if base else None
+    warn = _first_num(dov.get(km["dw"]), cbt.get(km["cw"]), prof_warn, bw)
+    crit = _first_num(dov.get(km["dc"]), cbt.get(km["cc"]), prof_crit, bc)
     return warn, crit
 
 
