@@ -1,6 +1,32 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Soglie temperatura: gruppo per-tipo (cliente) + override per singolo dispositivo
+**Richiesta utente** (dopo domanda "dove si impostano le soglie temperatura?"): (a) gruppo "Temperatura"
+nella pagina Soglie Alert per cliente (warn/crit per tipo), (b) override temperatura per singolo device
+nella scheda device (prima solo via profilo/JSON).
+**Risoluzione UNIFICATA** in `hardware_alerts.py::resolve_temp_thresholds(profile_thresholds, device_type,
+device_override, client_by_type)` con priorità: (1) override device `managed_devices.temp_warn_c/temp_crit_c`
+→ (2) soglia cliente per-tipo `alert_thresholds.temp_by_type[<type>]` → (3) soglia esplicita del profilo
+(`temp_warn_c`/`inlet`/`cpu`) → (4) default per tipo `_DEFAULT_TEMP_THRESHOLDS`. warn e crit risolti
+indipendentemente, mai None. Usata sia in `hardware_alerts.evaluate_hardware_alerts` (path SNMP vendor_metrics,
+guardia rilassata: valuta la temperatura anche senza soglie di profilo se c'è override/cliente-tipo) sia in
+`connector.py::_check_device_thresholds` (path SNMP generico `dev.temperature`, prima era hardcoded `>75`;
+ora warn=high/crit=critical).
+**API**: `GET /api/thresholds-temp-defaults` (default per tipo, single source of truth); `GET/POST
+/api/thresholds/{client_id}` ora includono `temp_by_type`; nuovo `POST /api/devices/by-ip/{ip}/temp-thresholds`
+`{warn_c,crit_c,client_id?}` (null+null = rimuove override; valida 0–150 e warn<crit; update_many su ip/ip_address).
+`DeviceResponse` + `routes/devices.py` espongono `temp_warn_c`/`temp_crit_c`.
+**Frontend**: `ThresholdsPage.js` nuova sezione "Temperatura per tipo di dispositivo" (11 tipi, input
+warn/crit con placeholder = default, salvati in `temp_by_type`); `DeviceEditModal.js` nuova sezione "Soglie
+temperatura (override device)" (input warn/crit + "Rimuovi override") persistita in `persistChanges`.
+**Testing**: resolver unit (priorità corretta); endpoint E2E via requests+TOTP (temp-defaults 200;
+temp_by_type save/readback; device override save/readback via /devices; warn>=crit → 400; clear OK);
+screenshot ThresholdsPage (gruppo Temperatura, 11 righe, default visibili). Dati di test ripuliti.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✅ TV Wallboard: ora mostra TUTTI gli allarmi critici (agent offline, uplink giù, iLO…)
 **Problema utente**: allarmi come "AGENT OFFLINE" e "UPLINK GIÙ" arrivavano su Telegram ma NON comparivano
 sul televisore. **Causa (RCA sul codice)**: `TvDashboardPage.js::issues()` costruiva i problemi SOLO da

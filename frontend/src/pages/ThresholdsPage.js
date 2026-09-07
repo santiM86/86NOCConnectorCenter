@@ -9,6 +9,7 @@ export default function ThresholdsPage() {
   const [selectedClient, setSelectedClient] = useState("");
   const [thresholds, setThresholds] = useState(null);
   const [modified, setModified] = useState(false);
+  const [tempDefaults, setTempDefaults] = useState({});
   const token = localStorage.getItem("noc_token");
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -18,6 +19,8 @@ export default function ThresholdsPage() {
       setClients(cl);
       if (cl.length > 0) setSelectedClient(cl[0].id);
     }).catch(() => {});
+    axios.get(`${API}/api/thresholds-temp-defaults`, { headers })
+      .then(r => setTempDefaults(r.data?.defaults || {})).catch(() => {});
   }, []);
 
   const fetchThresholds = useCallback(() => {
@@ -31,6 +34,25 @@ export default function ThresholdsPage() {
 
   const updateField = (field, value) => {
     setThresholds(t => ({ ...t, [field]: Number(value) }));
+    setModified(true);
+  };
+
+  const updateTempType = (dtype, kind, value) => {
+    setThresholds(t => {
+      const byType = { ...(t.temp_by_type || {}) };
+      const row = { ...(byType[dtype] || {}) };
+      if (value === "" || value === null) {
+        delete row[kind];
+      } else {
+        row[kind] = Number(value);
+      }
+      if (row.warn == null && row.crit == null) {
+        delete byType[dtype];
+      } else {
+        byType[dtype] = row;
+      }
+      return { ...t, temp_by_type: byType };
+    });
     setModified(true);
   };
 
@@ -130,6 +152,46 @@ export default function ThresholdsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {thresholds && (
+        <div className="rounded-xl border border-[var(--bg-border)] bg-[var(--bg-card)] p-4" data-testid="thresh-group-Temperatura">
+          <div className="flex items-center gap-2 mb-1">
+            <svg className="w-5 h-5 text-[var(--accent)]" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.362 5.214A8.252 8.252 0 0112 21 8.25 8.25 0 016.038 7.048 8.287 8.287 0 009 9.6a8.983 8.983 0 013.361-6.867 8.21 8.21 0 003 2.48z" />
+            </svg>
+            <h3 className="text-sm font-bold text-[var(--text-primary)]">Temperatura per tipo di dispositivo (°C)</h3>
+          </div>
+          <p className="text-[10px] text-[var(--text-secondary)] mb-4">
+            Soglie warning/critica per ogni tipo. Lascia vuoto per usare il default indicato. Un eventuale
+            override sul singolo dispositivo (scheda device) ha comunque la precedenza su queste.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+            {Object.keys(tempDefaults).length === 0 && (
+              <p className="text-[10px] text-[var(--text-secondary)]">Caricamento default…</p>
+            )}
+            {Object.entries(tempDefaults).map(([dtype, def_]) => {
+              const row = (thresholds.temp_by_type || {})[dtype] || {};
+              return (
+                <div key={dtype} className="flex items-center justify-between gap-2 py-1" data-testid={`thresh-temp-row-${dtype}`}>
+                  <span className="text-xs font-medium text-[var(--text-primary)] capitalize flex-1">{dtype}</span>
+                  <div className="flex items-center gap-1">
+                    <input type="number" value={row.warn ?? ""} placeholder={def_.warn}
+                      onChange={e => updateTempType(dtype, "warn", e.target.value)}
+                      className="w-16 h-7 px-2 text-xs text-right rounded-md border border-[var(--bg-border)] bg-[var(--bg-surface)] text-[var(--text-primary)]"
+                      data-testid={`thresh-temp-${dtype}-warn`} title="Warning (°C)" />
+                    <span className="text-[10px] text-amber-400">warn</span>
+                    <input type="number" value={row.crit ?? ""} placeholder={def_.crit}
+                      onChange={e => updateTempType(dtype, "crit", e.target.value)}
+                      className="w-16 h-7 px-2 text-xs text-right rounded-md border border-[var(--bg-border)] bg-[var(--bg-surface)] text-[var(--text-primary)]"
+                      data-testid={`thresh-temp-${dtype}-crit`} title="Critica (°C)" />
+                    <span className="text-[10px] text-rose-400">crit</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

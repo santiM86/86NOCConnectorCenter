@@ -1321,6 +1321,82 @@ async def set_device_vm_alert(
     }
 
 
+@router.post("/devices/by-ip/{device_ip}/temp-thresholds")
+async def set_device_temp_thresholds(
+    device_ip: str,
+    payload: dict,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Override soglie temperatura per SINGOLO dispositivo (°C).
+
+    Body: {"warn_c": float|null, "crit_c": float|null, "client_id"?: str}
+    Entrambi null → rimuove l'override (torna a soglia profilo / default per tipo).
+    Hanno la MASSIMA priorità nella risoluzione delle soglie temperatura.
+    """
+    warn = payload.get("warn_c")
+    crit = payload.get("crit_c")
+    explicit_client_id = (payload.get("client_id") or "").strip() or None
+
+    def _num(v):
+        if v is None or v == "":
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Soglie temperatura non numeriche")
+        if f < 0 or f > 150:
+            raise HTTPException(status_code=400, detail="Soglia temperatura fuori range (0–150 °C)")
+        return f
+
+    warn = _num(warn)
+    crit = _num(crit)
+    if warn is not None and crit is not None and warn >= crit:
+        raise HTTPException(status_code=400, detail="La soglia warning deve essere minore della critica")
+
+    md_query = _ip_match(device_ip)
+    if explicit_client_id:
+        md_query = {**md_query, "client_id": explicit_client_id}
+    else:
+        cids = await db.managed_devices.distinct("client_id", _ip_match(device_ip))
+        if len(cids) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=f"IP {device_ip} appartiene a {len(cids)} client diversi. Includi client_id nel body.",
+            )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if warn is None and crit is None:
+        r = await db.managed_devices.update_many(
+            md_query, {"$unset": {"temp_warn_c": "", "temp_crit_c": ""}})
+        set_msg = "Override temperatura RIMOSSO"
+    else:
+        r = await db.managed_devices.update_many(
+            md_query, {"$set": {"temp_warn_c": warn, "temp_crit_c": crit,
+                                "temp_thresholds_set_by": current_user.get("email"),
+                                "temp_thresholds_set_at": now_iso}})
+        set_msg = f"Override temperatura: warning {warn}°C / critica {crit}°C"
+
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
+
+    try:
+        await audit_logger.log(
+            user_email=current_user.get("email"),
+            action=AuditAction.UPDATE_DEVICE if hasattr(AuditAction, "UPDATE_DEVICE") else AuditAction.OTHER,
+            resource_type="device", resource_id=device_ip,
+            metadata={"action": "set_temp_thresholds", "device_ip": device_ip,
+                      "warn_c": warn, "crit_c": crit, "client_id": explicit_client_id},
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "device_ip": device_ip, "temp_warn_c": warn, "temp_crit_c": crit,
+            "matched": r.matched_count, "message": set_msg}
+
+
+
 @router.post("/devices/bulk-apply-settings")
 async def bulk_apply_device_settings(
     payload: dict,

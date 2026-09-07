@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu, CheckCircle } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu, CheckCircle, Thermometer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,8 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [hypervVmName, setHypervVmName] = useState(device?.hyperv_vm_name || "");
   const [hypervHostHint, setHypervHostHint] = useState(device?.hyperv_host_hint || "");
   const isVM = ["hyperv", "vmware", "vm_generic"].includes(virtualization);
+  const [tempWarn, setTempWarn] = useState(device?.temp_warn_c ?? "");
+  const [tempCrit, setTempCrit] = useState(device?.temp_crit_c ?? "");
   // Toggle "allerta VM spenta" utile se è una VM Hyper-V (snapshot già presente
   // OPPURE marcata manualmente come Hyper-V dall'admin)
   const isHyperVvm = !!device?.hyperv_state || virtualization === "hyperv";
@@ -72,7 +74,9 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setHypervHostHint(
       device?.hyperv_host_hint || (effVirt === "hyperv" ? (device?.hyperv_host || "") : "")
     );
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name]);
+    setTempWarn(device?.temp_warn_c ?? "");
+    setTempCrit(device?.temp_crit_c ?? "");
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name, device?.temp_warn_c, device?.temp_crit_c]);
 
   // Cambio "tipo macchina" con AUTOFILL: scegliendo Hyper-V precompila il nome
   // VM (col nome device) e l'host (se rilevato) quando i campi sono vuoti.
@@ -247,6 +251,26 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         );
       } catch (e) {
         errors.push(`Tipo macchina: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
+    // 6) Override soglie temperatura per dispositivo — solo se cambiato
+    const normW = tempWarn === "" || tempWarn == null ? null : Number(tempWarn);
+    const normC = tempCrit === "" || tempCrit == null ? null : Number(tempCrit);
+    const wasW = device?.temp_warn_c ?? null;
+    const wasC = device?.temp_crit_c ?? null;
+    if (normW !== wasW || normC !== wasC) {
+      if (normW != null && normC != null && normW >= normC) {
+        errors.push("Temperatura: la soglia warning deve essere minore della critica");
+      } else {
+        try {
+          await axios.post(
+            `${API}/devices/by-ip/${encodeURIComponent(device?.ip_address || device?.ip)}/temp-thresholds`,
+            { warn_c: normW, crit_c: normC, client_id: clientId }
+          );
+        } catch (e) {
+          errors.push(`Soglie temperatura: ${e.response?.data?.detail || e.message}`);
+        }
       }
     }
 
@@ -600,6 +624,52 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
               </label>
             </div>
           )}
+
+          {/* Override soglie temperatura per questo dispositivo (°C) */}
+          <div className="rounded p-2.5 border bg-[var(--bg-card)] border-[var(--bg-border)]">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-primary)] mb-1.5">
+              <Thermometer size={13} weight="fill" className="text-orange-400" />
+              Soglie temperatura (override device)
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  value={tempWarn}
+                  onChange={(e) => setTempWarn(e.target.value)}
+                  placeholder="warn"
+                  className="w-16 bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-right text-white focus:border-amber-500 outline-none"
+                  data-testid="device-temp-warn-input"
+                />
+                <span className="text-[9px] text-amber-400">°C warn</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  value={tempCrit}
+                  onChange={(e) => setTempCrit(e.target.value)}
+                  placeholder="crit"
+                  className="w-16 bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1.5 text-[12px] text-right text-white focus:border-rose-500 outline-none"
+                  data-testid="device-temp-crit-input"
+                />
+                <span className="text-[9px] text-rose-400">°C crit</span>
+              </div>
+              {(tempWarn !== "" || tempCrit !== "") && (
+                <button
+                  type="button"
+                  onClick={() => { setTempWarn(""); setTempCrit(""); }}
+                  className="text-[10px] text-[var(--text-muted)] hover:text-rose-300 underline ml-auto"
+                  data-testid="device-temp-clear-btn"
+                >
+                  Rimuovi override
+                </button>
+              )}
+            </div>
+            <span className="block text-[9px] text-[var(--text-muted)] mt-1 leading-relaxed">
+              Lascia vuoto per usare la soglia del profilo o il default per tipo. Questo override ha la
+              <strong> massima priorità</strong>.
+            </span>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end items-center mt-4">

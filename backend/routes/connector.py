@@ -1875,13 +1875,32 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             })
 
     # --- Temperature (generic SNMP temp, not Redfish)
+    #     Soglie unificate: override device > cliente-per-tipo > profilo > default-tipo
     temp = dev.get("temperature")
     if temp is not None and isinstance(temp, (int, float)):
-        if temp > 75:
+        try:
+            from hardware_alerts import resolve_temp_thresholds
+            _dov = await db.managed_devices.find_one(
+                {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1}) or {}
+            device_override = {"warn": _dov.get("temp_warn_c"), "crit": _dov.get("temp_crit_c")}
+            client_by_type = th.get("temp_by_type") or {}
+            t_warn, t_crit = resolve_temp_thresholds(
+                profile_thresholds, device_type, device_override, client_by_type)
+        except Exception:
+            t_warn, t_crit = temp_warn, temp_crit
+        if t_crit is not None and temp >= t_crit:
             alerts_to_create.append({
                 "severity": "critical",
                 "title": f"Temperatura critica ({temp}°C): {device_name}",
-                "message": f"Temperatura {temp}°C rilevata via SNMP su {device_name} ({device_ip})",
+                "message": f"Temperatura {temp}°C via SNMP su {device_name} ({device_ip}) — soglia critica {t_crit:.0f}°C",
+                "source_type": "threshold_temp",
+            })
+        elif t_warn is not None and temp >= t_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Temperatura elevata ({temp}°C): {device_name}",
+                "message": f"Temperatura {temp}°C via SNMP su {device_name} ({device_ip}) — soglia warning {t_warn:.0f}°C",
                 "source_type": "threshold_temp",
             })
 
