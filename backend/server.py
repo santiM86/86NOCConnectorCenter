@@ -981,6 +981,15 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Datto RMM scheduler: {e}")
 
+    # Indici WebAuthn (passkey): TTL challenge + unicità credenziali
+    try:
+        await db.webauthn_challenges.create_index("expires_at", expireAfterSeconds=0)
+        await db.webauthn_credentials.create_index([("credential_id", 1), ("rp_id", 1)], unique=True)
+        await db.webauthn_credentials.create_index("user_id")
+        logger.info("WebAuthn indexes ensured")
+    except Exception as e:
+        logger.error(f"WebAuthn index creation failed: {e}")
+
     # === Igiene allarmi + Riepilogo giornaliero Telegram (v2026-06) ===
     # - Igiene: auto-risolve i medium/low vecchi (backlog) ogni ora + all'avvio,
     #   così TV e console mostrano solo problemi reali attuali.

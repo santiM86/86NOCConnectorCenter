@@ -1,6 +1,30 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✨ Temperatura: soglie per TIPO di dispositivo
+`hardware_alerts.py`: nuova `_temp_thresholds(thresholds, device_type)` con default sensati per tipo
+(switch/router 68/82, firewall 70/85, server/ilo/hypervisor 70/88, ap 60/75, printer 55/70, nas/storage
+55/68, ups 45/55; fallback 65/80). Le soglie esplicite del device continuano a prevalere. Corregge il caso
+"70°C = CRITICAL su switch HPE" (ora 70°C = elevata, 85°C = critica). Messaggio più chiaro (mostra soglia
+e tipo). Verificato: switch 70→high/85→critical, nas 66→high, override device rispettato.
+
+## 2026-06 🚧 Passkey WebAuthn/FIDO2 — BACKEND pronto, FRONTEND + test DA FARE
+Scelte utente: login PASSWORDLESS con passkey (chiavi FIDO2), TOTP come fallback, tutti gli utenti.
+Fatto: `routes/webauthn_routes.py` (register begin/complete, authenticate begin/complete passwordless con
+discoverable credentials, list/delete credenziali), registrato in server.py; indici TTL challenge +
+unique credential creati; rpId allowlist per dominio (argus.86bit.it, preview, localhost). Libreria
+`webauthn==2.2.0`. Sessione passwordless emette JWT+refresh come il login classico.
+⚠️ MANCANO: (1) UI frontend (pulsante "Accedi con passkey" nel login + gestione/registrazione passkey
+nelle impostazioni); (2) test e2e con autenticatore (serve virtual authenticator via Playwright CDP).
+NON ancora usabile finché non c'è il frontend.
+
+## 2026-06 ⏳ APERTO: Dashboard "0 clienti" — resilienza `/api/overview/clients` (scelta utente = a)
+Diagnosi confermata: la Panoramica dipende solo da `/api/overview/clients`; se fallisce in produzione il
+frontend ripiega su vuoto ("0 clienti"). Fix APPROVATO ma NON ancora applicato: aggregazione conteggi +
+try/except per-cliente così l'endpoint restituisce SEMPRE la lista clienti. `requirements.txt` da
+aggiornare con `pip freeze` (webauthn/cryptography aggiornati).
+
+
 ## 2026-06 ✨ Allarme "Porta switch giù verso dispositivo vitale / uplink" (modello 1+1)
 Nuovo modulo `port_link_alerts.py`, agganciato in `routes/connector.py::store_switch_ports` (subito dopo
 loop_detection). Sulla transizione ifOperStatus **up→down** (con admin ancora up) genera 1 allarme SOLO
