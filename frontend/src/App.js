@@ -38,6 +38,7 @@ import AgentsPage from "@/pages/AgentsPage";
 import ServerMetricsPage from "@/pages/ServerMetricsPage";
 import ClientStatusPage from "@/pages/ClientStatusPage";
 import UsersPage from "@/pages/UsersPage";
+import PasskeysPage from "@/pages/PasskeysPage";
 import VaultPage from "@/pages/VaultPage";
 import ReportsPage from "@/pages/ReportsPage";
 import InventoryPage from "@/pages/InventoryPage";
@@ -254,6 +255,7 @@ function App() {
               <Route path="server-metrics" element={<ServerMetricsPage />} />
               <Route path="network-status" element={<ClientStatusPage />} />
               <Route path="users" element={<UsersPage />} />
+              <Route path="passkeys" element={<PasskeysPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="settings/ip-allowlist" element={<IPAllowlistPage />} />
               <Route path="settings/wireguard" element={<WireGuardPage />} />

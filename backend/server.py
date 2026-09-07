@@ -279,6 +279,7 @@ async def health_detailed():
 # ==================== INCLUDE ALL ROUTE MODULES ====================
 
 from routes.auth import router as auth_router
+from routes.webauthn_routes import router as webauthn_router
 from routes.admin import router as admin_router
 from routes.clients import router as clients_router
 from routes.devices import router as devices_router
@@ -350,6 +351,7 @@ from routes.freshness_audit import router as freshness_audit_router  # Audit pip
 from routes.snmp_diagnostics import router as snmp_diagnostics_router  # Diagnosi SNMP per device
 
 app.include_router(auth_router)
+app.include_router(webauthn_router)
 app.include_router(admin_router)
 app.include_router(clients_router)
 app.include_router(devices_router)
@@ -1057,6 +1059,15 @@ async def startup_event():
         logger.info("Datto RMM auto-sync scheduler started (tick: 6h)")
     except Exception as e:
         logger.error(f"Failed to start Datto RMM scheduler: {e}")
+
+    # Indici WebAuthn (passkey): TTL challenge + unicità credenziali
+    try:
+        await db.webauthn_challenges.create_index("expires_at", expireAfterSeconds=0)
+        await db.webauthn_credentials.create_index([("credential_id", 1), ("rp_id", 1)], unique=True)
+        await db.webauthn_credentials.create_index("user_id")
+        logger.info("WebAuthn indexes ensured")
+    except Exception as e:
+        logger.error(f"WebAuthn index creation failed: {e}")
 
     # === Igiene allarmi + Riepilogo giornaliero Telegram (v2026-06) ===
     # - Igiene: auto-risolve i medium/low vecchi (backlog) ogni ora + all'avvio,

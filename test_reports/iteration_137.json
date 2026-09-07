@@ -1,0 +1,33 @@
+{
+  "summary": "E2E testing of passwordless Passkey (WebAuthn/FIDO2) flow using a Chrome DevTools Protocol virtual authenticator (ctap2, internal, resident+UV, automatic UV & presence). Full flow now passes: (1) password+TOTP login as admin, (2) /passkeys page loads with data-testid='passkeys-page', (3) registration via label input + 'Registra passkey' button creates a resident credential — passkey-row-<credId> appears, GET /api/auth/webauthn/credentials returns 1 credential, admin zone shows info@86bit.it with '1 passkey', (4) full logout (clear tokens) and navigate to /login shows 'Accedi con passkey' (data-testid='login-passkey-btn'), (5) clicking it performs passwordless assertion, redirects to '/' (dashboard) WITHOUT password or TOTP; /api/auth/me returns the admin profile. Admin zone lists 8 users with correct data-testid patterns admin-passkey-user-<uid> and admin-passkey-reset-<uid>.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Bugs fixed by the testing agent to unblock the E2E flow (both were single-line, hard blockers): (a) Backend /app/backend/routes/webauthn_routes.py L122 used wrong COSE enum names (ES256/RS256) which raised AttributeError on py_webauthn's COSEAlgorithmIdentifier -> register/begin returned 500. Replaced with ECDSA_SHA_256 and RSASSA_PKCS1_v1_5_SHA_256. (b) Frontend /app/frontend/src/components/Layout.js L122 nav item { path: '/passkeys' } was missing the 'roles' array, causing NavGroup filter (i.roles.includes(role)) to throw and render the runtime error overlay after login -> app unusable. Added roles: ['admin','operator','viewer']. Main agent should review these final values (e.g. algorithm list and role visibility for the Passkey menu) and confirm they match the intended policy.",
+    "Main agent: verify these two fixes remain in place; the passkey flow now works end-to-end in the preview environment via CDP virtual authenticator."
+  ],
+  "critical_code_review_comments": [
+    "webauthn_routes.py: COSEAlgorithmIdentifier attribute names are library-defined (ECDSA_SHA_256, RSASSA_PKCS1_v1_5_SHA_256, EDDSA, etc.). Consider adding a unit test that instantiates supported_pub_key_algs at import/startup so a wrong name is caught by CI instead of only at first /register/begin call.",
+    "Layout.js NavGroup: guard against nav items missing 'roles' -> use `(i.roles || []).includes(role)` or a default, to avoid a single misconfigured route bringing the entire authenticated shell down.",
+    "webauthn.js: registerPasskey() swallows non-Axios errors; consider consistent error surfacing so the toast shows the backend's detail when register/complete fails."
+  ],
+  "updated_files": [
+    "/app/backend/routes/webauthn_routes.py",
+    "/app/frontend/src/components/Layout.js"
+  ],
+  "success_rate": {"backend": "100% (passkey endpoints exercised: /register/begin, /register/complete, /credentials, /admin/users, /authenticate/begin, /authenticate/complete)", "frontend": "100% (registration + passwordless login + admin zone)"},
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "seed_data_creation": "Created 1 resident passkey credential on the admin user during the test (label 'TEST_VirtualAuth'). It is bound to the ephemeral CDP virtual authenticator (unusable outside that Chrome session). It is safe to leave, or the main agent can remove it via the 'Reset passkey' admin control on /passkeys for info@86bit.it.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "WebAuthn testing MUST use Playwright + Chrome DevTools Protocol virtual authenticator (protocol=ctap2, transport=internal, hasResidentKey=true, hasUserVerification=true, isUserVerified=true, automaticPresenceSimulation=true). Keep the same browser context (and thus the same virtual authenticator) between registration and passwordless login — do NOT close the context; simulate logout by clearing localStorage/sessionStorage and navigating to /login. Backend rpId is derived from x-forwarded-host and correctly resolves to noc-alert-hub-2.preview.emergentagent.com (verified in the passkey-row rp_id column). TOTP: pyotp.TOTP('NMHDJNO53WLTOSREUXWERE6FDH5TAKC3').now(). Login 2FA page has a single input; press Enter to submit.",
+  "rca of the issue": "Two independent bugs were blocking the flow. (1) Backend register/begin -> 500 AttributeError: 'ES256' — py_webauthn's COSEAlgorithmIdentifier does not expose short aliases (ES256/RS256); real member names are ECDSA_SHA_256 and RSASSA_PKCS1_v1_5_SHA_256. The wrong names raised on every /register/begin call, before any WebAuthn options could be produced. Repro: POST /api/auth/webauthn/register/begin -> 500. Fix: use correct enum members. (2) Post-login runtime crash on any authenticated route — Layout.js NavGroup filters group.items by `i.roles.includes(role)`; the newly added '/passkeys' nav entry had no `roles` key, so `undefined.includes(...)` threw and CRA/React-DOM overlay rendered on top of the whole authenticated UI, blocking navigation to /passkeys. Repro: log in and open any authenticated route -> red 'Uncaught runtime errors' overlay from NavGroup. Fix: give the item a `roles` array (or make NavGroup defensive). After both fixes, registration, credentials list, admin zone listing, logout, and passwordless login (no password / no TOTP) all pass with a single CDP virtual authenticator kept alive across the flow."
+}

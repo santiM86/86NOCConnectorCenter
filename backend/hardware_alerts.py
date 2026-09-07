@@ -133,6 +133,37 @@ def _threshold(thresholds: dict, *keys: str) -> Optional[float]:
     return None
 
 
+# Soglie temperatura di DEFAULT per tipo di dispositivo (warn_c, crit_c).
+# Gli switch/router girano caldi (ASIC): 70°C è NORMALE, non critico. I NAS/stampanti
+# molto meno. Questi default si applicano SOLO se il device non ha soglie esplicite.
+_DEFAULT_TEMP_THRESHOLDS = {
+    "switch":   (68.0, 82.0),
+    "router":   (68.0, 82.0),
+    "firewall": (70.0, 85.0),
+    "ap":       (60.0, 75.0),
+    "server":   (70.0, 88.0),
+    "ilo":      (70.0, 88.0),
+    "hypervisor": (70.0, 88.0),
+    "printer":  (55.0, 70.0),
+    "nas":      (55.0, 68.0),
+    "storage":  (55.0, 68.0),
+    "ups":      (45.0, 55.0),
+}
+_DEFAULT_TEMP_FALLBACK = (65.0, 80.0)
+
+
+def _temp_thresholds(thresholds: dict, device_type: Optional[str]) -> tuple:
+    """(warn_c, crit_c) per la temperatura: usa le soglie esplicite del device se
+    presenti, altrimenti i default per tipo di dispositivo. Mai None → gestione
+    coerente per TUTTI i dispositivi."""
+    dt = (device_type or "").lower()
+    base = _DEFAULT_TEMP_THRESHOLDS.get(dt, _DEFAULT_TEMP_FALLBACK)
+    warn = _threshold(thresholds, "temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c")
+    crit = _threshold(thresholds, "temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c")
+    return (warn if warn is not None else base[0],
+            crit if crit is not None else base[1])
+
+
 async def _bump_streak(db, dedup_key: str) -> int:
     """Incrementa e ritorna il contatore di breach consecutivi per la metrica."""
     doc = await db.hardware_alert_state.find_one_and_update(
@@ -351,22 +382,23 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     elif val is not None:
         await _resolve_alert(db, cfg, dk, f"Memoria rientrata al {val:.0f}% su {device_name} ({device_ip}).")
 
-    # ---- Temperatura (C) ----
+    # ---- Temperatura (C) ----  soglie per tipo di dispositivo (con override device)
+    _tw, _tc = _temp_thresholds(thresholds, device_type)
     sev, val = _eval_percent(
-        vendor_metrics, "temp",
-        _threshold(thresholds, "temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c"),
-        _threshold(thresholds, "temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c"),
-        ok=_temp_ok,
+        vendor_metrics, "temp", _tw, _tc, ok=_temp_ok,
     )
     dk = f"{client_id}:{device_ip}:temp"
     if sev:
         lbl = "critica" if sev == "critical" else "elevata"
+        _soglia = _tc if sev == "critical" else _tw
         await _emit_or_update(
             db, cfg, client_id=client_id, client_name=client_name,
             device_name=device_name, device_ip=device_ip, device_type=device_type,
             dedup_key=dk, severity=sev,
             title=f"Temperatura {lbl} su {device_name}",
-            message=f"Temperatura a {val:.0f}\u00b0C (soglia {sev.upper()} superata) su {device_name} ({device_ip}).",
+            message=(f"Temperatura a {val:.0f}\u00b0C su {device_name} ({device_ip}) — "
+                     f"superata soglia {sev.upper()} di {_soglia:.0f}\u00b0C "
+                     f"(tipo dispositivo: {device_type or 'generico'})."),
         )
     elif val is not None:
         await _resolve_alert(db, cfg, dk, f"Temperatura rientrata a {val:.0f}\u00b0C su {device_name} ({device_ip}).")

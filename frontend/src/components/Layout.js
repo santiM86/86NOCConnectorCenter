@@ -50,6 +50,7 @@ import {
   Cpu,
   Desktop,
   Cube,
+  Fingerprint,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -119,6 +120,7 @@ const navConfig = [
     label: "Amministrazione",
     items: [
       { path: "/users", icon: Users, label: "Gestione Utenti", roles: ["admin"] },
+      { path: "/passkeys", icon: Fingerprint, label: "Passkey", roles: ["admin", "operator", "viewer"] },
       { path: "/oncall", icon: Clock, label: "Reperibilità", roles: ["admin", "operator"] },
       { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
       { path: "/device-profiles", icon: Cpu, label: "Device Profiles", roles: ["admin", "operator"] },
@@ -192,7 +194,7 @@ function NavItem({ item, alertCount, onNavigate }) {
 // ==================== NAV GROUP ====================
 function NavGroup({ group, role, isOpen, onToggle, alertCount, onNavigate }) {
   const location = useLocation();
-  const filteredItems = group.items.filter((i) => i.roles.includes(role));
+  const filteredItems = group.items.filter((i) => (i.roles || []).includes(role));
   if (filteredItems.length === 0) return null;
 
   const hasActiveItem = filteredItems.some(
