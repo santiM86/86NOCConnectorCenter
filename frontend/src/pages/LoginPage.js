@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Eye, EyeSlash, Info, DeviceMobile } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Info, DeviceMobile, Fingerprint } from "@phosphor-icons/react";
 import { useAppVersion } from "@/components/AppVersion";
+import axios from "axios";
+import { passkeySupported, loginWithPasskey } from "@/lib/webauthn";
 
 const IS_MOBILE = typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
@@ -40,6 +42,21 @@ export default function LoginPage() {
       navigate(from, { replace: true });
     } catch (error) {
       toast.error(error.response?.data?.detail || "Errore di autenticazione");
+    } finally { setLoading(false); }
+  };
+
+  const handlePasskey = async () => {
+    setLoading(true);
+    try {
+      const data = await loginWithPasskey();
+      localStorage.setItem("noc_token", data.token);
+      if (data.refresh_token) localStorage.setItem("noc_refresh_token", data.refresh_token);
+      axios.defaults.headers.common["Authorization"] = `Bearer ${data.token}`;
+      toast.success("Accesso con passkey riuscito");
+      window.location.href = from;
+    } catch (error) {
+      if (error?.name === "NotAllowedError") toast.error("Accesso passkey annullato");
+      else toast.error(error.response?.data?.detail || "Nessuna passkey valida per questo dominio");
     } finally { setLoading(false); }
   };
 
@@ -115,6 +132,13 @@ export default function LoginPage() {
                 {loading ? "..." : "Accedi"}
               </Button>
             </form>
+            {passkeySupported() && (
+              <button type="button" onClick={handlePasskey} disabled={loading}
+                data-testid="login-passkey-btn"
+                className="mt-3 w-full h-10 rounded-lg border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 font-semibold text-sm flex items-center justify-center gap-2 transition-colors">
+                <Fingerprint size={18} weight="bold" /> Accedi con passkey
+              </button>
+            )}
           </div>
 
           {/* Spacer bottom */}

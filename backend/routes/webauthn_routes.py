@@ -53,11 +53,29 @@ def _unb64(value: str) -> bytes:
 
 
 def _ceremony_config(request: Request):
+    # L'ingress preview RISCRIVE l'header Origin sull'host interno del cluster
+    # (es. ...cluster-12.preview.emergentcf.cloud) mentre l'host pubblico reale
+    # arriva in x-forwarded-host. WebAuthn richiede che rpId/origin combacino con
+    # il dominio EFFETTIVO della pagina nel browser, quindi ricostruiamo l'origine
+    # pubblica da più header e la validiamo contro l'allowlist RP_CONFIG.
+    candidates = []
+    xfh = request.headers.get("x-forwarded-host")
+    if xfh:
+        host = xfh.split(",")[0].strip()
+        proto = (request.headers.get("x-forwarded-proto") or "https").split(",")[0].strip()
+        candidates.append(f"{proto}://{host}")
     origin = request.headers.get("origin")
-    cfg = RP_CONFIG.get(origin)
-    if not cfg:
-        raise HTTPException(400, "Origine WebAuthn non approvata")
-    return origin, cfg
+    if origin:
+        candidates.append(origin)
+    host = request.headers.get("host")
+    if host:
+        candidates.append(f"https://{host}")
+        candidates.append(f"http://{host}")
+    for cand in candidates:
+        cfg = RP_CONFIG.get(cand)
+        if cfg:
+            return cand, cfg
+    raise HTTPException(400, "Origine WebAuthn non approvata")
 
 
 async def _save_challenge(kind, challenge, origin, cfg, user_id=None):
@@ -101,7 +119,7 @@ async def register_begin(request: Request, current_user: dict = Depends(get_curr
             user_verification=UserVerificationRequirement.REQUIRED,
         ),
         exclude_credentials=existing,
-        supported_pub_key_algs=[COSEAlgorithmIdentifier.ES256, COSEAlgorithmIdentifier.RS256],
+        supported_pub_key_algs=[COSEAlgorithmIdentifier.ECDSA_SHA_256, COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256],
     )
     token = await _save_challenge("register", challenge, origin, cfg, user_id)
     return {"ceremony_token": token, "publicKey": json.loads(options_to_json(options))}
@@ -148,6 +166,30 @@ async def delete_credential(credential_id: str, current_user: dict = Depends(get
     if remaining == 0:
         await db.users.update_one({"id": current_user["id"]}, {"$set": {"passkey_enabled": False}})
     return {"ok": True, "remaining": remaining}
+
+
+@router.get("/admin/users")
+async def admin_list_passkey_users(current_user: dict = Depends(get_current_user)):
+    """Zona Admin: elenco utenti con conteggio passkey registrate."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(403, "Solo amministratori")
+    users = await db.users.find({}, {"_id": 0, "id": 1, "email": 1, "name": 1, "role": 1}).to_list(1000)
+    out = []
+    for u in users:
+        n = await db.webauthn_credentials.count_documents({"user_id": u["id"]})
+        out.append({**u, "passkey_count": n})
+    return {"users": out}
+
+
+@router.post("/admin/reset/{user_id}")
+async def admin_reset_passkeys(user_id: str, current_user: dict = Depends(get_current_user)):
+    """Zona Admin: azzera TUTTE le passkey di un utente (es. chiave persa/rubata).
+    L'utente torna a poter accedere con password + TOTP di fallback."""
+    if current_user.get("role") != "admin":
+        raise HTTPException(403, "Solo amministratori")
+    r = await db.webauthn_credentials.delete_many({"user_id": user_id})
+    await db.users.update_one({"id": user_id}, {"$set": {"passkey_enabled": False}})
+    return {"ok": True, "deleted": r.deleted_count}
 
 
 @router.post("/authenticate/begin")

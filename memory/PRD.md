@@ -8,7 +8,30 @@
 "70°C = CRITICAL su switch HPE" (ora 70°C = elevata, 85°C = critica). Messaggio più chiaro (mostra soglia
 e tipo). Verificato: switch 70→high/85→critical, nas 66→high, override device rispettato.
 
-## 2026-06 🚧 Passkey WebAuthn/FIDO2 — BACKEND pronto, FRONTEND + test DA FARE
+## 2026-06 ✅ Passkey WebAuthn/FIDO2 — COMPLETO e testato E2E (login passwordless)
+Scelte utente: login PASSWORDLESS con passkey (chiavi FIDO2), TOTP come fallback, tutti gli utenti.
+Backend `routes/webauthn_routes.py` (register/authenticate begin+complete, list/delete, admin list/reset),
+indici TTL challenge + unique credential, libreria `webauthn==2.2.0`. Frontend: pulsante "Accedi con
+passkey" in `LoginPage.js` (`login-passkey-btn`), pagina `/passkeys` (`PasskeysPage.js`) con registrazione
++ Zona Admin reset, voce di menu in `Layout.js` (icona Fingerprint, tutti i ruoli), helper `lib/webauthn.js`.
+**Fix chiave (questa sessione)**:
+- `_ceremony_config`: l'ingress preview RISCRIVE l'header `Origin` sull'host interno del cluster
+  (`...cluster-12.preview.emergentcf.cloud`); l'host pubblico reale è in `x-forwarded-host`. Ora l'origine
+  approvata viene ricostruita da x-forwarded-host → origin → host e validata contro `RP_CONFIG` (allowlist).
+  Così rpId = dominio effettivo della pagina (preview e prod). Senza questo fix la registrazione/login
+  fallivano cripto-graficamente (mismatch origin/rpId in clientDataJSON).
+- `webauthn_routes.py` L122: nomi enum COSE corretti → `COSEAlgorithmIdentifier.ECDSA_SHA_256` +
+  `RSASSA_PKCS1_v1_5_SHA_256` (ES256/RS256 non esistono in py_webauthn → 500 su register/begin).
+- `Layout.js`: la voce `/passkeys` ora ha `roles`; filtro NavGroup reso difensivo `(i.roles||[])`.
+**Testing**: testing_agent iteration_137 → PASS 100% con autenticatore virtuale CDP (ctap2/internal,
+resident+UV). Flusso completo verificato: login password+TOTP → /passkeys → registra passkey (row + admin
+zone "1 passkey") → logout → "Accedi con passkey" → dashboard SENZA password né TOTP. Credenziale di test
+(`TEST_VirtualAuth`, effimera) rimossa dal DB dopo il test.
+⚠️ **Dominio-bound**: una passkey registrata in preview NON funziona in produzione e viceversa. Dopo il
+deploy su argus.86bit.it, ogni utente deve registrare una NUOVA passkey da /passkeys.
+⚠️ **PROD** attivo dopo Save to GitHub + redeploy.
+
+## 2026-06 🚧 Passkey WebAuthn/FIDO2 — BACKEND pronto, FRONTEND + test DA FARE (superato → vedi entry ✅ sopra)
 Scelte utente: login PASSWORDLESS con passkey (chiavi FIDO2), TOTP come fallback, tutti gli utenti.
 Fatto: `routes/webauthn_routes.py` (register begin/complete, authenticate begin/complete passwordless con
 discoverable credentials, list/delete credenziali), registrato in server.py; indici TTL challenge +
