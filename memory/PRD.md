@@ -9534,3 +9534,7 @@ Health null è normale HPE (usa i sottosistemi).
 
 ## 2026-09-08 — TV: rosso SOLO per vitali offline
 - TvDashboardPage.issues(): crit = vital_down>0; WAN offline / backup falliti / alert critical → warn (giallo). Header stats WAN/BACKUP FALLITI/ALTRI ALLARMI in tono warn; "ATTENZIONE" solo con vitali down.
+
+## 2026-09-08 — TV: solo verde/rosso + popup su tutto
+- Roster e card: classe ok (verde) o crit (rosso, solo vital_down>0). Legenda "OK / Vitale down". Header stats non-vitali in tono warn.
+- Popup: ora anche alert HIGH (kind warn, badge "ALLARME"), backup mancanti e backup warning; nuovo stile .tv-popup-warn.

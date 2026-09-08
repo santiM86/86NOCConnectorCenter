@@ -48,9 +48,11 @@ function useAlarmSystem() {
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => vitalKeys.add(`${c.id}:${v.ip}`));
       if (c.backup && (c.backup.failed || 0) > 0) bkKeys.add(`${c.id}:bk`);
+      if (c.backup && (c.backup.missing || 0) > 0) bkKeys.add(`${c.id}:bkmiss`);
+      if (c.backup && (c.backup.warning || 0) > 0) bkKeys.add(`${c.id}:bkwarn`);
       (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => wanKeys.add(`${c.id}:${w.public_ip}`));
       if (c.connector_online === false) sondaKeys.add(c.id);
-      (c.alerts || []).filter(a => a.severity === "critical").forEach(a => alertKeys.add(a.id));
+      (c.alerts || []).forEach(a => alertKeys.add(a.id));
     });
     const ispKeys = new Set((data.isp_outages || []).map(o => o.id));
     const secKeys = new Set((data.security_incidents || []).map(s => s.id));
@@ -68,11 +70,17 @@ function useAlarmSystem() {
       if (c.backup && (c.backup.failed || 0) > 0 && !has(p.bkKeys, `${c.id}:bk`)) {
         pushPopup("crit", c.name, `BACKUP FALLITO — ${c.backup.failed} VM`); any = true;
       }
+      if (c.backup && (c.backup.missing || 0) > 0 && !has(p.bkKeys, `${c.id}:bkmiss`)) {
+        pushPopup("warn", c.name, `BACKUP MANCANTE — ${c.backup.missing} job`); any = true;
+      }
+      if (c.backup && (c.backup.warning || 0) > 0 && !has(p.bkKeys, `${c.id}:bkwarn`)) {
+        pushPopup("warn", c.name, `BACKUP WARNING — ${c.backup.warning} job`); any = true;
+      }
       if (c.connector_online === false && !has(p.sondaKeys, c.id)) {
         pushPopup("off", c.name, `SONDA OFFLINE — cliente non monitorato`); any = true;
       }
-      (c.alerts || []).filter(a => a.severity === "critical").forEach(a => {
-        if (!has(p.alertKeys, a.id)) { pushPopup("crit", c.name, `${a.title || "Allarme"}${a.device_name ? " — " + a.device_name : ""}`); any = true; }
+      (c.alerts || []).forEach(a => {
+        if (!has(p.alertKeys, a.id)) { pushPopup(a.severity === "critical" ? "crit" : "warn", c.name, `${a.title || "Allarme"}${a.device_name ? " — " + a.device_name : ""}`); any = true; }
       });
     });
     (data.isp_outages || []).forEach(o => {
@@ -150,10 +158,10 @@ export default function TvDashboardPage() {
 
   const allClients = useMemo(() => {
     if (!data?.clients) return [];
-    const rank = { crit: 0, warn: 1, ok: 2 };
+    const rank = { crit: 0, ok: 1 };
     return data.clients.map(c => {
       const i = issues(c);
-      const lvl = i.crit ? "crit" : i.warn ? "warn" : "ok";
+      const lvl = i.crit ? "crit" : "ok";  // SOLO verde/rosso: rosso = vitale down
       return { ...c, _i: i, _lvl: lvl };
     }).sort((a, b) => (rank[a._lvl] - rank[b._lvl]) || a.name.localeCompare(b.name));
   }, [data]);
@@ -182,6 +190,8 @@ export default function TvDashboardPage() {
               <button className="tv-popup-x" onClick={(e) => { e.stopPropagation(); dismiss(pp.id); }} data-testid="tv-popup-dismiss" aria-label="Chiudi">×</button>
               <div className="tv-popup-badge">{
                 pp.title.startsWith("WAN") ? "SEDE / WAN OFFLINE"
+                : pp.title.startsWith("BACKUP MANCANTE") ? "BACKUP MANCANTE"
+                : pp.title.startsWith("BACKUP WARNING") ? "BACKUP WARNING"
                 : pp.title.startsWith("BACKUP") ? "BACKUP FALLITO"
                 : pp.title.startsWith("SONDA") ? "SONDA OFFLINE"
                 : pp.title.startsWith("GUASTO OPERATORE") ? "GUASTO OPERATORE (ISP)"
@@ -189,6 +199,7 @@ export default function TvDashboardPage() {
                 : pp.title.startsWith("VITALE DOWN") ? "DISPOSITIVO VITALE OFFLINE"
                 : pp.kind === "crit" ? "ALLARME CRITICO"
                 : pp.kind === "new" ? "NUOVO DISPOSITIVO"
+                : pp.kind === "warn" ? "ALLARME"
                 : "DISPOSITIVO VITALE OFFLINE"
               }</div>
               <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
@@ -279,7 +290,7 @@ export default function TvDashboardPage() {
         <div className="tvx-roster-h">
           <span>TUTTE LE AZIENDE ({allClients.length})</span>
           <span className="tvx-legend">
-            <i className="ok" /> OK <i className="warn" /> Warning <i className="crit" /> Down
+            <i className="ok" /> OK <i className="crit" /> Vitale down
           </span>
         </div>
         <ul className="tvx-roster-list">
@@ -287,10 +298,8 @@ export default function TvDashboardPage() {
             <li key={c.id} className={`tvx-roster-item ${c._lvl}`} data-testid="tv-roster-item" title={c.name}>
               <span className="dot" />
               <span className="nm">{c.name}</span>
-              {c._lvl !== "ok" && (
-                <span className="tag">
-                  {c._i.vital.length ? `${c._i.vital.length} vitali` : c._i.wanOffline.length ? "WAN" : c._i.bkFail ? `${c._i.bkFail} backup` : c._i.bkMiss ? "backup" : "warn"}
-                </span>
+              {c._lvl === "crit" && (
+                <span className="tag">{`${c._i.vital.length} vitali`}</span>
               )}
             </li>
           ))}
@@ -308,7 +317,7 @@ export default function TvDashboardPage() {
           {clients.map(c => {
             const i = c._i;
             return (
-              <div key={c.id} className={`tvx-card ${i.crit ? "crit" : "warn"}`} data-testid="tv-client-card">
+              <div key={c.id} className={`tvx-card ${i.crit ? "crit" : "ok"}`} data-testid="tv-client-card">
                 <div className="tvx-card-head">
                   <span className="tvx-card-name" data-testid="tv-client-name">{c.name}</span>
                   {!c.connector_online && <span className="tvx-badge nosonda">NO SONDA</span>}
