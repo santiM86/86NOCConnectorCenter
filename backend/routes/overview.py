@@ -1,5 +1,8 @@
 """Aggregated client overview for NOC Dashboard."""
-from fastapi import APIRouter, Depends
+import asyncio
+import logging
+import time
+from fastapi import APIRouter, Depends, HTTPException
 from database import db
 from deps import get_current_user
 from datetime import datetime, timezone, timedelta
@@ -11,11 +14,40 @@ from liveness_resolver import (
 )
 
 router = APIRouter(prefix="/api", tags=["overview"])
+logger = logging.getLogger(__name__)
+
+# Cache server-side (20s) + dedup richieste concorrenti + stale-while-error:
+# la Panoramica con molti clienti/device non deve mai rispondere vuota o in timeout.
+_OVERVIEW_TTL_S = 20
+_overview_cache: dict = {"at": 0.0, "data": None}
+_overview_lock = asyncio.Lock()
 
 
 @router.get("/overview/clients")
 async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     """Returns aggregated status for all clients: WAN, devices, alerts, backup, printers."""
+    now = time.monotonic()
+    if _overview_cache["data"] is not None and now - _overview_cache["at"] < _OVERVIEW_TTL_S:
+        return _overview_cache["data"]
+    async with _overview_lock:
+        now = time.monotonic()
+        if _overview_cache["data"] is not None and now - _overview_cache["at"] < _OVERVIEW_TTL_S:
+            return _overview_cache["data"]
+        t0 = time.monotonic()
+        try:
+            data = await _compute_clients_overview()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("overview/clients failed: %s", e)
+            if _overview_cache["data"] is not None:
+                return _overview_cache["data"]
+            raise HTTPException(status_code=500, detail=f"overview error: {e}")
+        _overview_cache["data"] = data
+        _overview_cache["at"] = time.monotonic()
+        logger.info("overview/clients computed in %.2fs (%d clients)", time.monotonic() - t0, len(data.get("clients", [])))
+        return data
+
+
+async def _compute_clients_overview() -> dict:
     clients_raw = await db.clients.find({}, {"_id": 0}).to_list(500)
     clients = clients_raw if isinstance(clients_raw, list) else []
 

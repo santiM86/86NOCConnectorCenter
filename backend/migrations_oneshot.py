@@ -19,10 +19,10 @@ async def _mark_done(db, name: str, info: dict) -> None:
     )
 
 
-async def fix_comware_fan_psu_false_positives(db) -> None:
+async def fix_comware_fan_psu_false_positives(db, name: str = "2026-09-08_comware_fan_psu_false_positives") -> None:
     """Chiude gli alert Guasto ventola/alimentatore sugli switch HPE Comware generati
-    dagli OID sbagliati (.16 VoltageHighThreshold / .18 MacAddress)."""
-    name = "2026-09-08_comware_fan_psu_false_positives"
+    dagli OID sbagliati (.16 VoltageHighThreshold / .18 MacAddress) o da slot PSU
+    vuoti (deactive(2) mai visti attivi)."""
     if await _already_done(db, name):
         return
     ips = [d["ip"] async for d in db.managed_devices.find(
@@ -60,8 +60,12 @@ async def fix_nil_device_names(db) -> None:
     logger.info("migration %s: %s/%s/%s", name, r1.modified_count, r2.modified_count, r3.modified_count)
 
 
+async def fix_comware_psu_deactive_absent(db) -> None:
+    await fix_comware_fan_psu_false_positives(db, name="2026-09-08b_comware_psu_deactive_absent")
+
+
 async def run_all(db) -> None:
-    for fn in (fix_comware_fan_psu_false_positives, fix_nil_device_names):
+    for fn in (fix_comware_fan_psu_false_positives, fix_comware_psu_deactive_absent, fix_nil_device_names):
         try:
             await fn(db)
         except Exception as e:  # noqa: BLE001

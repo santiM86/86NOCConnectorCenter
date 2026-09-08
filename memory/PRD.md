@@ -9538,3 +9538,11 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-09-08 — TV: solo verde/rosso + popup su tutto
 - Roster e card: classe ok (verde) o crit (rosso, solo vital_down>0). Legenda "OK / Vitale down". Header stats non-vitali in tono warn.
 - Popup: ora anche alert HIGH (kind warn, badge "ALLARME"), backup mancanti e backup warning; nuovo stile .tv-popup-warn.
+
+## 2026-09-08 — PSU Comware deactive(2) = non presente salvo transizione
+- hardware_alerts: FAN_PSU_INACTIVE_STATES hpe_comware {2}; memoria "visto attivo" in hardware_alert_state (dedup_key {cid}:{ip}:{psu|fan}_active_idx, campo idx[]). deactive → GUASTO solo se quell indice era stato attivo; altrimenti state=absent ("Non presente" in scheda). Stessa logica in connector._check_device_thresholds e device_info_card (load_active_seen). Migrazione 2026-09-08b chiude gli alert PSU/fan Comware già emessi.
+- Panoramica prod "0 clienti": /api/overview/clients OK in preview (200); in produzione la chiamata fallisce/timeout → chiesto al cliente console/network.
+
+## 2026-09-08 — Panoramica: cache overview + messaggio errore
+- overview.py: get_clients_overview → cache in-memory 20s + lock (dedup concorrenti) + stale-while-error (se il calcolo fallisce ritorna ultimo dato buono e logga traceback "overview/clients failed"); log "computed in Xs".
+- DashboardPage: timeout axios 60s; se overview fallisce mostra "Panoramica non disponibile (HTTP xxx/timeout/rete)" invece di "Nessun cliente configurato".

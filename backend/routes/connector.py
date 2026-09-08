@@ -2254,12 +2254,35 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 except (ValueError, TypeError):
                     pass
 
-        # --- Fan + power supply state: codici di guasto per vendor
-        #   HPE Comware (HH3C-LswDEVM): active(1) deactive(2)=guasto not-install(3) unsupport(4)
+        # --- Fan + power supply state
+        #   HPE Comware (HH3C-LswDEVM): stesso normalizzatore del motore hardware_alerts
+        #   (deactive(2) = guasto SOLO se quell'indice era stato visto attivo, altrimenti
+        #   "non presente" → nessun alert per slot PSU2/RPS vuoti).
+        try:
+            from hardware_alerts import normalize_fan_psu_states, load_active_seen, _active_idx_key
+            for metric_key, label, kind in (("h3cFanState", "Fan", "fan"), ("h3cPowerState", "Power Supply", "psu")):
+                states = vendor_metrics.get(metric_key)
+                if not isinstance(states, dict):
+                    continue
+                seen = await load_active_seen(db, client_id, device_ip, kind)
+                norm = normalize_fan_psu_states("hpe_comware", states, active_seen=seen)
+                now_active = {i for i, s in norm.items() if s["state"] == "ok"}
+                if now_active - seen:
+                    await db.hardware_alert_state.update_one(
+                        {"dedup_key": _active_idx_key(client_id, device_ip, kind)},
+                        {"$addToSet": {"idx": {"$each": sorted(now_active - seen)}}}, upsert=True)
+                for idx, s in norm.items():
+                    if s["state"] == "fault":
+                        alerts_to_create.append({
+                            "severity": "high",
+                            "title": f"{label} {idx} FAULT: {device_name}",
+                            "message": f"{label} {idx} su {device_name} ({device_ip}) in stato fault (code {s['code']})",
+                            "source_type": f"vendor_{metric_key}_fault",
+                        })
+        except Exception as _e:  # noqa: BLE001
+            logger.debug("comware fan/psu eval failed ip=%s err=%s", device_ip, _e)
         #   HP ProCurve: convenzione 1/2=ok, 3+=fault
         for metric_key, label, fault_codes in [
-            ("h3cFanState", "Fan", {2}),
-            ("h3cPowerState", "Power Supply", {2}),
             ("psuStatus", "Power Supply", {3, 4, 5, 6}),  # HP ProCurve
             ("fanStatus", "Fan", {3, 4, 5, 6}),           # HP ProCurve
             ("tempSensor", "Temp Sensor", {3, 4, 5, 6}),  # HP ProCurve
