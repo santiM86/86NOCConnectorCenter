@@ -95,7 +95,8 @@ def _ucd_mem_pct(vm: dict):
     return pct
 
 
-def _extract_switch_metrics(vm: dict, profile_key: Optional[str] = None) -> dict:
+def _extract_switch_metrics(vm: dict, profile_key: Optional[str] = None,
+                            psu_seen: Optional[set] = None, fan_seen: Optional[set] = None) -> dict:
     """Estrae dal vendor_metrics i dati Performance/Hardware tipici di switch HP/H3C/Comware/Zyxel.
     Ritorna dict con cpu_usage, memory_usage, temperature (sanitizzati), psu_states, fan_states
     ({idx: {code, state}} con lo stesso enum del motore alert)."""
@@ -108,8 +109,8 @@ def _extract_switch_metrics(vm: dict, profile_key: Optional[str] = None) -> dict
         # Zyxel USG FLEX H (uOS): la mem% diretta puo' essere vuota → calcolo UCD-SNMP.
         mem = _ucd_mem_pct(vm)
     temp = _sanitize_temp(_max_valid_number(vm.get("h3cEntityExtTemperature") or vm.get("entTemperature")))
-    psu = normalize_fan_psu_states(profile_key, vm.get("h3cPowerState") or vm.get("psuStatus"))
-    fan = normalize_fan_psu_states(profile_key, vm.get("h3cFanState") or vm.get("fanStatus"))
+    psu = normalize_fan_psu_states(profile_key, vm.get("h3cPowerState") or vm.get("psuStatus"), active_seen=psu_seen)
+    fan = normalize_fan_psu_states(profile_key, vm.get("h3cFanState") or vm.get("fanStatus"), active_seen=fan_seen)
     return {
         "cpu_usage": round(cpu, 1) if cpu is not None else None,
         "memory_usage": round(mem, 1) if mem is not None else None,
@@ -424,8 +425,15 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
     fw_data = poll.get("firewall") or {}
     vm = poll.get("vendor_metrics") or {}
 
-    # Switch-style vendor metrics extracted/sanitized once
-    sw_metrics = _extract_switch_metrics(vm, profile_key)
+    # Switch-style vendor metrics extracted/sanitized once (stessa memoria
+    # "visto attivo" del motore alert: PSU mai vista attiva = non presente).
+    _cid_hw = client_id or _first_not_none(poll.get("client_id"), managed.get("client_id"))
+    _psu_seen = _fan_seen = set()
+    if _cid_hw:
+        from hardware_alerts import load_active_seen
+        _psu_seen = await load_active_seen(db, _cid_hw, device_ip, "psu")
+        _fan_seen = await load_active_seen(db, _cid_hw, device_ip, "fan")
+    sw_metrics = _extract_switch_metrics(vm, profile_key, _psu_seen, _fan_seen)
 
     # 10) Client info — preferisci il client_id passato (scope multi-tenant),
     # fallback ai valori delle sorgenti.

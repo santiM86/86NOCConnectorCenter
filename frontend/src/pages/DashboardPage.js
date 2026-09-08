@@ -53,6 +53,7 @@ const WAN_COLORS = {
 export default function DashboardPage() {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [overview, setOverview] = useState({ clients: [], global: {} });
+  const [overviewError, setOverviewError] = useState(null);
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [liveStream, setLiveStream] = useState([]);
   const [search, setSearch] = useState("");
@@ -63,9 +64,13 @@ export default function DashboardPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const overviewRes = await axios.get(`${API}/overview/clients`);
+      const overviewRes = await axios.get(`${API}/overview/clients`, { timeout: 60000 });
       setOverview(overviewRes.data);
-    } catch (e) { console.error("overview error:", e); }
+      setOverviewError(null);
+    } catch (e) {
+      console.error("overview error:", e);
+      setOverviewError(e?.response ? `HTTP ${e.response.status}` : (e?.code === "ECONNABORTED" ? "timeout" : "rete"));
+    }
     try {
       const alertsRes = await axios.get(`${API}/alerts?limit=20&status=active&vital_only=true`);
       const alerts = alertsRes.data || [];
@@ -208,7 +213,9 @@ export default function DashboardPage() {
       {filtered.length === 0 && !loading && (
         <div className="text-center py-12 text-[var(--text-muted)]">
           <Globe size={40} className="mx-auto mb-3 opacity-30" />
-          <p className="text-sm">{search ? "Nessun cliente trovato" : "Nessun cliente configurato"}</p>
+          <p className="text-sm" data-testid="dashboard-empty-msg">
+            {overviewError ? `Panoramica non disponibile (${overviewError}) — nuovo tentativo tra 30s` : search ? "Nessun cliente trovato" : "Nessun cliente configurato"}
+          </p>
         </div>
       )}
 

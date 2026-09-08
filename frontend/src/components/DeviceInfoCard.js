@@ -17,7 +17,7 @@ const API = process.env.REACT_APP_BACKEND_URL;
 const HW_STATE_UI = {
   ok: { cls: "text-emerald-400", label: "OK" },
   fault: { cls: "text-red-400", label: "GUASTO" },
-  absent: { cls: "text-neutral-400", label: "Non installato" },
+  absent: { cls: "text-neutral-400", label: "Non presente" },
 };
 
 function HwStateRow({ label, st, testid }) {

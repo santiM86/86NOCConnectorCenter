@@ -24,6 +24,12 @@ async def main():
         "hostname": "SW-TEST", "device_type": "switch", "profile_key": "hpe_comware",
     })
     try:
+        # 0) Fan 2 vista ATTIVA (memoria "visto attivo"): così deactive(2) dopo = guasto
+        await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics={
+            "h3cFanState": {"1": "1", "2": "1"}, "h3cPowerState": {"1": "1", "2": "2"}})
+        assert await _active(cid, ip, "fan_fault") is None and await _active(cid, ip, "psu_fault") is None, \
+            "PSU2 deactive mai vista attiva = non presente, nessun alert"
+        print("STEP0 OK: PSU2 slot vuoto (deactive mai attiva) -> nessun alert")
         # 1) CPU critica (>90), mem warn (>80), temp crit (>70), fan fault, psu ok
         vm = {
             "h3cEntityExtCpuUsage": {"1": "95"},

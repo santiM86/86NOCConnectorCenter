@@ -59,12 +59,32 @@ FAN_PSU_ABSENT_STATES: dict[str, set[int]] = {
     "cisco_catalyst": {5},
 }
 
+# Stati AMBIGUI (Comware deactive(2) = slot vuoto/RPS non collegato OPPURE PSU
+# guasta): sono guasto SOLO se quell'indice è stato visto attivo in precedenza.
+FAN_PSU_INACTIVE_STATES: dict[str, set[int]] = {
+    "hpe_comware": {2},
+}
 
-def normalize_fan_psu_states(profile_key: Optional[str], states: Any, max_idx: int = 12) -> dict:
+
+def _active_idx_key(client_id: str, device_ip: str, kind: str) -> str:
+    return f"{client_id}:{device_ip}:{kind}_active_idx"
+
+
+async def load_active_seen(db, client_id: str, device_ip: str, kind: str) -> set:
+    """Indici (PSU/fan) visti almeno una volta in stato attivo per il device."""
+    doc = await db.hardware_alert_state.find_one(
+        {"dedup_key": _active_idx_key(client_id, device_ip, kind)}, {"_id": 0, "idx": 1})
+    return set(str(i) for i in (doc or {}).get("idx") or [])
+
+
+def normalize_fan_psu_states(profile_key: Optional[str], states: Any, max_idx: int = 12,
+                             active_seen: Optional[set] = None) -> dict:
     """{idx: {"code": int, "state": ok|fault|absent}} per la scheda device.
     Usa lo stesso enum del motore alert così UI e allarmi sono sempre congrui."""
     healthy = FAN_PSU_HEALTHY_STATES.get(profile_key or "")
     absent = FAN_PSU_ABSENT_STATES.get(profile_key or "", set())
+    inactive = FAN_PSU_INACTIVE_STATES.get(profile_key or "", set())
+    seen = active_seen or set()
     if not isinstance(states, dict):
         return {}
     out: dict = {}
@@ -83,6 +103,8 @@ def normalize_fan_psu_states(profile_key: Optional[str], states: Any, max_idx: i
             state = "ok" if code <= 2 else "fault"
         elif code in absent:
             state = "absent"
+        elif code in inactive:
+            state = "fault" if str(idx) in seen else "absent"
         elif code in healthy:
             state = "ok"
         else:
@@ -515,19 +537,19 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     healthy = FAN_PSU_HEALTHY_STATES.get(profile_key)
     if healthy is not None:
         for kind, label in (("fan", "ventola"), ("psu", "alimentatore")):
-            faulty: list[str] = []
+            merged: dict = {}
             for key, mv in vendor_metrics.items():
                 if _classify(key) != kind:
                     continue
-                if isinstance(mv, dict):
-                    for idx, v in mv.items():
-                        f = _to_float(v)
-                        if _state_plausible(f) and int(f) not in healthy:
-                            faulty.append(f"#{idx}={int(f)}")
-                else:
-                    f = _to_float(mv)
-                    if _state_plausible(f) and int(f) not in healthy:
-                        faulty.append(f"={int(f)}")
+                merged.update(mv if isinstance(mv, dict) else {"1": mv})
+            seen = await load_active_seen(db, client_id, device_ip, kind)
+            states = normalize_fan_psu_states(profile_key, merged, active_seen=seen)
+            now_active = {i for i, s in states.items() if s["state"] == "ok"}
+            if now_active - seen:
+                await db.hardware_alert_state.update_one(
+                    {"dedup_key": _active_idx_key(client_id, device_ip, kind)},
+                    {"$addToSet": {"idx": {"$each": sorted(now_active - seen)}}}, upsert=True)
+            faulty = [f"#{i}={s['code']}" for i, s in states.items() if s["state"] == "fault"]
             dk = f"{client_id}:{device_ip}:{kind}_fault"
             if faulty:
                 await _emit_or_update(
