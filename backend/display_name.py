@@ -31,7 +31,7 @@ def _clean(v: Any, ip: Optional[str] = None) -> str:
     if v is None:
         return ""
     s = str(v).strip()
-    if not s:
+    if not s or s.lower() in ("<nil>", "nil", "null", "none"):
         return ""
     if ip and s == ip:
         return ""

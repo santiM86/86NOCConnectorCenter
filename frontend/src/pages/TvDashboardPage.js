@@ -113,8 +113,10 @@ function issues(c) {
   const alertCrit = alerts.filter(a => a.severity === "critical");
   const alertHigh = alerts.filter(a => a.severity === "high");
   const alertExtra = c.alert_count_extra || alerts.length;
-  const crit = vital.length > 0 || wanOffline.length > 0 || bkFail > 0 || alertCrit.length > 0;
-  const warn = wanDegraded.length > 0 || bkMiss > 0 || bkWarn > 0 || alertHigh.length > 0;
+  // ROSSO (down) SOLO con dispositivi vitali offline; tutto il resto è giallo (warning).
+  const crit = vital.length > 0;
+  const warn = wanOffline.length > 0 || bkFail > 0 || alertCrit.length > 0
+    || wanDegraded.length > 0 || bkMiss > 0 || bkWarn > 0 || alertHigh.length > 0;
   const has = crit || warn;
   const score = vital.length * 100 + wanOffline.length * 60 + alertCrit.length * 55
     + bkFail * 40 + bkMiss * 15 + alertHigh.length * 12 + wanDegraded.length * 10 + bkWarn * 5;
@@ -207,10 +209,10 @@ export default function TvDashboardPage() {
         </div>
         <div className="tvx-stats">
           <Stat n={totals.vital} label="VITALI DOWN" tone={totals.vital ? "crit" : "ok"} />
-          <Stat n={totals.wanOff} label="WAN OFFLINE" tone={totals.wanOff ? "crit" : "ok"} />
-          <Stat n={totals.bkFail} label="BACKUP FALLITI" tone={totals.bkFail ? "crit" : "ok"} />
+          <Stat n={totals.wanOff} label="WAN OFFLINE" tone={totals.wanOff ? "warn" : "ok"} />
+          <Stat n={totals.bkFail} label="BACKUP FALLITI" tone={totals.bkFail ? "warn" : "ok"} />
           <Stat n={totals.bkMiss} label="BACKUP MANCANTI" tone={totals.bkMiss ? "warn" : "ok"} />
-          <Stat n={totals.alertsExtra} label="ALTRI ALLARMI" tone={totals.alertsExtra ? "crit" : "ok"} />
+          <Stat n={totals.alertsExtra} label="ALTRI ALLARMI" tone={totals.alertsExtra ? "warn" : "ok"} />
           <Stat n={totals.clientsIssue} label="CLIENTI COINVOLTI" tone={totals.clientsIssue ? "warn" : "ok"} />
         </div>
         <div className="tvx-right">

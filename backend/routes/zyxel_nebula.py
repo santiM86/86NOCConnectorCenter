@@ -194,6 +194,13 @@ async def _emit_zyxel_alert(dev_doc: dict, severity: str, source_type: str,
         if recovery:
             await _ae._emit_recovery_notice(db, cfg, alert)
         else:
+            # Dedup: un solo alert attivo per (cliente, device Nebula, tipo)
+            dup = await db.alerts.find_one({
+                "client_id": alert["client_id"], "status": "active",
+                "source_type": source_type, "raw_data": alert["raw_data"],
+            }, {"_id": 1})
+            if dup:
+                return
             await insert_alert_if_emit(db, alert)
             await _ae._dispatch_notification(db, cfg, alert)
     except Exception as e:  # noqa: BLE001

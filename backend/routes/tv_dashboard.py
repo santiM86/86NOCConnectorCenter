@@ -40,6 +40,15 @@ _TV_ALERT_EXCLUDE = {
 }
 
 
+def _looks_generic_name(name: str) -> bool:
+    """Nome non identificativo: categoria Fingerbank ("A/B"), vuoto, "<nil>", solo vendor."""
+    from display_name import _looks_categorical
+    n = (name or "").strip()
+    if not n or n.lower() in ("<nil>", "nil", "null", "sconosciuto", "unknown"):
+        return True
+    return _looks_categorical(n)
+
+
 def _tv_alert_included(sev: str, source_type: str, title: str) -> bool:
     """True se l'allarme va nel feed 'altri allarmi critici' della TV."""
     if sev not in ("critical", "high"):
@@ -294,6 +303,16 @@ async def tv_dashboard_data():
                 dev_ip = device_id_map[did]["ip"]
         if not dev_name:
             dev_name = managed_name_map.get(f"{cid}:{dev_ip}", dev_ip or "Sconosciuto")
+        # Nome congruo col resto della TV: se il nome salvato nell'alert è una
+        # categoria (es. "Hardware Manufacturer/Hewlett Packard") o generico,
+        # usa il resolver unificato (sys_name > hostname > vendor+IP) così i
+        # device senza hostname restano distinguibili tra loro.
+        if dev_ip and ((cid, dev_ip) in managed_by_key or (cid, dev_ip) in poll_by_key):
+            _resolved = _disp_name(cid, dev_ip)
+            if _resolved and (_looks_generic_name(dev_name) or not dev_name):
+                dev_name = _resolved
+        elif dev_name and _looks_generic_name(dev_name) and dev_ip:
+            dev_name = f"{dev_name.split('/')[-1].strip()} · {dev_ip}"
         enriched_alerts.append({
             "id": a.get("id", ""),
             "severity": a.get("severity", "low"),
@@ -311,10 +330,17 @@ async def tv_dashboard_data():
     # Feed "altri allarmi critici" (critical+high, esclusi i tipi ridondanti):
     # alimenta il pannello dedicato della TV + le righe nella card cliente + i
     # popup/suono. Raggruppato anche per cliente.
-    tv_alert_feed = [
-        a for a in enriched_alerts
-        if _tv_alert_included(a["severity"], a["source_type"], a["title"])
-    ]
+    tv_alert_feed = []
+    _seen_feed: set = set()
+    for a in enriched_alerts:
+        if not _tv_alert_included(a["severity"], a["source_type"], a["title"]):
+            continue
+        # Dedup visivo: stesso cliente + titolo + device → una sola riga
+        _fk = (a["client_id"], a["title"].strip().lower(), a["device_ip"] or a["device_name"])
+        if _fk in _seen_feed:
+            continue
+        _seen_feed.add(_fk)
+        tv_alert_feed.append(a)
     alerts_by_client: dict = {}
     for a in tv_alert_feed:
         alerts_by_client.setdefault(a["client_id"], []).append(a)
@@ -431,14 +457,16 @@ async def tv_dashboard_data():
                 dev_name = _disp_name(cid, dev_ip)
                 _pd = u["pd"] or {}
                 _md = u["md"] or {}
-                last_seen_dev = _pd.get("last_seen") or _pd.get("updated_at") or _md.get("last_seen_at", "")
+                last_seen_dev = (_pd.get("unreachable_since") or _pd.get("last_seen")
+                                 or _pd.get("updated_at") or _md.get("last_seen_at")
+                                 or _md.get("last_poll_at") or _md.get("updated_at") or "")
                 offline_dev = {
                     "ip": dev_ip,
                     "name": dev_name,
                     "client_name": client["name"],
                     "client_id": cid,
                     "last_seen": last_seen_dev,
-                    "down_since": _time_ago(last_seen_dev),
+                    "down_since": _time_ago(last_seen_dev) or "mai visto online",
                     "vital": (f"{cid}:{dev_ip}" in vital_map) or bool(_md.get("is_vital")),
                     "device_type": vital_map.get(f"{cid}:{dev_ip}", _md.get("device_type", "")),
                 }
