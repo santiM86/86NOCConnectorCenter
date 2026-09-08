@@ -9520,3 +9520,8 @@ Health null è normale HPE (usa i sottosistemi).
 - Fix: nuova `get_effective_profile(db, key)` in device_profiles/__init__.py (seed + override); usata in hardware_alerts.py e nei 3 punti di connector.py (soglie + OID arricchiti).
 - Priorità temperatura invariata: override device > soglia cliente per tipo > profilo vendor (effettivo) > default tipo.
 - Backlog opzionale (utente non ha scelto): mostrare provenienza soglia nel messaggio alert; eventuale inversione priorità profilo vs cliente-per-tipo.
+
+## 2026-09-08 — Congruenza TV / pagina cliente / allarmi (3 fix)
+- Profilo hpe_comware: OID fan/PSU corretti (HH3C-LswDEVM .8.35.9.1.1.1.2 / .8.35.9.1.2.1.2; i vecchi .16/.18 erano VoltageHighThreshold/MacAddress → MAC "hex:ec:9b.." letto come 9 → "Guasto alimentatore" falso). Stati sani {1,3,4}, fault=2. `normalize_fan_psu_states()` condiviso scheda device/motore; `_to_float` ignora MAC/hex. Migrazione one-shot (migrations_oneshot.py) chiude gli alert PSU/fan Comware attivi e resetta gli streak.
+- GET /api/alerts: `sort_by=severity` (critici prima); ClientOverviewPage carica tutti gli alert attivi (limit 1000) → StatBox "N critici" congruo col wallboard.
+- sys_name "<nil>" dall agent Go: scartato in agent_ws._bridge_snmp_poll + migrazione pulizia DB; fix anche in noc-agent asString (da compilare).

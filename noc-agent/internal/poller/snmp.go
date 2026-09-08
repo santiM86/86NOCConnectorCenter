@@ -393,6 +393,9 @@ func asString(v gosnmp.SnmpPDU) string {
 		}
 		return string(x)
 	default:
+		if v.Value == nil {
+			return ""
+		}
 		return fmt.Sprintf("%v", v.Value)
 	}
 }

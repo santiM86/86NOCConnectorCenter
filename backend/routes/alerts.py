@@ -101,14 +101,29 @@ async def create_alert(alert: AlertCreate, current_user: dict = Depends(get_curr
 async def get_alerts(
     status: Optional[str] = None, severity: Optional[str] = None,
     client_id: Optional[str] = None, device_type: Optional[str] = None,
-    vital_only: bool = False,
+    vital_only: bool = False, sort_by: str = "created_at",
     limit: int = 100, current_user: dict = Depends(get_current_user)
 ):
     query = {}
     if status: query["status"] = status
     if severity: query["severity"] = severity
     if client_id: query["client_id"] = client_id
-    alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    if sort_by == "severity":
+        # Critici prima, poi per data: il conteggio critici resta corretto anche col limit.
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {"_sev": {"$switch": {"branches": [
+                {"case": {"$eq": ["$severity", "critical"]}, "then": 0},
+                {"case": {"$eq": ["$severity", "high"]}, "then": 1},
+                {"case": {"$eq": ["$severity", "medium"]}, "then": 2},
+            ], "default": 3}}}},
+            {"$sort": {"_sev": 1, "created_at": -1}},
+            {"$limit": limit},
+            {"$project": {"_id": 0, "_sev": 0}},
+        ]
+        alerts = await db.alerts.aggregate(pipeline).to_list(limit)
+    else:
+        alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
 
     # VITAL-ONLY (Panoramica): mostra solo alert relativi a dispositivi VITALI.
     # Insieme per-cliente di nomi/IP dei device marcati is_vital.

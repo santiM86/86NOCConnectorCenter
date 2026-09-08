@@ -106,7 +106,7 @@ export default function ClientOverviewPage() {
         axios.get(`${API}/clients/${clientId}`),
         axios.get(`${API}/devices?client_id=${clientId}`),
         axios.get(`${API}/external-monitor/status`),
-        axios.get(`${API}/alerts?client_id=${clientId}&status=active&limit=50`),
+        axios.get(`${API}/alerts?client_id=${clientId}&status=active&sort_by=severity&limit=1000`),
       ]);
       if (clientRes.status === "fulfilled") setClient(clientRes.value.data);
       if (devRes.status === "fulfilled") setDevices(devRes.value.data || []);

@@ -866,6 +866,10 @@ async def _bridge_snmp_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         return
     now_iso = _now().isoformat()
     reachable = bool(r.get("reachable"))
+    # L'agent Go serializza un sysName assente come "<nil>": non è un nome.
+    for _k in ("sys_name", "sys_descr"):
+        if isinstance(r.get(_k), str) and r[_k].strip().lower() in ("<nil>", "nil", "null", ""):
+            r[_k] = None
     # NOTE: collection device_poll_status indice unique su
     # (client_id, device_ip). Il campo si chiama "device_ip" NON "ip".
     snmp_set = {

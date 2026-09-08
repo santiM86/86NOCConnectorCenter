@@ -29,8 +29,8 @@ async def main():
             "h3cEntityExtCpuUsage": {"1": "95"},
             "h3cEntityExtMemUsage": {"1": "85"},
             "h3cEntityExtTemperature": {"1": "75"},
-            "h3cFanState": {"1": "2", "2": "41"},   # 41 = fanError -> guasto
-            "h3cPowerState": {"1": "2"},            # normal
+            "h3cFanState": {"1": "1", "2": "2"},    # 2 = deactive -> guasto
+            "h3cPowerState": {"1": "1", "2": "3"},  # active + not-install
         }
         # 1° ciclo: mem/temp/fan immediati; CPU NON ancora (debounce 3 cicli)
         await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm)
@@ -77,8 +77,8 @@ async def main():
             "h3cEntityExtCpuUsage": {"1": "10"},
             "h3cEntityExtMemUsage": {"1": "20"},
             "h3cEntityExtTemperature": {"1": "35"},
-            "h3cFanState": {"1": "2", "2": "2"},
-            "h3cPowerState": {"1": "2"},
+            "h3cFanState": {"1": "1", "2": "1"},
+            "h3cPowerState": {"1": "1", "2": "3"},
         }
         await evaluate_hardware_alerts(db, client_id=cid, device_ip=ip, vendor_metrics=vm_ok)
         for m in ("cpu", "mem", "temp", "fan_fault"):
