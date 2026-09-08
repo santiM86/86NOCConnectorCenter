@@ -2254,21 +2254,22 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 except (ValueError, TypeError):
                     pass
 
-        # --- HPE Comware: fan + power supply state (2=fault)
-        for metric_key, label in [
-            ("h3cFanState", "Fan"),
-            ("h3cPowerState", "Power Supply"),
-            ("psuStatus", "Power Supply"),  # HP ProCurve
-            ("fanStatus", "Fan"),           # HP ProCurve
-            ("tempSensor", "Temp Sensor"),  # HP ProCurve
+        # --- Fan + power supply state: codici di guasto per vendor
+        #   HPE Comware (HH3C-LswDEVM): active(1) deactive(2)=guasto not-install(3) unsupport(4)
+        #   HP ProCurve: convenzione 1/2=ok, 3+=fault
+        for metric_key, label, fault_codes in [
+            ("h3cFanState", "Fan", {2}),
+            ("h3cPowerState", "Power Supply", {2}),
+            ("psuStatus", "Power Supply", {3, 4, 5, 6}),  # HP ProCurve
+            ("fanStatus", "Fan", {3, 4, 5, 6}),           # HP ProCurve
+            ("tempSensor", "Temp Sensor", {3, 4, 5, 6}),  # HP ProCurve
         ]:
             states = vendor_metrics.get(metric_key)
             if isinstance(states, dict):
                 for idx, st in states.items():
                     try:
                         sc = int(st)
-                        # Convention: 1/2=ok, 3+=fault (varies per vendor)
-                        if sc in (3, 4, 5, 6):
+                        if sc in fault_codes:
                             alerts_to_create.append({
                                 "severity": "high",
                                 "title": f"{label} {idx} FAULT: {device_name}",

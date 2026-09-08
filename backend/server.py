@@ -1296,6 +1296,12 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start CMDB scheduler: {e}")
 
+    try:
+        from migrations_oneshot import run_all as _run_migrations
+        await _run_migrations(db)
+    except Exception as e:
+        logger.error(f"One-shot migrations failed: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     redfish_poller.stop_scheduler()

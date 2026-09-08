@@ -14,6 +14,23 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
+const HW_STATE_UI = {
+  ok: { cls: "text-emerald-400", label: "OK" },
+  fault: { cls: "text-red-400", label: "GUASTO" },
+  absent: { cls: "text-neutral-400", label: "Non installato" },
+};
+
+function HwStateRow({ label, st, testid }) {
+  const ui = HW_STATE_UI[st?.state] || { cls: "text-neutral-400", label: "N/D" };
+  return (
+    <div className="flex items-center justify-between text-[11px]" data-testid={testid}>
+      <span className="text-[var(--text-secondary)]">{label}</span>
+      <span className={`font-mono ${ui.cls}`}>{ui.label}{st?.code != null ? ` (cod. ${st.code})` : ""}</span>
+    </div>
+  );
+}
+
+
 function Field({ label, value, mono = false, highlight = false }) {
   if (value === null || value === undefined || value === "") return null;
   // Defensive: never render raw objects/arrays
@@ -805,39 +822,21 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             {hw.firewall_sessions != null && <Field label="Sessioni FW" value={hw.firewall_sessions.toLocaleString("it-IT")} />}
             <Field label="Flash usage %" value={hw.firewall_flash_usage_pct} />
 
-            {/* PSU/Fan structured states (switch HPE/H3C) */}
+            {/* PSU/Fan structured states (switch HPE/H3C) — {idx: {code, state}} */}
             {hw.psu_states && Object.keys(hw.psu_states).length > 0 && (
               <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
                 <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Power Supplies</span>
-                {Object.entries(hw.psu_states).map(([idx, st]) => {
-                  const n = Number(st);
-                  const isValid = Number.isFinite(n) && n > 0;  // 0/empty/NaN = sensor not reporting
-                  return (
-                    <div key={`psu${idx}`} className="flex items-center justify-between text-[11px]">
-                      <span className="text-[var(--text-secondary)]">PSU {idx}</span>
-                      <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                        {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
-                      </span>
-                    </div>
-                  );
-                })}
+                {Object.entries(hw.psu_states).map(([idx, st]) => (
+                  <HwStateRow key={`psu${idx}`} label={`PSU ${idx}`} st={st} testid={`psu-state-${idx}`} />
+                ))}
               </div>
             )}
             {hw.fan_states && Object.keys(hw.fan_states).length > 0 && (
               <div className="mt-2 pt-2 border-t border-[var(--bg-border)]/50 space-y-1">
                 <span className="text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">Fans</span>
-                {Object.entries(hw.fan_states).map(([idx, st]) => {
-                  const n = Number(st);
-                  const isValid = Number.isFinite(n) && n > 0;
-                  return (
-                    <div key={`fan${idx}`} className="flex items-center justify-between text-[11px]">
-                      <span className="text-[var(--text-secondary)]">Fan {idx}</span>
-                      <span className={`font-mono ${!isValid ? "text-neutral-400" : n <= 2 ? "text-emerald-400" : "text-red-400"}`}>
-                        {!isValid ? "N/D" : n <= 2 ? "OK" : `FAULT (codice ${n})`}
-                      </span>
-                    </div>
-                  );
-                })}
+                {Object.entries(hw.fan_states).map(([idx, st]) => (
+                  <HwStateRow key={`fan${idx}`} label={`Fan ${idx}`} st={st} testid={`fan-state-${idx}`} />
+                ))}
               </div>
             )}
           </Section>

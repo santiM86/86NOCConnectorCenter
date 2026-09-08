@@ -199,8 +199,11 @@ PROFILES: list[dict[str, Any]] = [
             "h3cEntityExtCpuUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.6",
             "h3cEntityExtMemUsage":   "1.3.6.1.4.1.25506.2.6.1.1.1.1.8",
             "h3cEntityExtTemperature":"1.3.6.1.4.1.25506.2.6.1.1.1.1.12",
-            "h3cFanState":            "1.3.6.1.4.1.25506.2.6.1.1.1.1.16",
-            "h3cPowerState":          "1.3.6.1.4.1.25506.2.6.1.1.1.1.18",
+            # HH3C-LswDEVM-MIB: stato ventole/PSU — enum active(1) deactive(2)
+            # not-install(3) unsupport(4). NB: .2.6.1.1.1.1.16/.18 (usati in
+            # passato) sono VoltageHighThreshold e MacAddress → falsi guasti.
+            "h3cFanState":            "1.3.6.1.4.1.25506.8.35.9.1.1.1.2",
+            "h3cPowerState":          "1.3.6.1.4.1.25506.8.35.9.1.2.1.2",
             # MAC base dello switch (BRIDGE-MIB) — permette di leggere il MAC
             # anche quando l'agent NON e' sul segmento L2 (nessuna voce ARP).
             "dot1dBaseBridgeAddress": "1.3.6.1.2.1.17.1.1.0",

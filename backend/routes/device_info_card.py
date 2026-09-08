@@ -102,41 +102,21 @@ def _ucd_mem_pct(vm: dict):
     return pct
 
 
-def _filter_states(d, max_idx=12):
-    """Filtra un dict {idx: state} a soli indici plausibili (1..max_idx) e valori interi.
-    Risolve il bug di walk OID che includeva indici parassiti (es. PSU 84-96).
-    state code WireGuard/RFC 4133: 1=unknown, 2=ok, 3=warning, 4=critical."""
-    if not isinstance(d, dict):
-        return {}
-    out = {}
-    for k, v in d.items():
-        try:
-            idx = int(k)
-        except (ValueError, TypeError):
-            continue
-        if not (1 <= idx <= max_idx):
-            continue
-        try:
-            v_int = int(v)
-        except (ValueError, TypeError):
-            continue
-        out[str(idx)] = v_int
-    return out
-
-
-def _extract_switch_metrics(vm: dict) -> dict:
+def _extract_switch_metrics(vm: dict, profile_key: Optional[str] = None) -> dict:
     """Estrae dal vendor_metrics i dati Performance/Hardware tipici di switch HP/H3C/Comware/Zyxel.
-    Ritorna dict con cpu_usage, memory_usage, temperature (sanitizzati), psu_states, fan_states."""
+    Ritorna dict con cpu_usage, memory_usage, temperature (sanitizzati), psu_states, fan_states
+    ({idx: {code, state}} con lo stesso enum del motore alert)."""
     if not vm:
         return {}
+    from hardware_alerts import normalize_fan_psu_states
     cpu = _max_valid_number(vm.get("h3cEntityExtCpuUsage") or vm.get("cpuUtil") or vm.get("zyxelCpuCurrent"))
     mem = _max_valid_number(vm.get("h3cEntityExtMemUsage") or vm.get("memUtil"))
     if mem is None:
         # Zyxel USG FLEX H (uOS): la mem% diretta puo' essere vuota → calcolo UCD-SNMP.
         mem = _ucd_mem_pct(vm)
     temp = _sanitize_temp(_max_valid_number(vm.get("h3cEntityExtTemperature") or vm.get("entTemperature")))
-    psu = _filter_states(vm.get("h3cPowerState") or vm.get("psuStatus"))
-    fan = _filter_states(vm.get("h3cFanState") or vm.get("fanStatus"))
+    psu = normalize_fan_psu_states(profile_key, vm.get("h3cPowerState") or vm.get("psuStatus"))
+    fan = normalize_fan_psu_states(profile_key, vm.get("h3cFanState") or vm.get("fanStatus"))
     return {
         "cpu_usage": round(cpu, 1) if cpu is not None else None,
         "memory_usage": round(mem, 1) if mem is not None else None,
@@ -452,7 +432,7 @@ async def build_info_card(device_ip: str, client_id: Optional[str] = None) -> Di
     vm = poll.get("vendor_metrics") or {}
 
     # Switch-style vendor metrics extracted/sanitized once
-    sw_metrics = _extract_switch_metrics(vm)
+    sw_metrics = _extract_switch_metrics(vm, profile_key)
 
     # 10) Client info — preferisci il client_id passato (scope multi-tenant),
     # fallback ai valori delle sorgenti.

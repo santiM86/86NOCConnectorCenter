@@ -45,13 +45,50 @@ CPU_BREACH_CYCLES_DEFAULT = 3
 # positivi finche' l'enum del vendor non e' verificato).
 # ---------------------------------------------------------------------------
 FAN_PSU_HEALTHY_STATES: dict[str, set[int]] = {
-    # HH3C-ENTITY-EXT-MIB hh3cEntityExtErrorStatus: notSupported(1), normal(2);
-    # guasti espliciti fanError(41)/psuError(51)/altri > 2.
-    "hpe_comware": {1, 2},
+    # HH3C-LswDEVM-MIB hh3cDevMFanStatus/hh3cDevMPowerStatus: active(1),
+    # deactive(2)=guasto, not-install(3), unsupport(4). Sani = 1, 3, 4.
+    "hpe_comware": {1, 3, 4},
     # CISCO-ENVMON-MIB: normal(1), warning(2), critical(3), shutdown(4),
     # notPresent(5), notFunctioning(6). Sani = normal + notPresent.
     "cisco_catalyst": {1, 5},
 }
+
+# Stati "assente/non applicabile" per profilo: non sono guasti ma nemmeno OK.
+FAN_PSU_ABSENT_STATES: dict[str, set[int]] = {
+    "hpe_comware": {3, 4},
+    "cisco_catalyst": {5},
+}
+
+
+def normalize_fan_psu_states(profile_key: Optional[str], states: Any, max_idx: int = 12) -> dict:
+    """{idx: {"code": int, "state": ok|fault|absent}} per la scheda device.
+    Usa lo stesso enum del motore alert così UI e allarmi sono sempre congrui."""
+    healthy = FAN_PSU_HEALTHY_STATES.get(profile_key or "")
+    absent = FAN_PSU_ABSENT_STATES.get(profile_key or "", set())
+    if not isinstance(states, dict):
+        return {}
+    out: dict = {}
+    for k, v in states.items():
+        try:
+            idx = int(k)
+        except (ValueError, TypeError):
+            continue
+        if not (1 <= idx <= max_idx):
+            continue
+        f = _to_float(v)
+        if not _state_plausible(f):
+            continue
+        code = int(f)
+        if healthy is None:
+            state = "ok" if code <= 2 else "fault"
+        elif code in absent:
+            state = "absent"
+        elif code in healthy:
+            state = "ok"
+        else:
+            state = "fault"
+        out[str(idx)] = {"code": code, "state": state}
+    return out
 
 # Valori sentinella SNMP "non disponibile" (0xFFFF, 0xFFFFFFFF, ecc.) che
 # alcuni vendor (H3C in primis) ritornano per sensori/entita' assenti. Vanno
@@ -82,7 +119,11 @@ def _to_float(v: Any) -> Optional[float]:
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):
-        m = re.search(r"-?\d+(?:\.\d+)?", v.replace(",", "."))
+        s = v.strip()
+        # MAC/OctetString binari ("hex:ec:9b:..", "ec:9b:8b:91:5c:20") non sono numeri
+        if s.lower().startswith("hex:") or re.fullmatch(r"([0-9a-f]{2}[:\-]){5,}[0-9a-f]{2}", s, re.I):
+            return None
+        m = re.search(r"-?\d+(?:\.\d+)?", s.replace(",", "."))
         if m:
             try:
                 return float(m.group(0))
