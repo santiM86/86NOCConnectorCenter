@@ -166,6 +166,8 @@ export default function TvDashboardPage() {
     }).sort((a, b) => (rank[a._lvl] - rank[b._lvl]) || a.name.localeCompare(b.name));
   }, [data]);
 
+  const okClients = useMemo(() => allClients.filter(c => !c._i.has), [allClients]);
+
   const totals = useMemo(() => {
     let vital = 0, wanOff = 0, bkFail = 0, bkMiss = 0;
     (data?.clients || []).forEach(c => {
@@ -285,152 +287,97 @@ export default function TvDashboardPage() {
         </div>
       )}
 
-      {/* Roster: TUTTE le aziende (verde=ok, rosso=down, giallo=warning) */}
-      <section className="tvx-roster" data-testid="tv-roster">
-        <div className="tvx-roster-h">
-          <span>TUTTE LE AZIENDE ({allClients.length})</span>
-          <span className="tvx-legend">
-            <i className="ok" /> OK <i className="crit" /> Vitale down
-          </span>
-        </div>
-        <ul className="tvx-roster-list">
-          {allClients.map(c => (
-            <li key={c.id} className={`tvx-roster-item ${c._lvl}`} data-testid="tv-roster-item" title={c.name}>
-              <span className="dot" />
-              <span className="nm">{c.name}</span>
-              {c._lvl === "crit" && (
-                <span className="tag">{`${c._i.vital.length} vitali`}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {/* Grid dettaglio problemi */}
-      {clients.length === 0 ? (
-        <div className="tvx-empty">
-          <div className="tvx-empty-icon">✓</div>
-          <div>Nessun problema attivo su vitali, WAN, backup o allarmi critici. Tutto regolare.</div>
-        </div>
-      ) : (
-        <div className="tvx-grid" data-testid="tv-client-grid">
-          {clients.map(c => {
-            const i = c._i;
-            return (
-              <div key={c.id} className={`tvx-card ${i.crit ? "crit" : "ok"}`} data-testid="tv-client-card">
-                <div className="tvx-card-head">
-                  <span className="tvx-card-name" data-testid="tv-client-name">{c.name}</span>
-                  {!c.connector_online && <span className="tvx-badge nosonda">NO SONDA</span>}
-                </div>
-
-                {/* VITALI DOWN */}
-                <div className="tvx-sec">
-                  <div className="tvx-sec-h">DISPOSITIVI VITALI</div>
-                  {i.vital.length === 0 ? (
-                    <div className="tvx-ok">✓ Tutti i vitali operativi</div>
-                  ) : (
-                    <div className="tvx-list">
-                      {i.vital.slice(0, 6).map((v, k) => (
-                        <div key={k} className="tvx-item crit" data-testid="tv-vital-down">
-                          <span className="dot" /> <b>{v.name || v.ip}</b>
-                          <span className="tvx-when">giù da {v.down_since || "?"}</span>
-                        </div>
-                      ))}
-                      {i.vital.length > 6 && <div className="tvx-more">+{i.vital.length - 6} altri</div>}
-                    </div>
-                  )}
-                </div>
-
-                {/* WAN */}
-                <div className="tvx-sec">
-                  <div className="tvx-sec-h">WAN</div>
-                  {i.wan.length === 0 ? (
-                    <div className="tvx-muted">Non configurata</div>
-                  ) : (
-                    <div className="tvx-wan">
-                      {i.wan.map((w, k) => (
-                        <span key={k} className="tvx-wan-pill" data-testid="tv-wan-pill">
-                          <span className="dot" style={{ background: WAN_COLOR[w.status] || WAN_COLOR.unknown }} />
-                          {w.label || w.device_type || "WAN"}
-                          <b style={{ color: WAN_COLOR[w.status] || WAN_COLOR.unknown }}>{WAN_LABEL[w.status] || w.status?.toUpperCase()}</b>
-                          {w.nebula_monitored && <span className="tvx-neb" title="Stato dal cloud Nebula">NEBULA</span>}
-                          {w.latency_ms != null && !w.nebula_monitored && <span className="tvx-lat">{Math.round(w.latency_ms)}ms</span>}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* BACKUP */}
-                <div className="tvx-sec">
-                  <div className="tvx-sec-h" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    BACKUP
-                    {i.bk?.source && (
-                      <span
-                        data-testid={`tv-backup-tag-${i.bk.source}`}
-                        style={{
-                          fontSize: 9, fontWeight: 800, padding: "1px 5px", borderRadius: 3,
-                          color: i.bk.source === "vm" ? "#c4b5fd" : "#7dd3fc",
-                          background: i.bk.source === "vm" ? "rgba(167,139,250,0.2)" : "rgba(56,189,248,0.2)",
-                        }}
-                      >
-                        {i.bk.source === "vm" ? "VM" : "365"}
-                      </span>
-                    )}
-                  </div>
-                  {!i.bk ? (
-                    <div className="tvx-muted">Non monitorato</div>
-                  ) : (i.bkFail || i.bkMiss || i.bkWarn) ? (
-                    <div className="tvx-bk">
-                      {i.bkFail > 0 && <span className="tvx-chip crit" data-testid="tv-backup-fail">{i.bkFail} FALLITI</span>}
-                      {i.bkMiss > 0 && <span className="tvx-chip warn">{i.bkMiss} MANCANTI</span>}
-                      {i.bkWarn > 0 && <span className="tvx-chip warn">{i.bkWarn} WARNING</span>}
-                      <span className="tvx-bk-tot">/ {i.bk.total} {i.bk.source === "vm" ? "VM" : "job"}</span>
-                    </div>
-                  ) : (
-                    <div className="tvx-ok">✓ {i.bk.ok}/{i.bk.total} {i.bk.source === "vm" ? "VM" : "job"} ok</div>
-                  )}
-                </div>
-
-                {/* ALTRI ALLARMI CRITICI (agent offline, uplink giù, iLO, soglie…) */}
-                {i.alerts.length > 0 && (
-                  <div className="tvx-sec">
-                    <div className="tvx-sec-h">ALTRI ALLARMI</div>
-                    <div className="tvx-list">
-                      {i.alerts.slice(0, 5).map((a, k) => (
-                        <div key={a.id || k} className={`tvx-item ${a.severity === "critical" ? "crit" : "warn"}`} data-testid="tv-alert-row">
-                          <span className="dot" /> <b>{a.title}</b>
-                          {a.device_name && <span className="tvx-when">{a.device_name}</span>}
-                        </div>
-                      ))}
-                      {i.alertExtra > 5 && <div className="tvx-more">+{i.alertExtra - 5} altri</div>}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Pannello dedicato: tutti gli allarmi critici/high attivi (flat) */}
-      {(data.alert_feed || []).length > 0 && (
-        <section className="tvx-alertfeed" data-testid="tv-alert-feed">
-          <div className="tvx-alertfeed-h">
-            <span>ALLARMI CRITICI ATTIVI ({data.alert_feed.length})</span>
+      {/* Corpo: SINISTRA problemi in corso (solo dati attuali, ordinati per gravità) · DESTRA aziende OK */}
+      <div className="tvx-body">
+        <section className="tvx-problems" data-testid="tv-problems">
+          <div className="tvx-sec-title">
+            <span>PROBLEMI IN CORSO</span>
+            <span className="tvx-sec-count">{clients.length} {clients.length === 1 ? "azienda" : "aziende"}</span>
           </div>
-          <ul className="tvx-alertfeed-list">
-            {data.alert_feed.map((a, k) => (
-              <li key={a.id || k} className={`tvx-alertfeed-item ${a.severity === "critical" ? "crit" : "warn"}`} data-testid="tv-alert-feed-item">
-                <span className="sev" />
-                <span className="cli">{a.client_name || "—"}</span>
-                <span className="ttl">{a.title}</span>
-                {a.device_name && <span className="dev">{a.device_name}</span>}
-                <span className="ago">{a.time_ago}</span>
+          {clients.length === 0 ? (
+            <div className="tvx-empty" data-testid="tv-all-ok">
+              <div className="tvx-empty-icon">✓</div>
+              <div>TUTTO REGOLARE</div>
+              <small>Nessun vitale offline, WAN attive, backup e allarmi sotto controllo</small>
+            </div>
+          ) : (
+            <div className="tvx-grid" data-testid="tv-client-grid">
+              {clients.map(c => <ProblemCard key={c.id} c={c} />)}
+            </div>
+          )}
+        </section>
+
+        <aside className="tvx-okcol" data-testid="tv-ok-list">
+          <div className="tvx-sec-title"><span>AZIENDE OK</span><span className="tvx-sec-count">{okClients.length}/{allClients.length}</span></div>
+          <ul className="tvx-oklist">
+            {okClients.map(c => (
+              <li key={c.id} className="tvx-okitem" data-testid="tv-roster-item" title={c.name}>
+                <span className="dot" /><span className="nm">{c.name}</span>
               </li>
             ))}
+            {okClients.length === 0 && <li className="tvx-muted">Nessuna</li>}
           </ul>
-        </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+/* Card compatta: SOLO cosa non va adesso (niente righe "tutto ok", niente storico) */
+function ProblemCard({ c }) {
+  const i = c._i;
+  const wanBad = i.wan.filter(w => w.status === "offline" || w.status === "degraded");
+  const shown = i.alerts.slice(0, 3);
+  return (
+    <div className={`tvx-card ${i.crit ? "crit" : "neutral"}`} data-testid="tv-client-card">
+      <div className="tvx-card-head">
+        <span className="tvx-card-name" data-testid="tv-client-name">{c.name}</span>
+        <span className="tvx-card-tags">
+          {i.crit && <span className="tvx-badge crit">{i.vital.length} VITAL{i.vital.length === 1 ? "E" : "I"} DOWN</span>}
+          {!c.connector_online && <span className="tvx-badge nosonda">NO SONDA</span>}
+        </span>
+      </div>
+      {i.vital.length > 0 && (
+        <div className="tvx-list">
+          {i.vital.slice(0, 5).map((v, k) => (
+            <div key={k} className="tvx-item crit" data-testid="tv-vital-down">
+              <span className="dot" /><b>{v.name || v.ip}</b>
+              <span className="tvx-when">giù da {v.down_since || "?"}</span>
+            </div>
+          ))}
+          {i.vital.length > 5 && <div className="tvx-more">+{i.vital.length - 5} altri vitali</div>}
+        </div>
+      )}
+      {wanBad.length > 0 && (
+        <div className="tvx-wan">
+          {wanBad.map((w, k) => (
+            <span key={k} className="tvx-wan-pill" data-testid="tv-wan-pill">
+              <span className="dot" style={{ background: WAN_COLOR[w.status] }} />
+              WAN {w.label || w.device_type || ""}
+              <b style={{ color: WAN_COLOR[w.status] }}>{WAN_LABEL[w.status]}</b>
+            </span>
+          ))}
+        </div>
+      )}
+      {(i.bkFail > 0 || i.bkMiss > 0 || i.bkWarn > 0) && (
+        <div className="tvx-bk">
+          <span className="tvx-bk-lbl">BACKUP {i.bk?.source === "vm" ? "VM" : "365"}</span>
+          {i.bkFail > 0 && <span className="tvx-chip crit" data-testid="tv-backup-fail">{i.bkFail} FALLITI</span>}
+          {i.bkMiss > 0 && <span className="tvx-chip warn">{i.bkMiss} MANCANTI</span>}
+          {i.bkWarn > 0 && <span className="tvx-chip warn">{i.bkWarn} WARNING</span>}
+          <span className="tvx-bk-tot">/ {i.bk?.total}</span>
+        </div>
+      )}
+      {shown.length > 0 && (
+        <div className="tvx-list">
+          {shown.map((a, k) => (
+            <div key={a.id || k} className={`tvx-item ${a.severity === "critical" ? "crit" : "warn"}`} data-testid="tv-alert-row">
+              <span className="dot" /><b>{a.title}</b>
+              {a.device_name && <span className="tvx-when">{a.device_name}</span>}
+            </div>
+          ))}
+          {i.alertExtra > 3 && <div className="tvx-more">+{i.alertExtra - 3} altri allarmi</div>}
+        </div>
       )}
     </div>
   );
