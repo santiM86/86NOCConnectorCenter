@@ -9531,3 +9531,6 @@ Health null è normale HPE (usa i sottosistemi).
 - zyxel_nebula._emit_zyxel_alert: dedup su alert attivo stesso (cliente, source_type, raw_data dev_id) → niente doppio "Zyxel OFFLINE".
 - display_name._clean scarta "<nil>"; redfish lookup override temp scoped per client_id.
 - NB: i "Guasto alimentatore" visibili in produzione spariranno al deploy (migrazione one-shot allo startup).
+
+## 2026-09-08 — TV: rosso SOLO per vitali offline
+- TvDashboardPage.issues(): crit = vital_down>0; WAN offline / backup falliti / alert critical → warn (giallo). Header stats WAN/BACKUP FALLITI/ALTRI ALLARMI in tono warn; "ATTENZIONE" solo con vitali down.
