@@ -284,6 +284,7 @@
 .tvx-card { background: #10161f; border: 1px solid #1c2430; border-radius: 16px; padding: 14px 16px;
   border-left: 4px solid #2a3646; }
 .tvx-card.crit { border-left-color: #ef4444; box-shadow: 0 0 0 1px rgba(239,68,68,.12) inset; }
+.tvx-card.ok { border-left-color: #22c55e; }
 .tvx-card.warn { border-left-color: #eab308; }
 .tvx-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .tvx-card-name { font-size: 18px; font-weight: 800; }
@@ -381,6 +382,10 @@
 
 
 /* NUOVO DISPOSITIVO (rogue / MAC sconosciuto) — tono ciano */
+.tv-popup-warn { border-color: #eab308; background: #141104; }
+.tv-popup-warn .tv-popup-badge { background: #eab308; color: #1c1600; }
+.tv-popup-warn .tv-popup-title { color: #fef3c7; }
+.tv-popup-warn .tv-popup-pulse { background: #eab308; }
 .tv-popup-new { border-color: #22d3ee; background: #041318;
   box-shadow: 0 0 60px 0 rgba(34,211,238,.40), inset 0 0 40px rgba(34,211,238,.08); }
 .tv-popup-new .tv-popup-badge { background: #22d3ee; color: #012027; }
