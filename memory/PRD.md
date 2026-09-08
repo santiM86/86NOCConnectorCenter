@@ -1,6 +1,90 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Soglie temperatura: disco + aria-ingresso (inlet) per device + bulk "Applica impostazioni"
+**Richiesta utente**: (a) override temperatura DISCO e INLET per singolo dispositivo nella scheda device
+(prima solo generale); (b) estendere l'override temperatura al modal "Applica impostazioni" in blocco.
+**Resolver esteso** `hardware_alerts.resolve_temp_thresholds(..., kind, fallback)` con `kind` =
+general|inlet|disk (chiavi in `_TEMP_KIND_KEYS`). Priorità invariata: override device → cliente-per-tipo →
+profilo → default (general = `_DEFAULT_TEMP_THRESHOLDS`; inlet/disk = fallback passato dal chiamante).
+**Wiring valutazione**:
+- DISCO: `connector.py` blocco Synology `diskTemperature` ora usa il resolver (override device disk →
+  profilo `disk_temp_*` → default 50/60), non più solo profilo.
+- INLET: `redfish.py::_check_alerts` — per ogni sensore, se il locale contiene inlet/intake/ambient/ingress
+  usa soglia inlet (override → profilo `inlet_temp_*` → default 65/75), altrimenti generale. Prima era
+  hardcoded 65/75 per tutti; struttura alert/telegram invariata.
+- GENERALE: invariato (SNMP `hardware_alerts` + connector generico).
+**Storage/API**: `managed_devices` nuovi campi `disk_temp_warn_c/crit_c`, `inlet_temp_warn_c/crit_c`
+(oltre a `temp_warn_c/crit_c`). `POST /api/devices/by-ip/{ip}/temp-thresholds` accetta
+`warn_c/crit_c/disk_warn_c/disk_crit_c/inlet_warn_c/inlet_crit_c` (null = rimuove il singolo override;
+valida per-coppia warn<crit e range 0–150). `POST /api/devices/bulk-apply-settings` accetta `apply.temp`
+= `{warn,crit,disk_warn,disk_crit,inlet_warn,inlet_crit}` (applica solo i valori compilati; con `$unset`
+per i null). `DeviceResponse` + `devices.py` espongono i 6 campi.
+**Frontend**: `DeviceEditModal.js` sezione "Soglie temperatura (override device)" con 3 righe
+(Generale/Disco/Aria ingresso), persistite in `persistChanges` (una sola POST con validazione per-coppia);
+`ClientOverviewPage.js::BulkSettingsModal` nuova riga "🌡️ Soglie temperatura" (3 righe warn/crit,
+inclusa nei preset globali salvabili).
+**Testing**: resolver unit per kind (disk/inlet override/profilo/fallback OK); E2E autenticato (device set
+di tutti e 3 i kind + readback via /devices; disk warn>=crit → 400; bulk `apply.temp` general+disk → readback
+OK; clear totale → None); screenshot DeviceEditModal con le 3 righe; ClientOverviewPage senza errori runtime.
+Dati di test ripuliti.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 ✅ Soglie temperatura: gruppo per-tipo (cliente) + override per singolo dispositivo
+**Richiesta utente** (dopo domanda "dove si impostano le soglie temperatura?"): (a) gruppo "Temperatura"
+nella pagina Soglie Alert per cliente (warn/crit per tipo), (b) override temperatura per singolo device
+nella scheda device (prima solo via profilo/JSON).
+**Risoluzione UNIFICATA** in `hardware_alerts.py::resolve_temp_thresholds(profile_thresholds, device_type,
+device_override, client_by_type)` con priorità: (1) override device `managed_devices.temp_warn_c/temp_crit_c`
+→ (2) soglia cliente per-tipo `alert_thresholds.temp_by_type[<type>]` → (3) soglia esplicita del profilo
+(`temp_warn_c`/`inlet`/`cpu`) → (4) default per tipo `_DEFAULT_TEMP_THRESHOLDS`. warn e crit risolti
+indipendentemente, mai None. Usata sia in `hardware_alerts.evaluate_hardware_alerts` (path SNMP vendor_metrics,
+guardia rilassata: valuta la temperatura anche senza soglie di profilo se c'è override/cliente-tipo) sia in
+`connector.py::_check_device_thresholds` (path SNMP generico `dev.temperature`, prima era hardcoded `>75`;
+ora warn=high/crit=critical).
+**API**: `GET /api/thresholds-temp-defaults` (default per tipo, single source of truth); `GET/POST
+/api/thresholds/{client_id}` ora includono `temp_by_type`; nuovo `POST /api/devices/by-ip/{ip}/temp-thresholds`
+`{warn_c,crit_c,client_id?}` (null+null = rimuove override; valida 0–150 e warn<crit; update_many su ip/ip_address).
+`DeviceResponse` + `routes/devices.py` espongono `temp_warn_c`/`temp_crit_c`.
+**Frontend**: `ThresholdsPage.js` nuova sezione "Temperatura per tipo di dispositivo" (11 tipi, input
+warn/crit con placeholder = default, salvati in `temp_by_type`); `DeviceEditModal.js` nuova sezione "Soglie
+temperatura (override device)" (input warn/crit + "Rimuovi override") persistita in `persistChanges`.
+**Testing**: resolver unit (priorità corretta); endpoint E2E via requests+TOTP (temp-defaults 200;
+temp_by_type save/readback; device override save/readback via /devices; warn>=crit → 400; clear OK);
+screenshot ThresholdsPage (gruppo Temperatura, 11 righe, default visibili). Dati di test ripuliti.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
+## 2026-06 ✅ TV Wallboard: ora mostra TUTTI gli allarmi critici (agent offline, uplink giù, iLO…)
+**Problema utente**: allarmi come "AGENT OFFLINE" e "UPLINK GIÙ" arrivavano su Telegram ma NON comparivano
+sul televisore. **Causa (RCA sul codice)**: `TvDashboardPage.js::issues()` costruiva i problemi SOLO da
+`vital_down` + `wan_targets` + `backup`, ignorando del tutto `data.alerts`. Un agent offline rende i device
+STALE (non "offline") → `vital_down` vuoto → niente sul TV; un "UPLINK GIÙ" è un allarme di PORTA (lo switch
+è online) → non è vitale/WAN/backup → ignorato. Idem iLO/soglie/loop.
+**Fix (scelte utente: entrambe le viste, suono+popup solo critical, severità critical+high, esclusi i
+ridondanti)**:
+- Backend `routes/tv_dashboard.py`: nuovo `_TV_ALERT_EXCLUDE` + `_tv_alert_included()`. Il payload ora
+  espone `alert_feed` (flat, critical+high, top 40) e ogni `client` ha `alerts[]` (top 6) + `alert_count_extra`.
+  Esclusi i tipi già coperti altrove (WAN/ISP ticker, blackout/correlazioni sito, backup, sicurezza/OSINT
+  già nel ticker, rogue/nuovi device, vital_device_offline) + rumore (recovery/stale/test) + stampanti/toner
+  (per titolo) + NIC-link iLO silenziabile. Inclusi: agent_watchdog, connector_watchdog/offline,
+  port_link_down, redfish HW (PSU/disco/DIMM/temp), threshold_*, hardware_snmp, vendor_* (UPS/RAID/disk),
+  hyperv_vm_down, datto_server_offline, ecc.
+- Frontend `TvDashboardPage.js`: (1) `issues()` considera gli alert (crit se ≥1 critical, warn se ≥1 high);
+  (2) nuova sezione "ALTRI ALLARMI" nella card cliente; (3) pannello dedicato "ALLARMI CRITICI ATTIVI" a
+  fondo pagina (griglia 2 colonne: cliente · titolo · device · da-quanto); (4) contatore header "ALTRI
+  ALLARMI"; (5) suono + popup ("ALLARME CRITICO") sui NUOVI alert **critical** (come i vitali down).
+  `TvDashboard.css`: stili `tvx-alertfeed*` + variante `tvx-item.warn` (dot ambra).
+**Testing**: verificato via curl con alert sintetici (agent_watchdog/port_link_down/connector_watchdog/
+threshold_cpu INCLUSI; backup + "toner stampante" ESCLUSI) + screenshot /tv (header "6 ALTRI ALLARMI",
+sezione card, pannello "ALLARMI CRITICI ATTIVI (6)"). Frontend compila. Dati di test rimossi.
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
+
 ## 2026-06 ✨ Temperatura: soglie per TIPO di dispositivo
 `hardware_alerts.py`: nuova `_temp_thresholds(thresholds, device_type)` con default sensati per tipo
 (switch/router 68/82, firewall 70/85, server/ilo/hypervisor 70/88, ap 60/75, printer 55/70, nas/storage
@@ -9430,3 +9514,9 @@ VERIFICATO E2E (preview): pre-link host senza dati; post-link host con server_mo
 dischi (storage_controllers), health, ilo_ip; entry .203 non più separata.
 NB attivo in prod dopo REDEPLOY. Il Test iLO legge "ProLiant ML110 Gen10" → Redfish ok;
 Health null è normale HPE (usa i sottosistemi).
+
+## 2026-09-08 — FIX soglie profilo vendor ignorate dal motore alert
+- Bug: "Salva override" del profilo (device_profile_overrides) non era letto da hardware_alerts.py/connector.py (usavano solo il seed via get_profile). HPE Comware seed 55/70 continuava a generare alert nonostante override 80/80.
+- Fix: nuova `get_effective_profile(db, key)` in device_profiles/__init__.py (seed + override); usata in hardware_alerts.py e nei 3 punti di connector.py (soglie + OID arricchiti).
+- Priorità temperatura invariata: override device > soglia cliente per tipo > profilo vendor (effettivo) > default tipo.
+- Backlog opzionale (utente non ha scelto): mostrare provenienza soglia nel messaggio alert; eventuale inversione priorità profilo vs cliente-per-tipo.

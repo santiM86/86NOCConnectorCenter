@@ -5152,6 +5152,13 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
   const [snmpVersion, setSnmpVersion] = useState("v2c");
   const [community, setCommunity] = useState("public");
   const [vmOnly, setVmOnly] = useState(false);
+  const [enTemp, setEnTemp] = useState(false);
+  const [tWarn, setTWarn] = useState("");
+  const [tCrit, setTCrit] = useState("");
+  const [tDiskWarn, setTDiskWarn] = useState("");
+  const [tDiskCrit, setTDiskCrit] = useState("");
+  const [tInletWarn, setTInletWarn] = useState("");
+  const [tInletCrit, setTInletCrit] = useState("");
   const [presets, setPresets] = useState([]);
   const [presetName, setPresetName] = useState("");
 
@@ -5170,6 +5177,7 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
       setEnMon(false); setMonitorType("snmp");
       setEnSnmp(false); setSnmpVersion("v2c"); setCommunity("public");
       setVmOnly(false); setPresetName("");
+      setEnTemp(false); setTWarn(""); setTCrit(""); setTDiskWarn(""); setTDiskCrit(""); setTInletWarn(""); setTInletCrit("");
       loadPresets();
     }
   }, [open]);
@@ -5182,9 +5190,17 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
     if (enSilence) { apply.silenced = silenced; apply.silence_reason = silenceReason; }
     if (enMon) apply.monitor_type = monitorType;
     if (enSnmp) { apply.snmp_version = snmpVersion; if (snmpVersion !== "v3") apply.community = community; }
+    if (enTemp) {
+      const t = {};
+      const add = (k, v) => { if (v !== "" && v != null) t[k] = Number(v); };
+      add("warn", tWarn); add("crit", tCrit);
+      add("disk_warn", tDiskWarn); add("disk_crit", tDiskCrit);
+      add("inlet_warn", tInletWarn); add("inlet_crit", tInletCrit);
+      if (Object.keys(t).length) apply.temp = t;
+    }
     return apply;
   };
-  const nothingSelected = !enVm && !enVirt && !enHost && !enSilence && !enMon && !enSnmp;
+  const nothingSelected = !enVm && !enVirt && !enHost && !enSilence && !enMon && !enSnmp && !enTemp;
 
   // Carica un preset salvato nei controlli del modal.
   const applyPreset = (p) => {
@@ -5196,6 +5212,11 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
     setEnSilence("silenced" in a); setSilenced(a.silenced !== false); setSilenceReason(a.silence_reason || "");
     setEnMon("monitor_type" in a); if ("monitor_type" in a) setMonitorType(a.monitor_type);
     setEnSnmp("snmp_version" in a); if ("snmp_version" in a) setSnmpVersion(a.snmp_version); if ("community" in a) setCommunity(a.community || "public");
+    const t = a.temp || {};
+    setEnTemp("temp" in a);
+    setTWarn(t.warn ?? ""); setTCrit(t.crit ?? "");
+    setTDiskWarn(t.disk_warn ?? ""); setTDiskCrit(t.disk_crit ?? "");
+    setTInletWarn(t.inlet_warn ?? ""); setTInletCrit(t.inlet_crit ?? "");
     setVmOnly(!!p.vm_only);
     toast.success(`Preset "${p.name}" caricato`);
   };
@@ -5320,6 +5341,25 @@ function BulkSettingsModal({ open, count, onClose, onApply }) {
               <Input value={community} onChange={(e) => setCommunity(e.target.value)} placeholder="community" className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs font-mono" data-testid="bulk-community-input" />
             )}
             {snmpVersion === "v3" && <span className="block text-[9px] text-[var(--text-muted)]">Le credenziali v3 vanno impostate per singolo device.</span>}
+          </Row>
+
+          <Row checked={enTemp} onCheck={setEnTemp} label="🌡️ Soglie temperatura (°C)">
+            {[
+              { lbl: "Generale", w: tWarn, sw: setTWarn, c: tCrit, sc: setTCrit, k: "gen" },
+              { lbl: "Disco", w: tDiskWarn, sw: setTDiskWarn, c: tDiskCrit, sc: setTDiskCrit, k: "disk" },
+              { lbl: "Aria ingresso", w: tInletWarn, sw: setTInletWarn, c: tInletCrit, sc: setTInletCrit, k: "inlet" },
+            ].map((row) => (
+              <div key={row.k} className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--text-muted)] w-24">{row.lbl}</span>
+                <Input type="number" value={row.w} onChange={(e) => row.sw(e.target.value)} placeholder="warn"
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs w-16 text-right" data-testid={`bulk-temp-${row.k}-warn`} />
+                <span className="text-[9px] text-amber-400">warn</span>
+                <Input type="number" value={row.c} onChange={(e) => row.sc(e.target.value)} placeholder="crit"
+                  className="bg-[var(--bg-card)] border-[var(--bg-border)] h-7 text-xs w-16 text-right" data-testid={`bulk-temp-${row.k}-crit`} />
+                <span className="text-[9px] text-rose-400">crit</span>
+              </div>
+            ))}
+            <span className="block text-[9px] text-[var(--text-muted)]">Applica solo i valori compilati (gli altri restano invariati). Override device, massima priorità.</span>
           </Row>
 
           <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--text-secondary)] px-1 pt-1" data-testid="bulk-vmonly-row">

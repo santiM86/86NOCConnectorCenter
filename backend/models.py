@@ -138,6 +138,15 @@ class DeviceResponse(BaseModel):
     # accesa risulta Off/Saved/Paused (spegnimento inatteso). Default False =
     # comportamento attuale (VM spenta = nessun alert, zero falsi positivi).
     hyperv_alert_on_off: Optional[bool] = False
+    # v2026-06: override soglie temperatura per SINGOLO dispositivo (°C). None =
+    # nessun override (usa soglia profilo o default per tipo). Hanno la massima
+    # priorità nella risoluzione delle soglie temperatura.
+    temp_warn_c: Optional[float] = None
+    temp_crit_c: Optional[float] = None
+    disk_temp_warn_c: Optional[float] = None
+    disk_temp_crit_c: Optional[float] = None
+    inlet_temp_warn_c: Optional[float] = None
+    inlet_temp_crit_c: Optional[float] = None
     # v2026-06: tipo macchina impostabile dall'admin. "" = non impostato
     # (trattato come fisico). Valori VM: "hyperv" | "vmware" | "vm_generic".
     # Le VM sono escluse dalla lista "server senza credenziali iLO".

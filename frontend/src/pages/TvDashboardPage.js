@@ -44,16 +44,18 @@ function useAlarmSystem() {
     const bkKeys = new Set();
     const wanKeys = new Set();
     const sondaKeys = new Set();
+    const alertKeys = new Set();
     (data.clients || []).forEach(c => {
       (c.vital_down || []).forEach(v => vitalKeys.add(`${c.id}:${v.ip}`));
       if (c.backup && (c.backup.failed || 0) > 0) bkKeys.add(`${c.id}:bk`);
       (c.wan_targets || []).filter(w => w.status === "offline").forEach(w => wanKeys.add(`${c.id}:${w.public_ip}`));
       if (c.connector_online === false) sondaKeys.add(c.id);
+      (c.alerts || []).filter(a => a.severity === "critical").forEach(a => alertKeys.add(a.id));
     });
     const ispKeys = new Set((data.isp_outages || []).map(o => o.id));
     const secKeys = new Set((data.security_incidents || []).map(s => s.id));
     const newDevKeys = new Set((data.new_devices || []).map(d => d.id));
-    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, newDevKeys, primed: true }; return; }
+    if (!p.primed) { prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, alertKeys, ispKeys, secKeys, newDevKeys, primed: true }; return; }
     const has = (set, k) => (set || new Set()).has(k);
     let any = false;
     (data.clients || []).forEach(c => {
@@ -69,6 +71,9 @@ function useAlarmSystem() {
       if (c.connector_online === false && !has(p.sondaKeys, c.id)) {
         pushPopup("off", c.name, `SONDA OFFLINE — cliente non monitorato`); any = true;
       }
+      (c.alerts || []).filter(a => a.severity === "critical").forEach(a => {
+        if (!has(p.alertKeys, a.id)) { pushPopup("crit", c.name, `${a.title || "Allarme"}${a.device_name ? " — " + a.device_name : ""}`); any = true; }
+      });
     });
     (data.isp_outages || []).forEach(o => {
       if (!has(p.ispKeys, o.id)) { pushPopup("crit", (o.clients || []).slice(0, 3).join(", ") || "Più clienti", `GUASTO OPERATORE — ${o.title}`); any = true; }
@@ -80,7 +85,7 @@ function useAlarmSystem() {
       if (!has(p.newDevKeys, d.id)) { pushPopup("new", d.client_name, `NUOVO DISPOSITIVO — ${d.vendor} (${d.mac})`); any = true; }
     });
     if (any && soundOn) { beep(880, 0.28, 3, "sawtooth"); setTimeout(() => beep(620, 0.28, 3, "square"), 200); }
-    prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, ispKeys, secKeys, newDevKeys, primed: true };
+    prevRef.current = { vitalKeys, bkKeys, wanKeys, sondaKeys, alertKeys, ispKeys, secKeys, newDevKeys, primed: true };
   }, [soundOn, beep, pushPopup]);
   useEffect(() => {
     if (popups.length === 0) return;
@@ -104,11 +109,17 @@ function issues(c) {
   const bkFail = bk ? (bk.failed || 0) : 0;
   const bkMiss = bk ? (bk.missing || 0) : 0;
   const bkWarn = bk ? (bk.warning || 0) : 0;
-  const crit = vital.length > 0 || wanOffline.length > 0 || bkFail > 0;
-  const warn = wanDegraded.length > 0 || bkMiss > 0 || bkWarn > 0;
+  const alerts = c.alerts || [];
+  const alertCrit = alerts.filter(a => a.severity === "critical");
+  const alertHigh = alerts.filter(a => a.severity === "high");
+  const alertExtra = c.alert_count_extra || alerts.length;
+  const crit = vital.length > 0 || wanOffline.length > 0 || bkFail > 0 || alertCrit.length > 0;
+  const warn = wanDegraded.length > 0 || bkMiss > 0 || bkWarn > 0 || alertHigh.length > 0;
   const has = crit || warn;
-  const score = vital.length * 100 + wanOffline.length * 60 + bkFail * 40 + bkMiss * 15 + wanDegraded.length * 10 + bkWarn * 5;
-  return { vital, wan, wanOffline, wanDegraded, bk, bkFail, bkMiss, bkWarn, crit, warn, has, score };
+  const score = vital.length * 100 + wanOffline.length * 60 + alertCrit.length * 55
+    + bkFail * 40 + bkMiss * 15 + alertHigh.length * 12 + wanDegraded.length * 10 + bkWarn * 5;
+  return { vital, wan, wanOffline, wanDegraded, bk, bkFail, bkMiss, bkWarn,
+    alerts, alertCrit, alertHigh, alertExtra, crit, warn, has, score };
 }
 
 const WAN_COLOR = { online: "#22c55e", filtered: "#eab308", degraded: "#eab308", offline: "#ef4444", unknown: "#6b7280" };
@@ -151,7 +162,8 @@ export default function TvDashboardPage() {
       const i = issues(c);
       vital += i.vital.length; wanOff += i.wanOffline.length; bkFail += i.bkFail; bkMiss += i.bkMiss;
     });
-    return { vital, wanOff, bkFail, bkMiss, clientsIssue: clients.length };
+    const alertsExtra = (data?.alert_feed || []).length;
+    return { vital, wanOff, bkFail, bkMiss, alertsExtra, clientsIssue: clients.length };
   }, [data, clients.length]);
 
   const hasCrit = clients.some(c => c._i.crit);
@@ -172,6 +184,9 @@ export default function TvDashboardPage() {
                 : pp.title.startsWith("SONDA") ? "SONDA OFFLINE"
                 : pp.title.startsWith("GUASTO OPERATORE") ? "GUASTO OPERATORE (ISP)"
                 : pp.title.startsWith("SICUREZZA") ? "INCIDENTE SICUREZZA"
+                : pp.title.startsWith("VITALE DOWN") ? "DISPOSITIVO VITALE OFFLINE"
+                : pp.kind === "crit" ? "ALLARME CRITICO"
+                : pp.kind === "new" ? "NUOVO DISPOSITIVO"
                 : "DISPOSITIVO VITALE OFFLINE"
               }</div>
               <div className="tv-popup-client" data-testid="tv-popup-client">{pp.client}</div>
@@ -195,6 +210,7 @@ export default function TvDashboardPage() {
           <Stat n={totals.wanOff} label="WAN OFFLINE" tone={totals.wanOff ? "crit" : "ok"} />
           <Stat n={totals.bkFail} label="BACKUP FALLITI" tone={totals.bkFail ? "crit" : "ok"} />
           <Stat n={totals.bkMiss} label="BACKUP MANCANTI" tone={totals.bkMiss ? "warn" : "ok"} />
+          <Stat n={totals.alertsExtra} label="ALTRI ALLARMI" tone={totals.alertsExtra ? "crit" : "ok"} />
           <Stat n={totals.clientsIssue} label="CLIENTI COINVOLTI" tone={totals.clientsIssue ? "warn" : "ok"} />
         </div>
         <div className="tvx-right">
@@ -283,7 +299,7 @@ export default function TvDashboardPage() {
       {clients.length === 0 ? (
         <div className="tvx-empty">
           <div className="tvx-empty-icon">✓</div>
-          <div>Nessun problema attivo su vitali, WAN o backup. Tutto regolare.</div>
+          <div>Nessun problema attivo su vitali, WAN, backup o allarmi critici. Tutto regolare.</div>
         </div>
       ) : (
         <div className="tvx-grid" data-testid="tv-client-grid">
@@ -364,10 +380,46 @@ export default function TvDashboardPage() {
                     <div className="tvx-ok">✓ {i.bk.ok}/{i.bk.total} {i.bk.source === "vm" ? "VM" : "job"} ok</div>
                   )}
                 </div>
+
+                {/* ALTRI ALLARMI CRITICI (agent offline, uplink giù, iLO, soglie…) */}
+                {i.alerts.length > 0 && (
+                  <div className="tvx-sec">
+                    <div className="tvx-sec-h">ALTRI ALLARMI</div>
+                    <div className="tvx-list">
+                      {i.alerts.slice(0, 5).map((a, k) => (
+                        <div key={a.id || k} className={`tvx-item ${a.severity === "critical" ? "crit" : "warn"}`} data-testid="tv-alert-row">
+                          <span className="dot" /> <b>{a.title}</b>
+                          {a.device_name && <span className="tvx-when">{a.device_name}</span>}
+                        </div>
+                      ))}
+                      {i.alertExtra > 5 && <div className="tvx-more">+{i.alertExtra - 5} altri</div>}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Pannello dedicato: tutti gli allarmi critici/high attivi (flat) */}
+      {(data.alert_feed || []).length > 0 && (
+        <section className="tvx-alertfeed" data-testid="tv-alert-feed">
+          <div className="tvx-alertfeed-h">
+            <span>ALLARMI CRITICI ATTIVI ({data.alert_feed.length})</span>
+          </div>
+          <ul className="tvx-alertfeed-list">
+            {data.alert_feed.map((a, k) => (
+              <li key={a.id || k} className={`tvx-alertfeed-item ${a.severity === "critical" ? "crit" : "warn"}`} data-testid="tv-alert-feed-item">
+                <span className="sev" />
+                <span className="cli">{a.client_name || "—"}</span>
+                <span className="ttl">{a.title}</span>
+                {a.device_name && <span className="dev">{a.device_name}</span>}
+                <span className="ago">{a.time_ago}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );

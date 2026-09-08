@@ -851,12 +851,12 @@ async def connector_managed_devices(request: Request):
     ).to_list(500)
     # Enrich with vendor-specific OID targets (derivati dal profilo)
     try:
-        from device_profiles import get_profile
+        from device_profiles import get_effective_profile
         for d in devices:
             pk = d.get("profile_key")
             if not pk:
                 continue
-            profile = get_profile(pk)
+            profile = await get_effective_profile(db, pk)
             if not profile:
                 continue
             oids = profile.get("oids") or {}
@@ -1786,8 +1786,8 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
     profile_thresholds = {}
     if profile_key:
         try:
-            from device_profiles import get_profile
-            prof = get_profile(profile_key)
+            from device_profiles import get_effective_profile
+            prof = await get_effective_profile(db, profile_key)
             if prof:
                 profile_thresholds = prof.get("thresholds") or {}
                 # Override only if profile specifies (profile wins on per-device tuning)
@@ -1875,13 +1875,32 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             })
 
     # --- Temperature (generic SNMP temp, not Redfish)
+    #     Soglie unificate: override device > cliente-per-tipo > profilo > default-tipo
     temp = dev.get("temperature")
     if temp is not None and isinstance(temp, (int, float)):
-        if temp > 75:
+        try:
+            from hardware_alerts import resolve_temp_thresholds
+            _dov = await db.managed_devices.find_one(
+                {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1}) or {}
+            device_override = {"warn": _dov.get("temp_warn_c"), "crit": _dov.get("temp_crit_c")}
+            client_by_type = th.get("temp_by_type") or {}
+            t_warn, t_crit = resolve_temp_thresholds(
+                profile_thresholds, device_type, device_override, client_by_type)
+        except Exception:
+            t_warn, t_crit = temp_warn, temp_crit
+        if t_crit is not None and temp >= t_crit:
             alerts_to_create.append({
                 "severity": "critical",
                 "title": f"Temperatura critica ({temp}°C): {device_name}",
-                "message": f"Temperatura {temp}°C rilevata via SNMP su {device_name} ({device_ip})",
+                "message": f"Temperatura {temp}°C via SNMP su {device_name} ({device_ip}) — soglia critica {t_crit:.0f}°C",
+                "source_type": "threshold_temp",
+            })
+        elif t_warn is not None and temp >= t_warn:
+            alerts_to_create.append({
+                "severity": "high",
+                "title": f"Temperatura elevata ({temp}°C): {device_name}",
+                "message": f"Temperatura {temp}°C via SNMP su {device_name} ({device_ip}) — soglia warning {t_warn:.0f}°C",
                 "source_type": "threshold_temp",
             })
 
@@ -1925,8 +1944,19 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 })
 
         # --- Synology: disk temperature (table walk: diskTemperature)
-        disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
-        disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
+        # Soglie: override device (disk) > cliente-per-tipo > profilo > default 50/60
+        try:
+            from hardware_alerts import resolve_temp_thresholds as _rtt
+            _dmd = await db.managed_devices.find_one(
+                {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {"_id": 0, "disk_temp_warn_c": 1, "disk_temp_crit_c": 1}) or {}
+            _dov_disk = {"disk_warn": _dmd.get("disk_temp_warn_c"), "disk_crit": _dmd.get("disk_temp_crit_c")}
+            disk_temp_warn, disk_temp_crit = _rtt(
+                profile_thresholds, device_type, _dov_disk, th.get("temp_by_type") or {},
+                kind="disk", fallback=(50, 60))
+        except Exception:
+            disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
+            disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)
         disk_temps = vendor_metrics.get("diskTemperature") or {}
         if isinstance(disk_temps, dict):
             for idx, t in disk_temps.items():
@@ -3717,8 +3747,8 @@ async def connector_fetch_devices(request: Request):
         try:
             pk = d.get("profile_key")
             if pk:
-                from device_profiles import get_profile
-                profile = get_profile(pk)
+                from device_profiles import get_effective_profile
+                profile = await get_effective_profile(db, pk)
                 if profile:
                     oids = profile.get("oids") or {}
                     scalars: dict = {}

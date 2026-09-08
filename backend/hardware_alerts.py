@@ -164,6 +164,56 @@ def _temp_thresholds(thresholds: dict, device_type: Optional[str]) -> tuple:
             crit if crit is not None else base[1])
 
 
+def _first_num(*vals) -> Optional[float]:
+    for v in vals:
+        f = _to_float(v)
+        if f is not None:
+            return f
+    return None
+
+
+# Chiavi per "tipo" di temperatura (generale / aria in ingresso / disco).
+_TEMP_KIND_KEYS = {
+    "general": {"pw": ("temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c"),
+                "pc": ("temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c"),
+                "dw": "warn", "dc": "crit", "cw": "warn", "cc": "crit"},
+    "inlet":   {"pw": ("inlet_temp_warn_c",), "pc": ("inlet_temp_crit_c",),
+                "dw": "inlet_warn", "dc": "inlet_crit", "cw": "inlet_warn", "cc": "inlet_crit"},
+    "disk":    {"pw": ("disk_temp_warn_c",), "pc": ("disk_temp_crit_c",),
+                "dw": "disk_warn", "dc": "disk_crit", "cw": "disk_warn", "cc": "disk_crit"},
+}
+
+
+def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type: Optional[str],
+                            device_override: Optional[dict] = None,
+                            client_by_type: Optional[dict] = None,
+                            kind: str = "general",
+                            fallback: Optional[tuple] = None) -> tuple:
+    """Risoluzione UNIFICATA delle soglie temperatura (warn_c, crit_c) con priorità:
+      1) override per SINGOLO dispositivo (managed_devices)
+      2) soglia per TIPO impostata dal cliente (alert_thresholds.temp_by_type[<type>])
+      3) soglia esplicita del PROFILO vendor
+      4) default: per `kind='general'` = `_DEFAULT_TEMP_THRESHOLDS` per tipo; per
+         inlet/disk = `fallback` passato dal chiamante (può essere None).
+    `kind` = general|inlet|disk. warn e crit risolti indipendentemente."""
+    dt = (device_type or "").lower()
+    km = _TEMP_KIND_KEYS.get(kind, _TEMP_KIND_KEYS["general"])
+    if kind == "general" and fallback is None:
+        base = _DEFAULT_TEMP_THRESHOLDS.get(dt, _DEFAULT_TEMP_FALLBACK)
+    else:
+        base = fallback
+    pt = profile_thresholds or {}
+    prof_warn = _threshold(pt, *km["pw"])
+    prof_crit = _threshold(pt, *km["pc"])
+    dov = device_override or {}
+    cbt = (client_by_type or {}).get(dt) or {}
+    bw = base[0] if base else None
+    bc = base[1] if base else None
+    warn = _first_num(dov.get(km["dw"]), cbt.get(km["cw"]), prof_warn, bw)
+    crit = _first_num(dov.get(km["dc"]), cbt.get(km["cc"]), prof_crit, bc)
+    return warn, crit
+
+
 async def _bump_streak(db, dedup_key: str) -> int:
     """Incrementa e ritorna il contatore di breach consecutivi per la metrica."""
     doc = await db.hardware_alert_state.find_one_and_update(
@@ -290,24 +340,26 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     if not isinstance(vendor_metrics, dict) or not vendor_metrics:
         return
     try:
-        from device_profiles import get_profile
+        from device_profiles import get_effective_profile
     except Exception:  # noqa: BLE001
         return
 
     # Contesto per l'alert (client + device name/type + profile_key)
     device_name = sys_name or ""
     device_type = ""
+    device_temp_override = {}
     try:
         mdoc = await db.managed_devices.find_one(
             {"client_id": client_id, "ip": device_ip},
             {"_id": 0, "hostname": 1, "name": 1, "device_name": 1,
-             "device_type": 1, "profile_key": 1},
+             "device_type": 1, "profile_key": 1, "temp_warn_c": 1, "temp_crit_c": 1},
         )
         if mdoc:
             device_name = mdoc.get("hostname") or mdoc.get("name") or mdoc.get("device_name") or device_name
             device_type = mdoc.get("device_type") or ""
             if not profile_key:
                 profile_key = mdoc.get("profile_key")
+            device_temp_override = {"warn": mdoc.get("temp_warn_c"), "crit": mdoc.get("temp_crit_c")}
     except Exception:  # noqa: BLE001
         pass
     if not profile_key:
@@ -322,9 +374,24 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
             pass
     if not profile_key:
         return
-    prof = get_profile(profile_key) or {}
+    prof = await get_effective_profile(db, profile_key) or {}
     thresholds = prof.get("thresholds") or {}
-    if not thresholds:
+    # Soglie temperatura per-tipo impostate dal cliente (override profilo/default)
+    client_temp_by_type = {}
+    try:
+        _at = await db.alert_thresholds.find_one(
+            {"client_id": client_id}, {"_id": 0, "temp_by_type": 1})
+        if _at:
+            client_temp_by_type = _at.get("temp_by_type") or {}
+    except Exception:  # noqa: BLE001
+        pass
+    _dt = (device_type or "").lower()
+    _has_temp_override = any(
+        isinstance(v, (int, float)) for v in (device_temp_override or {}).values())
+    _has_client_temp = bool(client_temp_by_type.get(_dt))
+    # Prima si usciva se il profilo non aveva soglie; ora si prosegue anche solo
+    # per valutare la TEMPERATURA se c'è un override device o una soglia cliente.
+    if not thresholds and not _has_temp_override and not _has_client_temp:
         return
 
     cfg = await get_config(db)
@@ -382,8 +449,8 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     elif val is not None:
         await _resolve_alert(db, cfg, dk, f"Memoria rientrata al {val:.0f}% su {device_name} ({device_ip}).")
 
-    # ---- Temperatura (C) ----  soglie per tipo di dispositivo (con override device)
-    _tw, _tc = _temp_thresholds(thresholds, device_type)
+    # ---- Temperatura (C) ----  soglie: override device > cliente-per-tipo > profilo > default-tipo
+    _tw, _tc = resolve_temp_thresholds(thresholds, device_type, device_temp_override, client_temp_by_type)
     sev, val = _eval_percent(
         vendor_metrics, "temp", _tw, _tc, ok=_temp_ok,
     )

@@ -41,8 +41,19 @@ async def get_thresholds(client_id: str, current_user: dict = Depends(get_curren
             "memory_critical_pct": 95,
             "bandwidth_warning_pct": 80,
             "bandwidth_critical_pct": 95,
+            "temp_by_type": {},
         }
+    thresholds.setdefault("temp_by_type", {})
     return thresholds
+
+
+@router.get("/thresholds-temp-defaults")
+async def get_temp_defaults(current_user: dict = Depends(get_current_user)):
+    """Soglie temperatura di DEFAULT per tipo di dispositivo (°C), usate quando
+    non c'è né un override sul device né una soglia cliente per quel tipo."""
+    from hardware_alerts import _DEFAULT_TEMP_THRESHOLDS, _DEFAULT_TEMP_FALLBACK
+    types = {k: {"warn": v[0], "crit": v[1]} for k, v in _DEFAULT_TEMP_THRESHOLDS.items()}
+    return {"defaults": types, "fallback": {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}}
 
 
 @router.post("/thresholds/{client_id}")

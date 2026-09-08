@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { API } from "@/App";
 import axios from "axios";
 import { toast } from "sonner";
-import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu, CheckCircle } from "@phosphor-icons/react";
+import { PencilSimple, ShieldCheck, WifiHigh, Lightning, BellSlash, Power, Cpu, CheckCircle, Thermometer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +42,12 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [hypervVmName, setHypervVmName] = useState(device?.hyperv_vm_name || "");
   const [hypervHostHint, setHypervHostHint] = useState(device?.hyperv_host_hint || "");
   const isVM = ["hyperv", "vmware", "vm_generic"].includes(virtualization);
+  const [tempWarn, setTempWarn] = useState(device?.temp_warn_c ?? "");
+  const [tempCrit, setTempCrit] = useState(device?.temp_crit_c ?? "");
+  const [diskWarn, setDiskWarn] = useState(device?.disk_temp_warn_c ?? "");
+  const [diskCrit, setDiskCrit] = useState(device?.disk_temp_crit_c ?? "");
+  const [inletWarn, setInletWarn] = useState(device?.inlet_temp_warn_c ?? "");
+  const [inletCrit, setInletCrit] = useState(device?.inlet_temp_crit_c ?? "");
   // Toggle "allerta VM spenta" utile se è una VM Hyper-V (snapshot già presente
   // OPPURE marcata manualmente come Hyper-V dall'admin)
   const isHyperVvm = !!device?.hyperv_state || virtualization === "hyperv";
@@ -72,7 +78,13 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setHypervHostHint(
       device?.hyperv_host_hint || (effVirt === "hyperv" ? (device?.hyperv_host || "") : "")
     );
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name]);
+    setTempWarn(device?.temp_warn_c ?? "");
+    setTempCrit(device?.temp_crit_c ?? "");
+    setDiskWarn(device?.disk_temp_warn_c ?? "");
+    setDiskCrit(device?.disk_temp_crit_c ?? "");
+    setInletWarn(device?.inlet_temp_warn_c ?? "");
+    setInletCrit(device?.inlet_temp_crit_c ?? "");
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name, device?.temp_warn_c, device?.temp_crit_c, device?.disk_temp_warn_c, device?.disk_temp_crit_c, device?.inlet_temp_warn_c, device?.inlet_temp_crit_c]);
 
   // Cambio "tipo macchina" con AUTOFILL: scegliendo Hyper-V precompila il nome
   // VM (col nome device) e l'host (se rilevato) quando i campi sono vuoti.
@@ -247,6 +259,38 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         );
       } catch (e) {
         errors.push(`Tipo macchina: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
+    // 6) Override soglie temperatura per dispositivo (generale/disco/inlet)
+    const num = (v) => (v === "" || v == null ? null : Number(v));
+    const pairs = [
+      ["warn_c", "crit_c", num(tempWarn), num(tempCrit), device?.temp_warn_c ?? null, device?.temp_crit_c ?? null, "generale"],
+      ["disk_warn_c", "disk_crit_c", num(diskWarn), num(diskCrit), device?.disk_temp_warn_c ?? null, device?.disk_temp_crit_c ?? null, "disco"],
+      ["inlet_warn_c", "inlet_crit_c", num(inletWarn), num(inletCrit), device?.inlet_temp_warn_c ?? null, device?.inlet_temp_crit_c ?? null, "inlet"],
+    ];
+    const tempBody = {};
+    let tempDirty = false;
+    let tempValid = true;
+    for (const [wk, ck, w, c, wasW, wasC, lbl] of pairs) {
+      if (w !== wasW || c !== wasC) {
+        tempDirty = true;
+        if (w != null && c != null && w >= c) {
+          errors.push(`Temperatura ${lbl}: warning deve essere minore della critica`);
+          tempValid = false;
+        }
+        tempBody[wk] = w;
+        tempBody[ck] = c;
+      }
+    }
+    if (tempDirty && tempValid) {
+      try {
+        await axios.post(
+          `${API}/devices/by-ip/${encodeURIComponent(device?.ip_address || device?.ip)}/temp-thresholds`,
+          { ...tempBody, client_id: clientId }
+        );
+      } catch (e) {
+        errors.push(`Soglie temperatura: ${e.response?.data?.detail || e.message}`);
       }
     }
 
@@ -600,6 +644,35 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
               </label>
             </div>
           )}
+
+          {/* Override soglie temperatura per questo dispositivo (°C) */}
+          <div className="rounded p-2.5 border bg-[var(--bg-card)] border-[var(--bg-border)] space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--text-primary)]">
+              <Thermometer size={13} weight="fill" className="text-orange-400" />
+              Soglie temperatura (override device)
+            </div>
+            {[
+              { lbl: "Generale", w: tempWarn, sw: setTempWarn, c: tempCrit, sc: setTempCrit, k: "gen" },
+              { lbl: "Disco", w: diskWarn, sw: setDiskWarn, c: diskCrit, sc: setDiskCrit, k: "disk" },
+              { lbl: "Aria ingresso (inlet)", w: inletWarn, sw: setInletWarn, c: inletCrit, sc: setInletCrit, k: "inlet" },
+            ].map((row) => (
+              <div key={row.k} className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--text-muted)] w-32">{row.lbl}</span>
+                <input type="number" value={row.w} onChange={(e) => row.sw(e.target.value)} placeholder="warn"
+                  className="w-16 bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1 text-[12px] text-right text-white focus:border-amber-500 outline-none"
+                  data-testid={`device-temp-${row.k}-warn-input`} />
+                <span className="text-[9px] text-amber-400">°C warn</span>
+                <input type="number" value={row.c} onChange={(e) => row.sc(e.target.value)} placeholder="crit"
+                  className="w-16 bg-[var(--bg-panel)] border border-[var(--bg-border)] rounded px-2 py-1 text-[12px] text-right text-white focus:border-rose-500 outline-none"
+                  data-testid={`device-temp-${row.k}-crit-input`} />
+                <span className="text-[9px] text-rose-400">°C crit</span>
+              </div>
+            ))}
+            <span className="block text-[9px] text-[var(--text-muted)] leading-relaxed">
+              Lascia vuoto per usare la soglia del profilo o il default per tipo. Questi override hanno la
+              <strong> massima priorità</strong>. Disco = temp dischi (NAS/Synology). Inlet = aria in ingresso (iLO).
+            </span>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end items-center mt-4">
