@@ -9514,3 +9514,9 @@ VERIFICATO E2E (preview): pre-link host senza dati; post-link host con server_mo
 dischi (storage_controllers), health, ilo_ip; entry .203 non più separata.
 NB attivo in prod dopo REDEPLOY. Il Test iLO legge "ProLiant ML110 Gen10" → Redfish ok;
 Health null è normale HPE (usa i sottosistemi).
+
+## 2026-09-08 — FIX soglie profilo vendor ignorate dal motore alert
+- Bug: "Salva override" del profilo (device_profile_overrides) non era letto da hardware_alerts.py/connector.py (usavano solo il seed via get_profile). HPE Comware seed 55/70 continuava a generare alert nonostante override 80/80.
+- Fix: nuova `get_effective_profile(db, key)` in device_profiles/__init__.py (seed + override); usata in hardware_alerts.py e nei 3 punti di connector.py (soglie + OID arricchiti).
+- Priorità temperatura invariata: override device > soglia cliente per tipo > profilo vendor (effettivo) > default tipo.
+- Backlog opzionale (utente non ha scelto): mostrare provenienza soglia nel messaggio alert; eventuale inversione priorità profilo vs cliente-per-tipo.

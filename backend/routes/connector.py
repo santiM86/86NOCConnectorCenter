@@ -851,12 +851,12 @@ async def connector_managed_devices(request: Request):
     ).to_list(500)
     # Enrich with vendor-specific OID targets (derivati dal profilo)
     try:
-        from device_profiles import get_profile
+        from device_profiles import get_effective_profile
         for d in devices:
             pk = d.get("profile_key")
             if not pk:
                 continue
-            profile = get_profile(pk)
+            profile = await get_effective_profile(db, pk)
             if not profile:
                 continue
             oids = profile.get("oids") or {}
@@ -1786,8 +1786,8 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
     profile_thresholds = {}
     if profile_key:
         try:
-            from device_profiles import get_profile
-            prof = get_profile(profile_key)
+            from device_profiles import get_effective_profile
+            prof = await get_effective_profile(db, profile_key)
             if prof:
                 profile_thresholds = prof.get("thresholds") or {}
                 # Override only if profile specifies (profile wins on per-device tuning)
@@ -3747,8 +3747,8 @@ async def connector_fetch_devices(request: Request):
         try:
             pk = d.get("profile_key")
             if pk:
-                from device_profiles import get_profile
-                profile = get_profile(pk)
+                from device_profiles import get_effective_profile
+                profile = await get_effective_profile(db, pk)
                 if profile:
                     oids = profile.get("oids") or {}
                     scalars: dict = {}

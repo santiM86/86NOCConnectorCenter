@@ -1119,6 +1119,22 @@ def get_profile(key: str) -> dict | None:
     return None
 
 
+async def get_effective_profile(db, key: str) -> dict | None:
+    """Profilo seed + override utente salvati in `device_profile_overrides` (override vince)."""
+    seed = get_profile(key)
+    if not seed:
+        return None
+    try:
+        doc = await db.device_profile_overrides.find_one({"key": key}, {"_id": 0, "overrides": 1})
+        ov = (doc or {}).get("overrides")
+    except Exception:  # noqa: BLE001
+        ov = None
+    if not isinstance(ov, dict) or not ov:
+        return seed
+    return {**seed, **ov}
+
+
+
 def all_profiles() -> list[dict]:
     return list(PROFILES)
 

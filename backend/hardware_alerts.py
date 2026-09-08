@@ -340,7 +340,7 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     if not isinstance(vendor_metrics, dict) or not vendor_metrics:
         return
     try:
-        from device_profiles import get_profile
+        from device_profiles import get_effective_profile
     except Exception:  # noqa: BLE001
         return
 
@@ -374,7 +374,7 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
             pass
     if not profile_key:
         return
-    prof = get_profile(profile_key) or {}
+    prof = await get_effective_profile(db, profile_key) or {}
     thresholds = prof.get("thresholds") or {}
     # Soglie temperatura per-tipo impostate dal cliente (override profilo/default)
     client_temp_by_type = {}
