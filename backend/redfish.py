@@ -1133,7 +1133,8 @@ class RedfishPoller:
         try:
             from hardware_alerts import resolve_temp_thresholds as _rtt
             _md = await self.db.managed_devices.find_one(
-                {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
+                {**({"client_id": client_id} if client_id else {}),
+                 "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
                 {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1,
                  "inlet_temp_warn_c": 1, "inlet_temp_crit_c": 1, "device_type": 1}) or {}
             _dt = _md.get("device_type") or "ilo"

@@ -9525,3 +9525,9 @@ Health null è normale HPE (usa i sottosistemi).
 - Profilo hpe_comware: OID fan/PSU corretti (HH3C-LswDEVM .8.35.9.1.1.1.2 / .8.35.9.1.2.1.2; i vecchi .16/.18 erano VoltageHighThreshold/MacAddress → MAC "hex:ec:9b.." letto come 9 → "Guasto alimentatore" falso). Stati sani {1,3,4}, fault=2. `normalize_fan_psu_states()` condiviso scheda device/motore; `_to_float` ignora MAC/hex. Migrazione one-shot (migrations_oneshot.py) chiude gli alert PSU/fan Comware attivi e resetta gli streak.
 - GET /api/alerts: `sort_by=severity` (critici prima); ClientOverviewPage carica tutti gli alert attivi (limit 1000) → StatBox "N critici" congruo col wallboard.
 - sys_name "<nil>" dall agent Go: scartato in agent_ws._bridge_snmp_poll + migrazione pulizia DB; fix anche in noc-agent asString (da compilare).
+
+## 2026-09-08 — TV wallboard: congruenza feed allarmi
+- tv_dashboard: nome device negli alert risolto via best_display_name quando il nome salvato è categoria/generico (es. "Hardware Manufacturer/Hewlett Packard" → "HPE 10.10.51.211"); dedup feed per (cliente, titolo, device); "giù da" usa unreachable_since > last_seen > updated_at > managed.last_seen_at/last_poll_at, fallback "mai visto online".
+- zyxel_nebula._emit_zyxel_alert: dedup su alert attivo stesso (cliente, source_type, raw_data dev_id) → niente doppio "Zyxel OFFLINE".
+- display_name._clean scarta "<nil>"; redfish lookup override temp scoped per client_id.
+- NB: i "Guasto alimentatore" visibili in produzione spariranno al deploy (migrazione one-shot allo startup).
