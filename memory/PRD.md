@@ -9552,3 +9552,9 @@ Health null è normale HPE (usa i sottosistemi).
 - Panoramica: nuova components/ClientStatusTable.js (una riga per cliente: stato, vitali, WAN, backup, alert; espansione con vitali offline / WAN KO / alert attivi). Rimossi ClientCard/SvcLine da DashboardPage. Live stream ignora eventi recovery.
 - overview.py: per-client try/except (un cliente rotto non azzera la Panoramica), None-safe su ping/gateway_ping/name; UI mostra il detail HTTP 500.
 - alert_hygiene.resolve_recovered_device_alerts (ogni 2 min): chiude alert corr_*/vital_device_offline/datto_server_offline se il device è online (liveness unificata) → nessun alert rientrato resta su TV/Panoramica.
+
+## 2026-09-09 — Performance/LIVE: cache TV, dedup, client page parallela, hygiene Zyxel
+- tv_dashboard: cache 4s + lock + stale-while-error; dedup vitali offline per nome (GALVANSRV x3 → 1); dedup feed anche per (cliente,titolo,nome device).
+- alert_hygiene: risolve anche zyxel_offline se zyxel_devices.online_status==ONLINE.
+- ClientOverviewPage.fetchAll: setLoading(false) subito dopo la prima batch, 9 chiamate secondarie in Promise.allSettled con timeout 20s (prima erano sequenziali → "Caricamento..." lungo/bloccato).
+- Test: /app/test_reports/iteration_138.json (tutto passato).

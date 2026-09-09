@@ -1,0 +1,25 @@
+{
+  "summary": "Iter 138 focused e2e review of TV wallboard, Panoramica (overview) and client page redesign + backend caches + alert hygiene. All 5 pytest cases pass (backend) and all Playwright checks pass (frontend). Backend: GET /api/tv/dashboard is public, responds in <5s first call, <1s on 2nd (cache 4s TTL); JSON contains clients/alert_feed/offline_devices; every id in alert_feed maps to status=='active' in DB and no duplicates by (client_id,title,device_name). GET /api/overview/clients requires auth (401 without), returns clients[] + global{}, 2nd call cached <1s (20s TTL). GET /api/alerts?status=active&sort_by=severity&limit=1000 returns rows non-decreasingly ordered critical->high->medium->low via $sort aggregation. alert_hygiene.resolve_recovered_device_alerts: seeded a synthetic client with fresh managed_agents heartbeat + one online device + corr_device_offline alert (resolved by hygiene) and one offline device + vital_device_offline alert (correctly left active); cleanup performed. Frontend /tv: header + tv-problems + tv-ok-list rendered, NO 'Tutti i vitali operativi', 'Non monitorato', 'ALLARMI CRITICI ATTIVI' strings in DOM; ProblemCard uses neutral class when no vitali down (crit only when tv-vital-down present). Frontend / (Dashboard): client-status-table renders, clicking client-row-<id> expands client-detail-<id>, open-client-<id> navigates to /client/:id. Frontend /client/:id: exits 'Caricamento...' within ~10s and shows StatBoxes including Alert 'N critici' / 'Nessun critico'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_tv_overview_alerts_iter138.py",
+    "/app/test_reports/pytest/iter138.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/alerts.py get_alerts: default limit=100 and hard-coded upper limit=1000 could hide alerts on very busy tenants (this env has 1612 active alerts). Sorting by created_at desc means older-but-active critical alerts can be dropped from Panoramica's alert lists that go through this endpoint. Consider paginating with a cursor or exposing severity-priority sort as default when status=active.",
+    "routes/tv_dashboard.py _compute_tv_dashboard: single monolithic ~500-line function; would benefit from being split into per-section helpers (build_client_summaries, build_alert_feed, build_hardware_health) to make future changes safer.",
+    "alert_hygiene.resolve_recovered_device_alerts: for each candidate alert it does two extra find_one queries against device_poll_status and managed_devices; on tenants with hundreds of correlated alerts this is O(N) round-trips. Consider batching by (client_id, device_ip) tuples and pre-loading a map, mirroring what overview.py already does with build_evidence_maps.",
+    "routes/overview.py: file is ~750 lines with heavy inline aggregation; hits the >700-line threshold from the code review guidelines. Consider splitting the M365/Altaro/backup and WAN aggregation blocks into dedicated modules (some already exist in backup_aggregation.py)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_tv_overview_alerts_iter138.py"
+  ],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "100% (all critical selectors validated)"},
+  "test_credentials": "admin info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "seed_data_creation": "During test_resolve_recovered_device_alerts_isolated a synthetic client 'TEST_hyg_<uuid>' with 2 devices, 1 managed_agent, 2 alerts was created and fully removed in the finally block (verified). No residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Preview env has 1 real client (86BIT_Office) with a few active alerts. Total active alerts in DB were 1612 at test time — /api/alerts?status=active&limit=1000 truncates the tail, so DO NOT cross-check tv/dashboard.alert_feed IDs against that endpoint; hit db.alerts directly (this iter test does exactly that). TV cache TTL=4s, Overview cache TTL=20s: allow >0.5s slack when measuring cached calls under load. To test hygiene locally, seed managed_agents.last_heartbeat_at fresh (<5min) so the target client is NOT in build_clients_without_online_agent, and set device_poll_status.reachable=True with last_reachable_at fresh, otherwise compute_status will return 'stale' or 'offline' and the alert will not be auto-resolved."
+}

@@ -103,10 +103,10 @@ export default function ClientOverviewPage() {
   const fetchAll = useCallback(async () => {
     try {
       const [clientRes, devRes, wanRes, alertRes] = await Promise.allSettled([
-        axios.get(`${API}/clients/${clientId}`),
-        axios.get(`${API}/devices?client_id=${clientId}`),
-        axios.get(`${API}/external-monitor/status`),
-        axios.get(`${API}/alerts?client_id=${clientId}&status=active&sort_by=severity&limit=1000`),
+        axios.get(`${API}/clients/${clientId}`, { timeout: 30000 }),
+        axios.get(`${API}/devices?client_id=${clientId}`, { timeout: 30000 }),
+        axios.get(`${API}/external-monitor/status`, { timeout: 30000 }),
+        axios.get(`${API}/alerts?client_id=${clientId}&status=active&sort_by=severity&limit=1000`, { timeout: 30000 }),
       ]);
       if (clientRes.status === "fulfilled") setClient(clientRes.value.data);
       if (devRes.status === "fulfilled") setDevices(devRes.value.data || []);
@@ -118,52 +118,35 @@ export default function ClientOverviewPage() {
       }
       if (alertRes.status === "fulfilled") setAlerts(alertRes.value.data || []);
     } catch (e) { console.error(e); }
-    // Fetch printers, backup, connector separately (may not have client_id filter)
-    try {
-      const connRes = await axios.get(`${API}/connector/status`);
-      const connectors = connRes.data?.connectors || connRes.data || [];
-      const found = (Array.isArray(connectors) ? connectors : []).find(c => c.client_id === clientId);
-      setConnector(found || null);
-    } catch {}
-    // v3.8.41: scan-health per banner watchdog
-    try {
-      const shRes = await axios.get(`${API}/connectors/scan-health/${clientId}`);
-      setScanHealth(shRes.data || { connectors: [], any_stale: false });
-    } catch {}
-    // v4.15.x: auto-diagnose offline (rileva zombie v3 / master morto / coverage gap)
-    try {
-      const diagRes = await axios.get(`${API}/clients/${clientId}/devices/diagnose-offline`);
-      setDiagnosis(diagRes.data || null);
-    } catch {}
-    // v4.17.x: coverage subnet
-    try {
-      const covRes = await axios.get(`${API}/clients/${clientId}/agents-coverage`);
-      setCoverage(covRes.data || null);
-    } catch {}
-    try {
-      const printRes = await axios.get(`${API}/printers/${clientId}`);
-      setPrinters(printRes.data || []);
-    } catch {}
-    try {
-      const bkpRes = await axios.get(`${API}/backup/dashboard/${clientId}`);
-      const data = bkpRes.data;
-      setBackups(Array.isArray(data) ? data : (data?.jobs || data?.backups || []));
-    } catch {}
-    // Aggregati Hornetsecurity (365 + VM) per la card Quick Stats
-    try {
-      const [m365Res, vmRes] = await Promise.allSettled([
-        axios.get(`${API}/clients/${clientId}/backup/hornetsecurity/status`),
-        axios.get(`${API}/clients/${clientId}/backup/vmbackup/status`),
-      ]);
-      const m365 = m365Res.status === "fulfilled" ? m365Res.value.data : null;
-      const vm = vmRes.status === "fulfilled" ? vmRes.value.data : null;
-      setBackupSummary({ m365, vm });
-    } catch {}
-    try {
-      const iloRes = await axios.get(`${API}/clients/${clientId}/ilo-health`);
-      setIloHealth(iloRes.data || []);
-    } catch {}
+    // Render SUBITO con i dati principali: il resto arriva in PARALLELO (bassa latenza).
     setLoading(false);
+    const _get = (url) => axios.get(url, { timeout: 20000 });
+    const [connRes, shRes, diagRes, covRes, printRes, bkpRes, m365Res, vmRes, iloRes] = await Promise.allSettled([
+      _get(`${API}/connector/status`),
+      _get(`${API}/connectors/scan-health/${clientId}`),
+      _get(`${API}/clients/${clientId}/devices/diagnose-offline`),
+      _get(`${API}/clients/${clientId}/agents-coverage`),
+      _get(`${API}/printers/${clientId}`),
+      _get(`${API}/backup/dashboard/${clientId}`),
+      _get(`${API}/clients/${clientId}/backup/hornetsecurity/status`),
+      _get(`${API}/clients/${clientId}/backup/vmbackup/status`),
+      _get(`${API}/clients/${clientId}/ilo-health`),
+    ]);
+    const ok = (r) => (r.status === "fulfilled" ? r.value.data : undefined);
+    if (ok(connRes) !== undefined) {
+      const connectors = connRes.value.data?.connectors || connRes.value.data || [];
+      setConnector((Array.isArray(connectors) ? connectors : []).find(c => c.client_id === clientId) || null);
+    }
+    if (ok(shRes) !== undefined) setScanHealth(shRes.value.data || { connectors: [], any_stale: false });
+    if (ok(diagRes) !== undefined) setDiagnosis(diagRes.value.data || null);
+    if (ok(covRes) !== undefined) setCoverage(covRes.value.data || null);
+    if (ok(printRes) !== undefined) setPrinters(printRes.value.data || []);
+    if (ok(bkpRes) !== undefined) {
+      const data = bkpRes.value.data;
+      setBackups(Array.isArray(data) ? data : (data?.jobs || data?.backups || []));
+    }
+    setBackupSummary({ m365: ok(m365Res) ?? null, vm: ok(vmRes) ?? null });
+    if (ok(iloRes) !== undefined) setIloHealth(iloRes.value.data || []);
   }, [clientId]);
 
   useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);

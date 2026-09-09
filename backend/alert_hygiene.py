@@ -97,6 +97,22 @@ async def resolve_recovered_device_alerts(db) -> int:
             n += 1
         if n:
             logger.info("Alert hygiene: risolti %d alert di device tornati online", n)
+        # Zyxel Nebula: "Zyxel OFFLINE" con device di nuovo ONLINE sul cloud
+        zq = {"status": "active", "source_type": "zyxel_offline"}
+        async for a in db.alerts.find(zq, {"_id": 0, "id": 1, "client_id": 1, "raw_data": 1}):
+            raw = a.get("raw_data") or ""
+            dev_id = raw.split("nebula:", 1)[1].split(" ", 1)[0] if "nebula:" in raw else ""
+            if not dev_id:
+                continue
+            zd = await db.zyxel_devices.find_one({"client_id": a.get("client_id"), "dev_id": dev_id},
+                                                 {"_id": 0, "online_status": 1})
+            if zd and zd.get("online_status") == "ONLINE":
+                await db.alerts.update_one({"id": a["id"]}, {"$set": {
+                    "status": "resolved", "resolved_at": now_iso,
+                    "resolution_note": "Rientrato: device ONLINE su Nebula (igiene allarmi)"}})
+                await db.zyxel_devices.update_one({"client_id": a.get("client_id"), "dev_id": dev_id},
+                                                  {"$set": {"alert_state.offline": False}})
+                n += 1
         return n
     except Exception as e:  # noqa: BLE001
         logger.error(f"Alert hygiene (recovered) error: {e}", exc_info=True)
