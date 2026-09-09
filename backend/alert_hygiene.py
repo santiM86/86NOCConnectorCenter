@@ -61,6 +61,64 @@ async def expire_stale_alerts(db) -> int:
         return 0
 
 
+async def resolve_recovered_device_alerts(db) -> int:
+    """Chiude gli alert 'device giù' (corr_*, vital_device_offline, datto_server_offline)
+    il cui device risulta ORA online secondo il resolver di liveness unificato.
+    Evita che un alert rimanga attivo su TV/Panoramica dopo il rientro."""
+    try:
+        from liveness_resolver import build_evidence_maps, compute_status, \
+            build_clients_without_online_agent, build_blackout_clients
+        q = {"status": "active", "device_ip": {"$nin": [None, ""]}, "$or": [
+            {"source_type": {"$regex": "^corr_"}},
+            {"source_type": {"$in": ["vital_device_offline", "datto_server_offline"]}},
+        ]}
+        cands = await db.alerts.find(q, {"_id": 0, "id": 1, "client_id": 1, "device_ip": 1, "title": 1}).to_list(5000)
+        if not cands:
+            return 0
+        ip_ev, mac_ev = await build_evidence_maps(db, window_minutes=15)
+        off_clients = await build_clients_without_online_agent(db)
+        blackout = await build_blackout_clients(db, off_clients)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        n = 0
+        for a in cands:
+            cid, ip = a.get("client_id"), a.get("device_ip")
+            pd = await db.device_poll_status.find_one({"client_id": cid, "device_ip": ip}, {"_id": 0})
+            md = await db.managed_devices.find_one({"client_id": cid, "ip": ip}, {"_id": 0})
+            if not pd and not md:
+                continue
+            status, _ = compute_status(pd, md, ip_ev, mac_ev, off_clients, blackout)
+            if status != "online":
+                continue
+            await db.alerts.update_one({"id": a["id"]}, {"$set": {
+                "status": "resolved", "resolved_at": now_iso,
+                "resolution_note": "Rientrato: device di nuovo online (igiene allarmi)",
+            }})
+            await db.vital_offline_state.delete_one({"client_id": cid, "ip": ip})
+            n += 1
+        if n:
+            logger.info("Alert hygiene: risolti %d alert di device tornati online", n)
+        # Zyxel Nebula: "Zyxel OFFLINE" con device di nuovo ONLINE sul cloud
+        zq = {"status": "active", "source_type": "zyxel_offline"}
+        async for a in db.alerts.find(zq, {"_id": 0, "id": 1, "client_id": 1, "raw_data": 1}):
+            raw = a.get("raw_data") or ""
+            dev_id = raw.split("nebula:", 1)[1].split(" ", 1)[0] if "nebula:" in raw else ""
+            if not dev_id:
+                continue
+            zd = await db.zyxel_devices.find_one({"client_id": a.get("client_id"), "dev_id": dev_id},
+                                                 {"_id": 0, "online_status": 1})
+            if zd and zd.get("online_status") == "ONLINE":
+                await db.alerts.update_one({"id": a["id"]}, {"$set": {
+                    "status": "resolved", "resolved_at": now_iso,
+                    "resolution_note": "Rientrato: device ONLINE su Nebula (igiene allarmi)"}})
+                await db.zyxel_devices.update_one({"client_id": a.get("client_id"), "dev_id": dev_id},
+                                                  {"$set": {"alert_state.offline": False}})
+                n += 1
+        return n
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Alert hygiene (recovered) error: {e}", exc_info=True)
+        return 0
+
+
 def _day_bounds_utc():
     """Inizio/fine della giornata CORRENTE in ora italiana, come iso UTC."""
     now_local = datetime.now(_TZ)

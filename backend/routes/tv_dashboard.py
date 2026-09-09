@@ -1,6 +1,8 @@
 """TV Dashboard - Full-screen NOC monitoring view for wall displays.
 Provides aggregated, enriched data optimized for at-a-glance monitoring."""
+import asyncio
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter
 from database import db
@@ -183,9 +185,38 @@ def _time_ago(iso_str: str) -> str:
         return ""
 
 
+# Cache breve (4s) + dedup richieste concorrenti: più TV/browser in polling ogni 5s
+# condividono UN solo calcolo → bassa latenza e nessun carico ripetuto sul DB.
+_TV_TTL_S = 4
+_tv_cache: dict = {"at": 0.0, "data": None}
+_tv_lock = asyncio.Lock()
+
+
 @router.get("/dashboard")
 async def tv_dashboard_data():
     """Aggregated data for TV display. No auth required for easy TV setup."""
+    if _tv_cache["data"] is not None and time.monotonic() - _tv_cache["at"] < _TV_TTL_S:
+        return _tv_cache["data"]
+    async with _tv_lock:
+        if _tv_cache["data"] is not None and time.monotonic() - _tv_cache["at"] < _TV_TTL_S:
+            return _tv_cache["data"]
+        t0 = time.monotonic()
+        try:
+            data = await _compute_tv_dashboard()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("tv/dashboard failed: %s", e)
+            if _tv_cache["data"] is not None:
+                return _tv_cache["data"]
+            raise
+        _tv_cache["data"] = data
+        _tv_cache["at"] = time.monotonic()
+        dt = time.monotonic() - t0
+        if dt > 2:
+            logger.warning("tv/dashboard lento: %.2fs", dt)
+        return data
+
+
+async def _compute_tv_dashboard():
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     five_min_ago = (now - timedelta(minutes=5)).isoformat()
@@ -336,10 +367,12 @@ async def tv_dashboard_data():
         if not _tv_alert_included(a["severity"], a["source_type"], a["title"]):
             continue
         # Dedup visivo: stesso cliente + titolo + device → una sola riga
-        _fk = (a["client_id"], a["title"].strip().lower(), a["device_ip"] or a["device_name"])
-        if _fk in _seen_feed:
+        _t = a["title"].strip().lower()
+        _fk = (a["client_id"], _t, a["device_ip"] or a["device_name"])
+        _fn = (a["client_id"], _t, (a["device_name"] or "").strip().lower())
+        if _fk in _seen_feed or _fn in _seen_feed:
             continue
-        _seen_feed.add(_fk)
+        _seen_feed.add(_fk); _seen_feed.add(_fn)
         tv_alert_feed.append(a)
     alerts_by_client: dict = {}
     for a in tv_alert_feed:
@@ -451,10 +484,15 @@ async def tv_dashboard_data():
 
         # Offline devices (status == "offline", non stale) — su UNIONE poll+managed.
         problem_devices = []
+        _seen_names: set = set()
         for u in client_units:
             if _u_offline(u):
                 dev_ip = u["device_ip"]
                 dev_name = _disp_name(cid, dev_ip)
+                _nk = (dev_name or dev_ip).strip().lower()
+                if _nk in _seen_names:
+                    continue
+                _seen_names.add(_nk)
                 _pd = u["pd"] or {}
                 _md = u["md"] or {}
                 last_seen_dev = (_pd.get("unreachable_since") or _pd.get("last_seen")

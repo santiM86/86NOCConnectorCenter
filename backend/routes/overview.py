@@ -190,7 +190,7 @@ async def _compute_clients_overview() -> dict:
                 elif isinstance(it, dict) and (it.get("tenant") or "").strip():
                     sg = it.get("sub_groups")
                     if isinstance(sg, list) and sg:
-                        filters.append((it["tenant"].strip(), {str(x).lower() for x in sg if x}))
+                        filters.append(((it.get("tenant") or "").strip(), {str(x).lower() for x in sg if x}))
                     else:
                         filters.append((it["tenant"].strip(), None))
             if not filters:
@@ -534,150 +534,153 @@ async def _compute_clients_overview() -> dict:
     # Build response
     result = []
     for c in clients:
-        cid = c.get("id")
-        alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
-        devices_info = devices_by_client.get(cid, _empty_counts())
-        endpoints_info = endpoints_by_client.get(cid, _empty_counts())
-        # Priorità VM Backup (Altaro): se il cliente ha backup VM, la card mostra
-        # QUELLI (più importanti); altrimenti ripiega su 365/legacy aggregato.
-        _vm = vm_by_client.get(cid)
-        if _vm and _vm.get("total", 0) > 0:
-            backup_info = {**_vm, "source": "vm"}
-        else:
-            _m = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
-            backup_info = {**_m, "source": "365"} if _m.get("total", 0) > 0 else _m
-        printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
-        wan_tgts = wan_targets_by_client.get(cid, [])
-        connector_online = connector_by_client.get(cid)
+        try:
+            cid = c.get("id")
+            alerts_info = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
+            devices_info = devices_by_client.get(cid, _empty_counts())
+            endpoints_info = endpoints_by_client.get(cid, _empty_counts())
+            # Priorità VM Backup (Altaro): se il cliente ha backup VM, la card mostra
+            # QUELLI (più importanti); altrimenti ripiega su 365/legacy aggregato.
+            _vm = vm_by_client.get(cid)
+            if _vm and _vm.get("total", 0) > 0:
+                backup_info = {**_vm, "source": "vm"}
+            else:
+                _m = backup_by_client.get(cid, {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
+                backup_info = {**_m, "source": "365"} if _m.get("total", 0) > 0 else _m
+            printer_info = printer_by_client.get(cid, {"total": 0, "low_toner": 0, "ok": 0})
+            wan_tgts = wan_targets_by_client.get(cid, [])
+            connector_online = connector_by_client.get(cid)
 
-        # WAN summary — compute from probe results directly
-        wan_status = "not_configured"
-        wan_latency = None
-        wan_gateway = None
-        if wan_tgts:
-            all_online = True
-            any_online = False
-            best_latency = None
-            has_gateway = False
-            gw_online = None
+            # WAN summary — compute from probe results directly
+            wan_status = "not_configured"
+            wan_latency = None
+            wan_gateway = None
+            if wan_tgts:
+                all_online = True
+                any_online = False
+                best_latency = None
+                has_gateway = False
+                gw_online = None
+                for t in wan_tgts:
+                    r = wan_results_map.get(t.get("id"))
+                    if not r:
+                        continue
+                    st = r.get("status", "unknown")
+                    # v2026-06: "filtered" = firewall raggiungibile (droppa ICMP/porte)
+                    # → NON è offline. Coerente con la diagnosi e con WanClientTab/SLA.
+                    if st in ("online", "degraded", "filtered"):
+                        any_online = True
+                    else:
+                        all_online = False
+                    lat = (r.get("ping") or {}).get("latency_ms")
+                    if lat and (best_latency is None or lat < best_latency):
+                        best_latency = lat
+                    # Check gateway
+                    gw = r.get("gateway_ping")
+                    if gw:
+                        has_gateway = True
+                        if gw.get("reachable"):
+                            gw_online = "online"
+                        elif gw_online is None:
+                            gw_online = "offline"
+
+                wan_latency = best_latency
+                wan_gateway = gw_online
+                if any_online and all_online:
+                    wan_status = "ok"
+                elif any_online:
+                    wan_status = "degraded"
+                elif has_gateway and gw_online == "online":
+                    wan_status = "router_down"
+                elif has_gateway and gw_online == "offline":
+                    wan_status = "isp_down"
+                elif not any_online and len([t for t in wan_tgts if wan_results_map.get(t.get("id"))]) > 0:
+                    wan_status = "offline"
+                else:
+                    wan_status = "pending"
+
+            # Overall health score — VITAL-ONLY (richiesto utente 2026-07-24):
+            # la salute del cliente riflette SOLO i dispositivi vitali (+ connettore/WAN
+            # che comunque impattano i vitali). I device non-vitali non alterano il dot.
+            devices_offline = devices_info.get("vital_offline", 0) if isinstance(devices_info, dict) else 0
+            devices_stale = devices_info.get("vital_stale", 0) if isinstance(devices_info, dict) else 0
+            backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
+            backup_warnings = backup_info.get("warning", 0) if isinstance(backup_info, dict) else 0
+            backup_stale = backup_info.get("stale", 0) if isinstance(backup_info, dict) else 0
+            toner_low = printer_info.get("low_toner", 0) if isinstance(printer_info, dict) else 0
+
+            health = "ok"
+            # CRITICAL: qualcosa di importante non funziona ORA
+            # NOTA: devices_stale NON e' critical (mitiga cascata "connector down ->
+            # 36 device cascata-offline -> card rossa", vedi liveness_resolver
+            # build_clients_without_online_agent). Quando il connector e' giu'
+            # il connector_online=False fa scattare comunque critical per il
+            # CONNETTORE, evitando di nascondere il problema reale.
+            if (devices_offline > 0
+                    or connector_online is False
+                    or wan_status in ("isp_down", "firewall_down", "router_down", "offline")):
+                health = "critical"
+            # WARNING: degradi noti + device stale (monitor offline)
+            elif (wan_status in ("firewall_degraded", "router_degraded", "degraded")
+                    or backup_errors > 0 or backup_warnings > 0 or backup_stale > 0
+                    or devices_stale > 0):
+                health = "warning"
+            # ATTENTION: piccole anomalie da monitorare (toner basso)
+            elif toner_low > 0:
+                health = "attention"
+            # else: ok (verde) — ANCHE con alert in coda, che sono mostrati nel pill dedicato
+
+            # WAN targets detail for expansion
+            wan_detail = []
             for t in wan_tgts:
                 r = wan_results_map.get(t.get("id"))
-                if not r:
-                    continue
-                st = r.get("status", "unknown")
-                # v2026-06: "filtered" = firewall raggiungibile (droppa ICMP/porte)
-                # → NON è offline. Coerente con la diagnosi e con WanClientTab/SLA.
-                if st in ("online", "degraded", "filtered"):
-                    any_online = True
-                else:
-                    all_online = False
-                lat = r.get("ping", {}).get("latency_ms")
-                if lat and (best_latency is None or lat < best_latency):
-                    best_latency = lat
-                # Check gateway
-                gw = r.get("gateway_ping")
-                if gw:
-                    has_gateway = True
-                    if gw.get("reachable"):
-                        gw_online = "online"
-                    elif gw_online is None:
-                        gw_online = "offline"
+                wan_detail.append({
+                    "label": t.get("label", "?"), "device_type": t.get("device_type", "?"),
+                    "ip": t.get("public_ip", ""), "gateway_ip": t.get("gateway_ip"),
+                    "check_ping": t.get("check_ping", False),
+                    "status": r.get("status", "unknown") if r else "pending",
+                    "latency_ms": (r.get("ping") or {}).get("latency_ms") if r else None,
+                    "loss_pct": (r.get("ping") or {}).get("packet_loss_pct") if r else None,
+                    "gateway_ok": (r.get("gateway_ping") or {}).get("reachable") if r and r.get("gateway_ping") else None,
+                    "gateway_latency": (r.get("gateway_ping") or {}).get("latency_ms") if r and r.get("gateway_ping") else None,
+                    "ports": r.get("ports", []) if r else [],
+                    "checked_at": r.get("checked_at") if r else None,
+                })
 
-            wan_latency = best_latency
-            wan_gateway = gw_online
-            if any_online and all_online:
-                wan_status = "ok"
-            elif any_online:
-                wan_status = "degraded"
-            elif has_gateway and gw_online == "online":
-                wan_status = "router_down"
-            elif has_gateway and gw_online == "offline":
-                wan_status = "isp_down"
-            elif not any_online and len([t for t in wan_tgts if wan_results_map.get(t.get("id"))]) > 0:
-                wan_status = "offline"
-            else:
-                wan_status = "pending"
-
-        # Overall health score — VITAL-ONLY (richiesto utente 2026-07-24):
-        # la salute del cliente riflette SOLO i dispositivi vitali (+ connettore/WAN
-        # che comunque impattano i vitali). I device non-vitali non alterano il dot.
-        devices_offline = devices_info.get("vital_offline", 0) if isinstance(devices_info, dict) else 0
-        devices_stale = devices_info.get("vital_stale", 0) if isinstance(devices_info, dict) else 0
-        backup_errors = backup_info.get("error", 0) if isinstance(backup_info, dict) else 0
-        backup_warnings = backup_info.get("warning", 0) if isinstance(backup_info, dict) else 0
-        backup_stale = backup_info.get("stale", 0) if isinstance(backup_info, dict) else 0
-        toner_low = printer_info.get("low_toner", 0) if isinstance(printer_info, dict) else 0
-
-        health = "ok"
-        # CRITICAL: qualcosa di importante non funziona ORA
-        # NOTA: devices_stale NON e' critical (mitiga cascata "connector down ->
-        # 36 device cascata-offline -> card rossa", vedi liveness_resolver
-        # build_clients_without_online_agent). Quando il connector e' giu'
-        # il connector_online=False fa scattare comunque critical per il
-        # CONNETTORE, evitando di nascondere il problema reale.
-        if (devices_offline > 0
-                or connector_online is False
-                or wan_status in ("isp_down", "firewall_down", "router_down", "offline")):
-            health = "critical"
-        # WARNING: degradi noti + device stale (monitor offline)
-        elif (wan_status in ("firewall_degraded", "router_degraded", "degraded")
-                or backup_errors > 0 or backup_warnings > 0 or backup_stale > 0
-                or devices_stale > 0):
-            health = "warning"
-        # ATTENTION: piccole anomalie da monitorare (toner basso)
-        elif toner_low > 0:
-            health = "attention"
-        # else: ok (verde) — ANCHE con alert in coda, che sono mostrati nel pill dedicato
-
-        # WAN targets detail for expansion
-        wan_detail = []
-        for t in wan_tgts:
-            r = wan_results_map.get(t.get("id"))
-            wan_detail.append({
-                "label": t.get("label", "?"), "device_type": t.get("device_type", "?"),
-                "ip": t.get("public_ip", ""), "gateway_ip": t.get("gateway_ip"),
-                "check_ping": t.get("check_ping", False),
-                "status": r.get("status", "unknown") if r else "pending",
-                "latency_ms": r.get("ping", {}).get("latency_ms") if r else None,
-                "loss_pct": r.get("ping", {}).get("packet_loss_pct") if r else None,
-                "gateway_ok": r.get("gateway_ping", {}).get("reachable") if r and r.get("gateway_ping") else None,
-                "gateway_latency": r.get("gateway_ping", {}).get("latency_ms") if r and r.get("gateway_ping") else None,
-                "ports": r.get("ports", []) if r else [],
-                "checked_at": r.get("checked_at") if r else None,
+            result.append({
+                "id": cid,
+                "name": c.get("name", "?"),
+                "health": health,
+                "alerts": alerts_info,
+                "devices": devices_info,
+                "wan": {
+                    "status": wan_status,
+                    "latency_ms": wan_latency,
+                    "gateway": wan_gateway,
+                },
+                "backup": backup_info,
+                "printers": printer_info,
+                "endpoints": endpoints_info,
+                "connector_online": connector_online,
+                # v3.8.41: lista scanner per cliente con info su staleness (per banner watchdog UI)
+                "scanner_health": scanner_health_by_client.get(cid, []),
+                "detail": {
+                    "wan_targets": wan_detail,
+                    "devices_list": devices_detail_by_client.get(cid, []),
+                    "endpoints_list": endpoints_detail_by_client.get(cid, []),
+                    "vital_list": sorted(
+                        vital_detail_by_client.get(cid, []),
+                        key=lambda x: {"offline": 0, "stale": 1, "unknown": 2, "online": 3}.get(x.get("status"), 4),
+                    ),
+                    "recent_alerts": alerts_detail_by_client.get(cid, []),
+                },
             })
-
-        result.append({
-            "id": cid,
-            "name": c.get("name", "?"),
-            "health": health,
-            "alerts": alerts_info,
-            "devices": devices_info,
-            "wan": {
-                "status": wan_status,
-                "latency_ms": wan_latency,
-                "gateway": wan_gateway,
-            },
-            "backup": backup_info,
-            "printers": printer_info,
-            "endpoints": endpoints_info,
-            "connector_online": connector_online,
-            # v3.8.41: lista scanner per cliente con info su staleness (per banner watchdog UI)
-            "scanner_health": scanner_health_by_client.get(cid, []),
-            "detail": {
-                "wan_targets": wan_detail,
-                "devices_list": devices_detail_by_client.get(cid, []),
-                "endpoints_list": endpoints_detail_by_client.get(cid, []),
-                "vital_list": sorted(
-                    vital_detail_by_client.get(cid, []),
-                    key=lambda x: {"offline": 0, "stale": 1, "unknown": 2, "online": 3}.get(x.get("status"), 4),
-                ),
-                "recent_alerts": alerts_detail_by_client.get(cid, []),
-            },
-        })
+        except Exception as _ce:  # noqa: BLE001
+            logger.exception("overview: client %s (%s) skipped: %s", c.get("name"), c.get("id"), _ce)
 
     # Sort: critical first, then warning, then ok
     priority = {"critical": 0, "warning": 1, "attention": 2, "ok": 3}
-    result.sort(key=lambda x: (priority.get(x["health"], 9), x["name"]))
+    result.sort(key=lambda x: (priority.get(x["health"], 9), str(x.get("name") or "")))
 
     # Global stats
     total_alerts = sum(a["total"] for a in alerts_by_client.values())

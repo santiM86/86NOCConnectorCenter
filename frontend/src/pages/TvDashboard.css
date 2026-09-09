@@ -426,3 +426,24 @@
   font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 @media (max-width: 1100px) { .tvx-alertfeed-list { grid-template-columns: 1fr; } }
 
+
+/* ===== v2026-09 Layout NOC: problemi a sinistra, aziende OK a destra ===== */
+.tvx-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+@media (max-width: 1200px) { .tvx-body { grid-template-columns: 1fr; } }
+.tvx-sec-title { display: flex; align-items: center; justify-content: space-between; font-size: 11px; letter-spacing: 2.5px; color: #6b7d90; font-weight: 800; margin: 0 0 10px 2px; }
+.tvx-sec-count { color: #93a4b8; letter-spacing: 1px; font-weight: 700; }
+.tvx-problems .tvx-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.tvx-card.neutral { border-left-color: #eab308; }
+.tvx-card.crit { border-left-width: 5px; background: #150f13; }
+.tvx-card .tvx-list + .tvx-list, .tvx-card .tvx-wan + .tvx-list, .tvx-card .tvx-bk + .tvx-list,
+.tvx-card .tvx-list + .tvx-wan, .tvx-card .tvx-list + .tvx-bk, .tvx-card .tvx-wan + .tvx-bk { margin-top: 8px; }
+.tvx-card-tags { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.tvx-badge.crit { font-size: 10px; font-weight: 900; letter-spacing: 1px; color: #fff; background: #dc2626; padding: 2px 8px; border-radius: 6px; animation: tvxpulse 1.4s infinite; }
+.tvx-card-name { font-size: 20px; }
+.tvx-bk-lbl { font-size: 10px; letter-spacing: 1.5px; color: #93a4b8; font-weight: 800; margin-right: 4px; }
+.tvx-okcol { background: #0d1a13; border: 1px solid #1c3a2a; border-radius: 16px; padding: 12px 14px; position: sticky; top: 8px; max-height: calc(100vh - 120px); overflow: hidden; }
+.tvx-oklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tvx-okitem { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 5px 10px; border-radius: 8px; color: #a7f3c8; background: rgba(34,197,94,.06); border-left: 3px solid #22c55e; }
+.tvx-okitem .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; flex: none; }
+.tvx-okitem .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvx-empty small { display: block; font-size: 13px; color: #6b7d90; margin-top: 4px; }
