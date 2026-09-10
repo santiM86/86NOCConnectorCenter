@@ -378,3 +378,100 @@ def compute_status(
     if agent_down:
         return _down()
     return "pending", None
+
+
+# ---------------------------------------------------------------------------
+# EVIDENZE POSITIVE condivise (stesse regole della pagina cliente /api/devices):
+#   - Datto RMM agent online (heartbeat < 30 min)  → online
+#   - Hyper-V host: VM "Running" (snapshot < 15 min) → online; Off/Saved/Paused → off
+# Usate da TV e Panoramica così i tre schermi NON divergono mai (es. server
+# Windows/VM che bloccano ICMP: pallino verde in scheda cliente ma "giù" in TV).
+# ---------------------------------------------------------------------------
+_HV_OFF_STATES = {"Off", "Saved", "Paused"}
+
+
+def _short_name(s) -> str:
+    return str(s or "").strip().lower().split(".")[0]
+
+
+class PositiveEvidence:
+    def __init__(self) -> None:
+        self.datto_uid: set = set()
+        self.datto_ip: set = set()
+        self.datto_mac: set = set()
+        self.hyperv: dict = {}
+
+    def datto_online(self, md: dict, ip: str) -> bool:
+        cid = (md or {}).get("client_id")
+        if (md or {}).get("datto_uid") and (cid, md["datto_uid"]) in self.datto_uid:
+            return True
+        if ip and (cid, ip) in self.datto_ip:
+            return True
+        mn = ((md or {}).get("mac") or "").lower().replace("-", ":")
+        return bool(mn and (cid, mn) in self.datto_mac)
+
+    def hyperv_state(self, md: dict):
+        cid = (md or {}).get("client_id")
+        for key in (md.get("hyperv_vm_name"), md.get("hostname"), md.get("name"), md.get("device_name")):
+            k = _short_name(key)
+            if k and (cid, k) in self.hyperv:
+                return self.hyperv[(cid, k)]
+        return None
+
+    def apply(self, status: str, md: dict, ip: str) -> str:
+        """Stesse override positive di routes/devices.get_devices."""
+        if not md:
+            return status
+        if status in ("offline", "stale", "pending") and self.datto_online(md, ip):
+            return "online"
+        hv = self.hyperv_state(md)
+        if status in ("offline", "stale", "pending") and hv == "Running":
+            return "online"
+        if status in ("offline", "stale", "pending") and hv in _HV_OFF_STATES:
+            return "off"
+        return status
+
+
+async def build_positive_evidence(db) -> PositiveEvidence:
+    ev = PositiveEvidence()
+    now = datetime.now(timezone.utc)
+    try:
+        async for dd in db.datto_devices.find(
+            {"online": True},
+            {"_id": 0, "client_id": 1, "uid": 1, "ip": 1, "ip_list": 1, "mac": 1, "mac_list": 1, "datto_last_seen": 1},
+        ):
+            ls = dd.get("datto_last_seen")
+            if ls:
+                try:
+                    if now - datetime.fromisoformat(str(ls).replace("Z", "+00:00")) >= timedelta(minutes=30):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            cid = dd.get("client_id")
+            if dd.get("uid"):
+                ev.datto_uid.add((cid, dd["uid"]))
+            for _ip in ([dd.get("ip")] + (dd.get("ip_list") or [])):
+                if _ip:
+                    ev.datto_ip.add((cid, _ip))
+            for _m in ([dd.get("mac")] + (dd.get("mac_list") or [])):
+                mn = (_m or "").lower().replace("-", ":")
+                if mn:
+                    ev.datto_mac.add((cid, mn))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        async for snap in db.hyperv_snapshots.find({}, {"_id": 0, "client_id": 1, "vms": 1, "collected_at": 1}):
+            ca = snap.get("collected_at")
+            if ca:
+                try:
+                    if now - datetime.fromisoformat(str(ca).replace("Z", "+00:00")) >= timedelta(minutes=15):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            for vm in (snap.get("vms") or []):
+                nm = _short_name(vm.get("name"))
+                if nm:
+                    ev.hyperv[(snap.get("client_id"), nm)] = (vm.get("state") or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ev

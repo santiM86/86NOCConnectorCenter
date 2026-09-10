@@ -427,6 +427,8 @@ async def _compute_tv_dashboard():
         _seen_keys.add(_key)
         unified_units.append({"client_id": _cid, "device_ip": _ip, "md": _m, "pd": None})
 
+    from liveness_resolver import build_positive_evidence
+    _pos_ev = await build_positive_evidence(db)
     _status_map = {}
     for _u in unified_units:
         try:
@@ -434,6 +436,8 @@ async def _compute_tv_dashboard():
         except Exception:
             _pd = _u["pd"] or {}
             _st = "online" if (_pd.get("ping_reachable") or _pd.get("reachable")) else "offline"
+        # Stesse evidenze positive della scheda cliente (Datto online, Hyper-V Running)
+        _st = _pos_ev.apply(_st, _u["md"] or {}, _u["device_ip"])
         _status_map[f"{_u['client_id']}:{_u['device_ip']}"] = _st
 
     def _ukey(u):

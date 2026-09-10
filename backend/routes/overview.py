@@ -89,6 +89,8 @@ async def _compute_clients_overview() -> dict:
     # (sonda Center indipendente). Per questi il device diventa OFFLINE (rosso),
     # non solo "stale": abbiamo la prova indipendente del blackout del sito.
     blackout_clients = await build_blackout_clients(db, offline_clients)
+    from liveness_resolver import build_positive_evidence
+    pos_ev = await build_positive_evidence(db)
     poll_by_key = {(p.get("client_id"), p.get("device_ip")): p for p in poll_devices}
 
     # Merge poll_devices and managed_devices into the unified list (skip duplicates)
@@ -107,6 +109,7 @@ async def _compute_clients_overview() -> dict:
         # Status centralizzato: identico a /api/devices
         # (evidence override -> debounce -> cascade-stale -> scanner-source -> pending)
         status, _evidence = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients, blackout_clients)
+        status = pos_ev.apply(status, md or {}, ip)
         devices.append({
             "client_id": cid,
             "name": display_name,
@@ -129,6 +132,7 @@ async def _compute_clients_overview() -> dict:
         # (gestisce scanner-source + evidence FDB/ARP cross-VLAN + cascade-stale).
         pd = poll_by_key.get(key)
         md_status, _ev = compute_status(pd, md, ip_evidence, mac_evidence, offline_clients, blackout_clients)
+        md_status = pos_ev.apply(md_status, md or {}, ip)
         devices.append({
             "client_id": cid,
             "name": best_display_name(md, pd, ip),
