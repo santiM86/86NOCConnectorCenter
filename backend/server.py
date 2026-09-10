@@ -368,6 +368,8 @@ from routes.syslog_trap import router as syslog_trap_router, _ensure_indexes as 
 app.include_router(syslog_trap_router)
 from routes.device_info_card import router as device_info_card_router
 app.include_router(device_info_card_router)
+from routes.temperature import router as temperature_router
+app.include_router(temperature_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router

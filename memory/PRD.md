@@ -9563,3 +9563,7 @@ Health null è normale HPE (usa i sottosistemi).
 - TV: "AZIENDE OK" = striscia di chip verdi affiancati (flex-wrap) sopra i problemi; rimossa colonna laterale.
 - connector._check_device_thresholds: AUTO-RIENTRO degli alert threshold_*/vendor_* del device non più presenti nel poll (solo se reachable) + Telegram rientro se notificato. Prima NON venivano mai risolti → alert vecchi appesi.
 - POST /api/thresholds/apply-all (admin): applica soglie a tutti i clienti, opz. clear_device_overrides. ThresholdsPage: bottone "Applica a TUTTI i clienti" + link "Come vengono inviati →" (/settings/alert-engine: canali, severità minima Telegram, quiet hours, digest).
+
+## 2026-09-10 — Gestione Temperature in blocco (cross-cliente)
+- routes/temperature.py: GET /api/temperature/overview (tutti i device di tutti i clienti: temp live da vendor_metrics, soglia effettiva via resolve_temp_thresholds, provenienza device/cliente/profilo/default, stato ok/warn/crit); POST /api/temperature/bulk {targets:[{client_id,ip}], warn, crit | clear} (admin).
+- Frontend pages/TemperatureManagementPage.js (/temperature, menu "Temperature" admin): filtri cliente/tipo/provenienza/stato, selezione multipla, barra bulk imposta/rimuovi override.
