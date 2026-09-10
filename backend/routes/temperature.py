@@ -10,9 +10,10 @@ from database import db
 from deps import get_current_user, require_admin
 from device_profiles import get_effective_profile
 from display_name import best_display_name
+from device_type_resolver import best_device_type
 from hardware_alerts import (
     _DEFAULT_TEMP_THRESHOLDS, _DEFAULT_TEMP_FALLBACK, _eval_percent, _temp_ok,
-    _threshold, resolve_temp_thresholds,
+    _threshold, resolve_temp_thresholds, temp_type_key,
 )
 
 router = APIRouter(prefix="/api/temperature", tags=["temperature"])
@@ -39,7 +40,7 @@ def _state(cur, warn, crit) -> str:
 def _source(md: dict, cbt: dict, dtype: str, prof_thr: dict) -> str:
     if any(isinstance(md.get(f), (int, float)) for f in _OVERRIDE_FIELDS):
         return "device"
-    if (cbt or {}).get(dtype):
+    if (cbt or {}).get(dtype or "other"):
         return "cliente"
     if _threshold(prof_thr or {}, "temp_warn_c") is not None or _threshold(prof_thr or {}, "temp_crit_c") is not None:
         return "profilo"
@@ -86,9 +87,11 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
         if cur is None and inlet_cur is None and disk_cur is None and not has_override and not pk:
             continue
         if pk and pk not in prof_cache:
-            prof_cache[pk] = (await get_effective_profile(db, pk) or {}).get("thresholds") or {}
-        prof_thr = prof_cache.get(pk or "", {})
-        dtype = (md.get("device_type") or "").lower()
+            prof_cache[pk] = await get_effective_profile(db, pk) or {}
+        prof = prof_cache.get(pk or "", {})
+        prof_thr = prof.get("thresholds") or {}
+        raw_type = best_device_type(md, pd)
+        dtype = temp_type_key(raw_type, md.get("device_class"), pd.get("device_class"), pk, prof.get("family"))
         cbt = thr_by_client.get(cid, {})
         dov = _dov(md)
         warn, crit = resolve_temp_thresholds(prof_thr, dtype, dov, cbt)
@@ -107,7 +110,7 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
             **extra, "worst": worst,
             "client_id": cid, "client_name": clients[cid], "ip": ip,
             "name": best_display_name(md, pd, ip),
-            "device_type": dtype or "—", "profile_key": pk or "",
+            "device_type": dtype or raw_type or "—", "temp_type": dtype, "profile_key": pk or "",
             "temp_c": cur, "warn_c": warn, "crit_c": crit,
             "source": _source(md, cbt, dtype, prof_thr),
             "override_warn": md.get("temp_warn_c"), "override_crit": md.get("temp_crit_c"),

@@ -53,6 +53,7 @@ async def get_temp_defaults(current_user: dict = Depends(get_current_user)):
     non c'è né un override sul device né una soglia cliente per quel tipo."""
     from hardware_alerts import _DEFAULT_TEMP_THRESHOLDS, _DEFAULT_TEMP_FALLBACK
     types = {k: {"warn": v[0], "crit": v[1]} for k, v in _DEFAULT_TEMP_THRESHOLDS.items()}
+    types["other"] = {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}
     return {"defaults": types, "fallback": {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}}
 
 
