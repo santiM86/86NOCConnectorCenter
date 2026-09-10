@@ -289,6 +289,19 @@ export default function TvDashboardPage() {
 
       {/* Corpo: SINISTRA problemi in corso (solo dati attuali, ordinati per gravità) · DESTRA aziende OK */}
       <div className="tvx-body">
+        {/* Striscia aziende OK: chip affiancati che vanno a capo → scala con il numero di clienti */}
+        <section className="tvx-okstrip" data-testid="tv-ok-list">
+          <div className="tvx-sec-title"><span>AZIENDE OK</span><span className="tvx-sec-count">{okClients.length}/{allClients.length}</span></div>
+          <div className="tvx-okchips">
+            {okClients.map(c => (
+              <span key={c.id} className="tvx-okchip" data-testid="tv-roster-item" title={c.name}>
+                <span className="dot" />{c.name}
+              </span>
+            ))}
+            {okClients.length === 0 && <span className="tvx-muted">Nessuna</span>}
+          </div>
+        </section>
+
         <section className="tvx-problems" data-testid="tv-problems">
           <div className="tvx-sec-title">
             <span>PROBLEMI IN CORSO</span>
@@ -306,18 +319,6 @@ export default function TvDashboardPage() {
             </div>
           )}
         </section>
-
-        <aside className="tvx-okcol" data-testid="tv-ok-list">
-          <div className="tvx-sec-title"><span>AZIENDE OK</span><span className="tvx-sec-count">{okClients.length}/{allClients.length}</span></div>
-          <ul className="tvx-oklist">
-            {okClients.map(c => (
-              <li key={c.id} className="tvx-okitem" data-testid="tv-roster-item" title={c.name}>
-                <span className="dot" /><span className="nm">{c.name}</span>
-              </li>
-            ))}
-            {okClients.length === 0 && <li className="tvx-muted">Nessuna</li>}
-          </ul>
-        </aside>
       </div>
     </div>
   );

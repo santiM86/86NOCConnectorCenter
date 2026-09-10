@@ -64,6 +64,7 @@ import LanScannerPage from "@/pages/LanScannerPage";
 import MaintenancePage from "@/pages/MaintenancePage";
 import CorrelationPage from "@/pages/CorrelationPage";
 import ThresholdsPage from "@/pages/ThresholdsPage";
+import TemperatureManagementPage from "@/pages/TemperatureManagementPage";
 import BandwidthPage from "@/pages/BandwidthPage";
 import BackupPage from "@/pages/BackupPage";
 import ClientPortalPage from "@/pages/ClientPortalPage";
@@ -290,6 +291,7 @@ function App() {
               <Route path="maintenance" element={<MaintenancePage />} />
               <Route path="correlation" element={<CorrelationPage />} />
               <Route path="thresholds" element={<ThresholdsPage />} />
+              <Route path="temperature" element={<TemperatureManagementPage />} />
               <Route path="bandwidth" element={<BandwidthPage />} />
               <Route path="backup" element={<BackupPage />} />
               <Route path="security-dashboard" element={<SecurityDashboardPage />} />

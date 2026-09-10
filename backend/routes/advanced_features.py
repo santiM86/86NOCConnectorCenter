@@ -56,6 +56,33 @@ async def get_temp_defaults(current_user: dict = Depends(get_current_user)):
     return {"defaults": types, "fallback": {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}}
 
 
+@router.post("/thresholds/apply-all")
+async def apply_thresholds_all(request: Request, current_user: dict = Depends(get_current_user)):
+    """Applica le stesse soglie a TUTTI i clienti (e opzionalmente azzera gli override
+    temperatura per-device) → un solo punto di controllo contro l'intasamento alert."""
+    if current_user.get("role") not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Solo admin")
+    body = await request.json()
+    clear_overrides = bool(body.pop("clear_device_overrides", False))
+    body.pop("client_id", None)
+    body.pop("_id", None)
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    body["updated_by"] = current_user.get("email", "system")
+    n = 0
+    async for c in db.clients.find({}, {"_id": 0, "id": 1}):
+        await db.alert_thresholds.update_one({"client_id": c["id"]}, {"$set": body}, upsert=True)
+        n += 1
+    cleared = 0
+    if clear_overrides:
+        r = await db.managed_devices.update_many(
+            {"$or": [{"temp_warn_c": {"$exists": True}}, {"temp_crit_c": {"$exists": True}},
+                     {"disk_temp_warn_c": {"$exists": True}}, {"inlet_temp_warn_c": {"$exists": True}}]},
+            {"$unset": {"temp_warn_c": "", "temp_crit_c": "", "disk_temp_warn_c": "", "disk_temp_crit_c": "",
+                        "inlet_temp_warn_c": "", "inlet_temp_crit_c": ""}})
+        cleared = r.modified_count
+    return {"status": "ok", "clients": n, "device_overrides_cleared": cleared}
+
+
 @router.post("/thresholds/{client_id}")
 async def update_thresholds(client_id: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Update alert thresholds for a client."""

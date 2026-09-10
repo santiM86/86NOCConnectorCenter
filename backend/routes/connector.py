@@ -2454,6 +2454,31 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             })
 
     # Insert alerts (dedup by title + device + status=active)
+    # AUTO-RIENTRO: chiudi gli alert soglia/vendor di questo device la cui condizione
+    # non è più presente in questo poll (dati freschi) → mai alert "vecchi" su TV/Panoramica.
+    try:
+        current_titles = {a["title"] for a in alerts_to_create}
+        stale = [] if not reachable else await db.alerts.find(
+            {"client_id": client_id, "device_ip": device_ip, "status": "active",
+             "source_type": {"$regex": "^(threshold_|vendor_)"}},
+            {"_id": 0, "id": 1, "title": 1, "telegram_notified": 1},
+        ).to_list(200)
+        for act in stale:
+            if act.get("title") in current_titles:
+                continue
+            await db.alerts.update_one(
+                {"id": act["id"]},
+                {"$set": {"status": "resolved", "resolved_at": now_iso,
+                          "resolution_note": "Rientrato: condizione non più presente al poll"}})
+            if act.get("telegram_notified"):
+                try:
+                    from alert_engine import notify_recovery_telegram
+                    await notify_recovery_telegram(db, act)
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as _e:  # noqa: BLE001
+        logger.debug("auto-rientro soglie failed ip=%s err=%s", device_ip, _e)
+
     for a in alerts_to_create:
         existing = await db.alerts.find_one({
             "client_id": client_id,

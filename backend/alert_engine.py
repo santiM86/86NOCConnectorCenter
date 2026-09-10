@@ -82,6 +82,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Digest mattutino "Cosa è DOWN" (orario configurabile, Europe/Rome)
     "morning_digest_enabled": True,
     "morning_digest_time": "07:00",
+    # Anti-intasamento Telegram: raggruppa per cliente ogni N min; cancella i
+    # messaggi N min dopo il rientro (0 = disattivo).
+    "telegram_batch_enabled": True,
+    "telegram_batch_minutes": 5,
+    "telegram_autodelete_resolved_minutes": 10,
 }
 
 
@@ -256,7 +261,15 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
                 client_name = (c or {}).get("name")
             except Exception:
                 client_name = None
-        await send_alert_telegram(
+        # Raggruppamento per cliente (outbox): un solo messaggio ogni N minuti.
+        # I guasti hardware "instant" partono subito.
+        if cfg.get("telegram_batch_enabled") and not _instant:
+            from telegram_batcher import enqueue as _tg_enqueue
+            await _tg_enqueue(db, alert_doc, client_name)
+            if alert_doc.get("id"):
+                await db.alerts.update_one({"id": alert_doc["id"]}, {"$set": {"telegram_notified": True, "telegram_batched": True}})
+            return "batched"
+        _res = await send_alert_telegram(
             db,
             title=alert_doc.get("title", "Alert"),
             message=alert_doc.get("message", ""),
@@ -266,6 +279,11 @@ async def notify_alert_telegram(db, alert_doc: Dict[str, Any]) -> bool:
             client_name=client_name,
             device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
         )
+        try:
+            from telegram_batcher import record_message as _tg_record
+            await _tg_record(db, _res, [alert_doc.get("id")], kind="alert")
+        except Exception:  # noqa: BLE001
+            pass
         # Marca l'alert come "notificato su Telegram": serve per inviare UN SOLO
         # messaggio di rientro alla risoluzione (evita chat intasata).
         try:
@@ -303,11 +321,17 @@ async def notify_recovery_telegram(db, alert_doc: Dict[str, Any], detail: str = 
             except Exception:
                 client_name = None
         orig_title = alert_doc.get("title", "Alert")
+        # Alert ancora in coda (mai inviato) → rientrato prima del flush: elimina
+        # dalla coda e NON inviare nulla (zero rumore per flap brevi).
+        if alert_doc.get("id"):
+            _pend = await db.telegram_outbox.delete_many({"alert_id": alert_doc["id"], "sent": False})
+            if _pend.deleted_count:
+                return True
         msg = detail.strip() if detail else "La condizione è rientrata (problema risolto)."
         dur = _outage_duration_str(alert_doc.get("created_at"), alert_doc.get("resolved_at"))
         if dur:
             msg += f"\nDisservizio durato {dur}."
-        await send_alert_telegram(
+        _rres = await send_alert_telegram(
             db,
             title=f"RIENTRATO: {orig_title}",
             message=msg,
@@ -317,6 +341,11 @@ async def notify_recovery_telegram(db, alert_doc: Dict[str, Any], detail: str = 
             client_name=client_name,
             device_name=alert_doc.get("device_name") or alert_doc.get("device_ip"),
         )
+        try:
+            from telegram_batcher import record_message as _tg_record
+            await _tg_record(db, _rres, [alert_doc.get("id")], kind="recovery")
+        except Exception:  # noqa: BLE001
+            pass
         return True
     except Exception as e:  # noqa: BLE001
         logger.debug("notify_recovery_telegram failed: %s", e)
