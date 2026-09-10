@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 """
 Alert Filter — Per-device alert silencing
 =========================================
@@ -228,6 +229,16 @@ def invalidate_silence_cache(client_id: Optional[str] = None, device_ip: Optiona
     keys_to_drop = [k for k in _SILENCE_CACHE if k[0] == client_id]
     for k in keys_to_drop:
         _SILENCE_CACHE.pop(k, None)
+
+
+async def touch_alert(db, query: dict) -> None:
+    """Heartbeat: riconferma un alert attivo ancora valido (last_seen_at=now).
+    Gli alert attivi non riconfermati entro STALE_MIN vengono chiusi da alert_hygiene."""
+    try:
+        await db.alerts.update_many({**query, "status": "active"},
+                                    {"$set": {"last_seen_at": datetime.now(timezone.utc).isoformat()}})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def insert_alert_if_emit(db, alert_doc: dict, force: bool = False) -> bool:

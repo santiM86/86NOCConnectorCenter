@@ -1080,10 +1080,17 @@ async def startup_event():
         from apscheduler.triggers.interval import IntervalTrigger as _HgTrig
         from apscheduler.triggers.cron import CronTrigger as _HgCron
         from alert_hygiene import expire_stale_alerts as _hg_expire, send_daily_summary as _hg_summary, \
-            resolve_recovered_device_alerts as _hg_recovered
+            resolve_recovered_device_alerts as _hg_recovered, resolve_unconfirmed_alerts as _hg_unconfirmed
 
         global hygiene_scheduler
         hygiene_scheduler = _HgSched()
+        hygiene_scheduler.add_job(
+            _hg_unconfirmed, args=[db],
+            trigger=_HgTrig(minutes=5),
+            id="alert_hygiene_unconfirmed",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=600),
+            max_instances=1, coalesce=True,
+        )
         hygiene_scheduler.add_job(
             _hg_recovered, args=[db],
             trigger=_HgTrig(minutes=2),

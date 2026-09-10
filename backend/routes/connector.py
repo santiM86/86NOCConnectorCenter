@@ -2468,7 +2468,7 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                 continue
             await db.alerts.update_one(
                 {"id": act["id"]},
-                {"$set": {"status": "resolved", "resolved_at": now_iso,
+                {"$set": {"status": "resolved", "resolved_at": now_iso, "resolution_reason": "recovered",
                           "resolution_note": "Rientrato: condizione non più presente al poll"}})
             if act.get("telegram_notified"):
                 try:
@@ -2487,6 +2487,8 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             "status": "active",
         })
         if existing:
+            from alert_filter import touch_alert
+            await touch_alert(db, {"id": existing["id"]})
             continue
         _conn_alert = {
             "id": str(uuid.uuid4()),

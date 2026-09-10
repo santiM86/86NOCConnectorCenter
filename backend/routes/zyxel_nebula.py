@@ -722,6 +722,11 @@ async def sync_client_devices(client_id: str) -> dict:
 
             # 1) Offline / recovery
             if now_status and now_status != "ONLINE":
+                if alert_state.get("offline"):
+                    # heartbeat: ancora offline → riconferma l'alert attivo
+                    from alert_filter import touch_alert
+                    await touch_alert(db, {"client_id": client_id, "source_type": "zyxel_offline",
+                                           "raw_data": {"$regex": f"^nebula:{dev_id} "}})
                 if not alert_state.get("offline"):
                     await _emit_zyxel_alert(
                         doc, "critical", "zyxel_offline",

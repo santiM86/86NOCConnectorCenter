@@ -188,6 +188,8 @@ class AlertResponse(BaseModel):
     acknowledged_by: Optional[str] = None
     acknowledged_at: Optional[str] = None
     resolved_at: Optional[str] = None
+    resolution_reason: Optional[str] = None
+    resolution_note: Optional[str] = None
     created_at: str
 
 class AlertUpdate(BaseModel):
