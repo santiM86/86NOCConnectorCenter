@@ -21,6 +21,15 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSortableTable, SortableTh } from "@/utils/tableSort";
 
+const REASON_LABEL = { recovered: "Rientrato", unconfirmed: "Non riconfermato", false_positive: "Falso positivo", expired: "Scaduto", manual: "Manuale" };
+const REASON_CLS = {
+  recovered: "text-emerald-300 border-emerald-500/40 bg-emerald-500/10",
+  unconfirmed: "text-amber-300 border-amber-500/40 bg-amber-500/10",
+  false_positive: "text-sky-300 border-sky-500/40 bg-sky-500/10",
+  expired: "text-neutral-300 border-neutral-500/40 bg-neutral-500/10",
+  manual: "text-indigo-300 border-indigo-500/40 bg-indigo-500/10",
+};
+
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState([]);
   const [clients, setClients] = useState([]);
@@ -31,6 +40,7 @@ export default function AlertsPage() {
     severity: searchParams.get("severity") || "",
     client_id: searchParams.get("client_id") || "",
     device_type: searchParams.get("device_type") || "",
+    resolution_reason: searchParams.get("resolution_reason") || "",
     search: "",
   });
   // v2026-02-13: clear-all alerts
@@ -46,10 +56,11 @@ export default function AlertsPage() {
     if (filters.severity) params.set("severity", filters.severity);
     if (filters.client_id) params.set("client_id", filters.client_id);
     if (filters.device_type) params.set("device_type", filters.device_type);
+    if (filters.resolution_reason) params.set("resolution_reason", filters.resolution_reason);
     setSearchParams(params, { replace: true });
-  }, [filters.status, filters.severity, filters.client_id, filters.device_type, setSearchParams]);
+  }, [filters.status, filters.severity, filters.client_id, filters.device_type, filters.resolution_reason, setSearchParams]);
 
-  useEffect(() => { fetchAlerts(); fetchClients(); }, [filters.status, filters.severity, filters.client_id, filters.device_type]);
+  useEffect(() => { fetchAlerts(); fetchClients(); }, [filters.status, filters.severity, filters.client_id, filters.device_type, filters.resolution_reason]);
 
   const fetchAlerts = async () => {
     try {
@@ -58,6 +69,7 @@ export default function AlertsPage() {
       if (filters.severity) params.append("severity", filters.severity);
       if (filters.client_id) params.append("client_id", filters.client_id);
       if (filters.device_type) params.append("device_type", filters.device_type);
+      if (filters.resolution_reason) params.append("resolution_reason", filters.resolution_reason);
       params.append("limit", "500");
       const response = await axios.get(`${API}/alerts?${params.toString()}`);
       setAlerts(response.data);
@@ -132,6 +144,7 @@ export default function AlertsPage() {
 
   const sevOpts = [{ value: "", label: "Tutte" }, { value: "critical", label: "Critico" }, { value: "high", label: "Alto" }, { value: "medium", label: "Medio" }, { value: "low", label: "Basso" }];
   const statusOpts = [{ value: "", label: "Tutti" }, { value: "active", label: "Attivo" }, { value: "acknowledged", label: "Confermato" }, { value: "resolved", label: "Risolto" }];
+  const reasonOpts = [{ value: "", label: "Tutte" }, { value: "recovered", label: "Rientrato" }, { value: "unconfirmed", label: "Non riconfermato" }, { value: "false_positive", label: "Falso positivo" }, { value: "expired", label: "Scaduto" }, { value: "manual", label: "Manuale" }];
   const typeOpts = [{ value: "", label: "Tutti" }, { value: "backup", label: "Backup" }, { value: "firewall", label: "Firewall" }, { value: "switch", label: "Switch" }, { value: "ilo", label: "ILO/iDRAC" }];
 
   return (
@@ -169,6 +182,7 @@ export default function AlertsPage() {
         <FilterDropdown label="Sev." value={filters.severity} options={sevOpts} onChange={v => setFilters(f => ({...f, severity: v}))} testId="filter-severity" />
         <FilterDropdown label="Stato" value={filters.status} options={statusOpts} onChange={v => setFilters(f => ({...f, status: v}))} testId="filter-status" />
         <FilterDropdown label="Tipo" value={filters.device_type} options={typeOpts} onChange={v => setFilters(f => ({...f, device_type: v}))} testId="filter-device-type" />
+        <FilterDropdown label="Chiusura" value={filters.resolution_reason} options={reasonOpts} onChange={v => setFilters(f => ({...f, resolution_reason: v, status: v ? "resolved" : f.status}))} testId="filter-resolution-reason" />
         <FilterDropdown label="Cliente" value={filters.client_id}
           options={[{ value: "", label: "Tutti" }, ...clients.map(c => ({ value: c.id, label: c.name }))]}
           onChange={v => setFilters(f => ({...f, client_id: v}))} testId="filter-client" />
@@ -202,7 +216,13 @@ export default function AlertsPage() {
                 sortedAlerts.map(alert => (
                   <tr key={alert.id} className="cursor-pointer" onClick={() => navigate(`/alerts/${alert.id}`)} data-testid={`alert-row-${alert.id}`}>
                     <td><span className={`severity-badge severity-${alert.severity}`}>{alert.severity}</span></td>
-                    <td><span className={`text-[10px] uppercase tracking-wider status-${alert.status}`}>{alert.status}</span></td>
+                    <td>
+                      <span className={`text-[10px] uppercase tracking-wider status-${alert.status}`}>{alert.status}</span>
+                      {alert.status === "resolved" && alert.resolution_reason && (
+                        <span className={`block mt-0.5 text-[9px] font-bold uppercase px-1 py-0.5 rounded border w-fit ${REASON_CLS[alert.resolution_reason] || REASON_CLS.manual}`}
+                          title={alert.resolution_note || ""} data-testid={`alert-reason-${alert.id}`}>{REASON_LABEL[alert.resolution_reason] || alert.resolution_reason}</span>
+                      )}
+                    </td>
                     <td className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
                       {alert.source_type === "osint_c2" && (
                         <span className="text-[9px] font-bold uppercase mr-1.5 px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40" data-testid={`alert-badge-c2-${alert.id}`}>C2 / OSINT</span>

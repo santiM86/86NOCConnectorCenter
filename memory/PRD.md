@@ -9576,3 +9576,7 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-09-10 — Heartbeat alert (last_seen_at) + chiusura non confermati
 - alert_filter.touch_alert(): riconferma alert attivo. Chiamato da: connector._check_device_thresholds (existing), redfish._check_alerts (existing), hardware_alerts._emit_or_update, alert_engine correlazione (state.alert_id) e datto watchdog (level>=1), zyxel_nebula (ancora offline).
 - alert_hygiene.resolve_unconfirmed_alerts (ogni 5 min, primo run +10 min): chiude alert attivi di sorgenti periodiche (threshold_*/vendor_*/redfish_direct/corr_*/datto_server_offline/zyxel_offline o dedup_key cpu/mem/temp/fan/psu) con last_seen_at (fallback created_at) > 30 min → "condizione non riconfermata". Motivo: es. "Temperatura critica" iLO restava attiva se poi l iLO diventava irraggiungibile.
+
+## 2026-09-10 — Motivo chiusura alert
+- Campo alerts.resolution_reason: recovered | unconfirmed | false_positive | expired | manual (+resolution_note, resolved_by). Scritto da: hygiene (recovered/unconfirmed/expired), connector/redfish/hardware/alert_engine/watchdog auto-resolve (recovered), migrazioni (false_positive), PATCH manuale (manual). Storici senza campo: derive_resolution_reason() da nota (regex) → fallback recovered.
+- GET /api/alerts?resolution_reason=… (forza status=resolved). AlertResponse include resolution_reason/resolution_note. AlertsPage: badge sotto lo stato + filtro "Chiusura".

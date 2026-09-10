@@ -314,7 +314,7 @@ class ConnectorWatchdog:
                     if existing and elapsed < RECOVERY_GRACE_SECONDS:
                         await self.db.alerts.update_one(
                             {"id": existing["id"]},
-                            {"$set": {"status": "resolved", "resolved_at": now.isoformat()}},
+                            {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}},
                         )
                         await self.db.alerts.insert_one({
                             "id": str(uuid.uuid4()),

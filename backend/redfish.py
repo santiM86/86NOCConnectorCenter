@@ -1326,7 +1326,8 @@ class RedfishPoller:
                     continue  # ancora in corso → non toccare
                 await self.db.alerts.update_one(
                     {"id": act["id"]},
-                    {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat()}},
+                    {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat(),
+                              "resolution_reason": "recovered", "resolution_note": "Rientrato: condizione non più presente al poll iLO"}},
                 )
                 if act.get("telegram_notified"):
                     try:

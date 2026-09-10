@@ -1,3 +1,4 @@
+import re
 """Alert CRUD and trends routes."""
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
@@ -18,6 +19,27 @@ from deps import (
     manager, correlation_manager, maintenance_manager
 )
 from alert_filter import insert_alert_if_emit
+
+# Motivo chiusura: codici stabili + derivazione da note storiche (alert pre-esistenti)
+_REASON_NOTE_RX = {
+    "recovered": r"^rientrat",
+    "unconfirmed": r"non riconfermat",
+    "false_positive": r"falso positivo",
+    "expired": r"auto-scadut",
+}
+
+
+def derive_resolution_reason(a: dict) -> str:
+    note = (a.get("resolution_note") or "").lower()
+    for code, rx in _REASON_NOTE_RX.items():
+        if re.search(rx, note):
+            return code
+    if a.get("auto_expired"):
+        return "expired"
+    if a.get("resolved_by"):
+        return "manual"
+    return "recovered"
+
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 
@@ -102,12 +124,25 @@ async def get_alerts(
     status: Optional[str] = None, severity: Optional[str] = None,
     client_id: Optional[str] = None, device_type: Optional[str] = None,
     vital_only: bool = False, sort_by: str = "created_at",
+    resolution_reason: Optional[str] = None,
     limit: int = 100, current_user: dict = Depends(get_current_user)
 ):
     query = {}
     if status: query["status"] = status
     if severity: query["severity"] = severity
     if client_id: query["client_id"] = client_id
+    if resolution_reason:
+        query["status"] = "resolved"
+        rx = _REASON_NOTE_RX.get(resolution_reason)
+        ors = [{"resolution_reason": resolution_reason}]
+        if rx:
+            ors.append({"resolution_reason": {"$exists": False}, "resolution_note": {"$regex": rx, "$options": "i"}})
+        if resolution_reason == "recovered":  # storici senza nota: chiusure automatiche
+            ors.append({"resolution_reason": {"$exists": False}, "resolution_note": {"$exists": False},
+                        "resolved_by": {"$exists": False}, "auto_expired": {"$exists": False}})
+        if resolution_reason == "manual":
+            ors.append({"resolution_reason": {"$exists": False}, "resolved_by": {"$exists": True}})
+        query["$or"] = ors
     if sort_by == "severity":
         # Critici prima, poi per data: il conteggio critici resta corretto anche col limit.
         pipeline = [
@@ -124,6 +159,9 @@ async def get_alerts(
         alerts = await db.alerts.aggregate(pipeline).to_list(limit)
     else:
         alerts = await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    for a in alerts:
+        if a.get("status") == "resolved" and not a.get("resolution_reason"):
+            a["resolution_reason"] = derive_resolution_reason(a)
 
     # VITAL-ONLY (Panoramica): mostra solo alert relativi a dispositivi VITALI.
     # Insieme per-cliente di nomi/IP dei device marcati is_vital.
@@ -204,6 +242,8 @@ async def update_alert(alert_id: str, update: AlertUpdate, current_user: dict = 
             update_data["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
         elif update.status == "resolved":
             update_data["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            update_data["resolution_reason"] = "manual"
+            update_data["resolved_by"] = current_user.get("name") or current_user.get("email")
     await db.alerts.update_one({"id": alert_id}, {"$set": update_data})
     updated_alert = await db.alerts.find_one({"id": alert_id}, {"_id": 0})
     await manager.broadcast({"type": "alert_updated", "alert": updated_alert})

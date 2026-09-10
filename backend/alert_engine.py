@@ -474,7 +474,7 @@ async def hyperv_vm_state_tick(db) -> dict:
                 r = await db.alerts.update_many(
                     {"client_id": cid, "source_type": "hyperv_vm_down",
                      "device_id": dev_key, "status": "active"},
-                    {"$set": {"status": "resolved", "resolved_at": now_iso}},
+                    {"$set": {"status": "resolved", "resolved_at": now_iso, "resolution_reason": "recovered"}},
                 )
                 resolved += r.modified_count
                 continue
@@ -548,7 +548,7 @@ async def run_backbone_watchdog(db, cfg_global: Dict[str, Any]) -> dict:
                 r = await db.alerts.update_many(
                     {"client_id": cid, "source_type": "corr_backbone_down",
                      "device_id": dev_key, "status": "active"},
-                    {"$set": {"status": "resolved", "resolved_at": now_iso}})
+                    {"$set": {"status": "resolved", "resolved_at": now_iso, "resolution_reason": "recovered"}})
                 return r.modified_count
 
             if not is_down or not parent_ip or not remote_port:
@@ -1173,7 +1173,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                 aid = state.get("alert_id")
                 if aid:
                     await db.alerts.update_one({"id": aid},
-                        {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                        {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
                 if state.get("level", 0) >= 1 and cfg.get("auto_recovery"):
                     rec = _mk_alert(cid, cname, dev_name, ip, dev_type, "low",
                         "device_recovery", f"ONLINE (ripristinato): {dev_name}",
@@ -1199,7 +1199,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                 await db.alerts.update_many(
                     {"client_id": cid, "device_ip": ip,
                      "source_type": {"$regex": "^corr_"}, "status": "active"},
-                    {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                    {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
             continue
 
         if not v["alertable"]:
@@ -1337,7 +1337,7 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         elif not stale and existing:
             await db.alerts.update_one(
                 {"id": existing["id"]},
-                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}},
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}},
             )
             if cfg.get("auto_recovery"):
                 rec = _mk_alert(
@@ -1458,7 +1458,7 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                 if aid:
                     await db.alerts.update_one(
                         {"id": aid},
-                        {"$set": {"status": "resolved", "resolved_at": now.isoformat()}},
+                        {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}},
                     )
                 if state.get("level", 0) >= 1 and cfg.get("auto_recovery"):
                     rec = _mk_alert(
@@ -1556,14 +1556,14 @@ async def run_new_device_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                 await db.alerts.update_one({"id": existing["id"]}, {"$set": {"message": msg}})
         elif existing:
             await db.alerts.update_one({"id": existing["id"]},
-                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
             actions += 1
 
     # Risolvi gli alert dei clienti che non hanno più device da classificare
     for cid, a in active_by_client.items():
         if cid not in by_client:
             await db.alerts.update_one({"id": a["id"]},
-                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
             actions += 1
     return actions
 
@@ -1733,7 +1733,7 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             # chiudilo, MA mantieni lo state (started_at) per la durata a recovery.
             if state and state.get("alert_id"):
                 await db.alerts.update_one({"id": state["alert_id"]},
-                    {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                    {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
                 await db.site_blackout_state.update_one({"client_id": cid},
                     {"$unset": {"alert_id": ""}, "$set": {"via": "corr"}})
             else:
@@ -1786,11 +1786,11 @@ async def run_site_blackout_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         # Risolvi l'alert del watchdog (se presente) e gli eventuali alert corr di sito
         if state.get("alert_id"):
             await db.alerts.update_one({"id": state["alert_id"]},
-                {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+                {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
         await db.alerts.update_many(
             {"client_id": cid, "status": "active",
              "source_type": {"$in": ["corr_site_power_down", "corr_site_isolated"]}},
-            {"$set": {"status": "resolved", "resolved_at": now.isoformat()}})
+            {"$set": {"status": "resolved", "resolved_at": now.isoformat(), "resolution_reason": "recovered"}})
         if cfg.get("auto_recovery"):
             if power:
                 title = f"⚡ Corrente RIPRISTINATA: {cname}"

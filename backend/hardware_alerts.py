@@ -300,7 +300,8 @@ async def _resolve_alert(db, cfg, dedup_key: str, recovery_msg: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     await db.alerts.update_one(
         {"id": active["id"]},
-        {"$set": {"status": "resolved", "resolved_at": now}},
+        {"$set": {"status": "resolved", "resolved_at": now, "resolution_reason": "recovered",
+                  "resolution_note": recovery_msg[:300]}},
     )
     # Web push di ripristino (best-effort)
     rec = dict(active)

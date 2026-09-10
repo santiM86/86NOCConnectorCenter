@@ -41,6 +41,7 @@ async def fix_comware_fan_psu_false_positives(db, name: str = "2026-09-08_comwar
     res = await db.alerts.update_many(q, {"$set": {
         "status": "resolved", "resolved_at": now,
         "resolution_note": "Auto-chiuso: falso positivo da OID PSU/ventola errato (fix profilo HPE Comware)",
+        "resolution_reason": "false_positive",
     }})
     await db.hardware_alert_state.delete_many({"dedup_key": {"$regex": r":(psu|fan)_fault$"}})
     await _mark_done(db, name, {"resolved": res.modified_count, "devices": len(ips)})
