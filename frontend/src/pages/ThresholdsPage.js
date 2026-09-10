@@ -56,6 +56,14 @@ export default function ThresholdsPage() {
     setModified(true);
   };
 
+  const applyAll = () => {
+    if (!window.confirm(`Applicare QUESTE soglie a TUTTI i clienti?\n\nOK = applica solo le soglie per cliente\n(gli override sui singoli device restano).`)) return;
+    const clear = window.confirm("Vuoi anche AZZERARE gli override temperatura impostati sui singoli device?\n\nOK = azzera (tutti i device useranno le soglie per tipo)\nAnnulla = mantieni gli override");
+    axios.post(`${API}/api/thresholds/apply-all`, { ...thresholds, clear_device_overrides: clear }, { headers })
+      .then(r => { toast.success(`Soglie applicate a ${r.data.clients} clienti` + (clear ? `, ${r.data.device_overrides_cleared} override device azzerati` : "")); setModified(false); })
+      .catch(e => toast.error(e?.response?.data?.detail || "Errore applicazione globale"));
+  };
+
   const save = () => {
     axios.post(`${API}/api/thresholds/${selectedClient}`, thresholds, { headers })
       .then(() => { toast.success("Soglie salvate!"); setModified(false); })
@@ -114,6 +122,18 @@ export default function ThresholdsPage() {
             data-testid="thresh-client-select">
             {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          {thresholds && (
+            <button onClick={applyAll}
+              className="h-8 px-3 text-xs font-semibold rounded-md border border-amber-500/50 text-amber-300 hover:bg-amber-500/10"
+              title="Applica queste soglie a tutti i clienti in un colpo solo"
+              data-testid="thresh-apply-all-btn">
+              Applica a TUTTI i clienti
+            </button>
+          )}
+          <a href="/settings/alert-engine" className="h-8 px-3 inline-flex items-center text-xs font-semibold rounded-md border border-[var(--bg-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            title="Canali, severità minima Telegram, orari silenzio, digest" data-testid="thresh-delivery-link">
+            Come vengono inviati →
+          </a>
           {modified && (
             <button onClick={save}
               className="h-8 px-4 text-xs font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 animate-pulse"

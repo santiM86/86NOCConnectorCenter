@@ -9558,3 +9558,8 @@ Health null è normale HPE (usa i sottosistemi).
 - alert_hygiene: risolve anche zyxel_offline se zyxel_devices.online_status==ONLINE.
 - ClientOverviewPage.fetchAll: setLoading(false) subito dopo la prima batch, 9 chiamate secondarie in Promise.allSettled con timeout 20s (prima erano sequenziali → "Caricamento..." lungo/bloccato).
 - Test: /app/test_reports/iteration_138.json (tutto passato).
+
+## 2026-09-10 — TV chip OK, auto-rientro soglie connector, soglie globali
+- TV: "AZIENDE OK" = striscia di chip verdi affiancati (flex-wrap) sopra i problemi; rimossa colonna laterale.
+- connector._check_device_thresholds: AUTO-RIENTRO degli alert threshold_*/vendor_* del device non più presenti nel poll (solo se reachable) + Telegram rientro se notificato. Prima NON venivano mai risolti → alert vecchi appesi.
+- POST /api/thresholds/apply-all (admin): applica soglie a tutti i clienti, opz. clear_device_overrides. ThresholdsPage: bottone "Applica a TUTTI i clienti" + link "Come vengono inviati →" (/settings/alert-engine: canali, severità minima Telegram, quiet hours, digest).
