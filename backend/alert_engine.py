@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
-from alert_filter import insert_alert_if_emit
+from alert_filter import insert_alert_if_emit, touch_alert
 import liveness_resolver as lr
 
 logger = logging.getLogger("alert_engine")
@@ -1225,6 +1225,8 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
 
         sev = v["severity"]
         prev_sev = state.get("severity")
+        if state.get("alert_id"):
+            await touch_alert(db, {"id": state["alert_id"]})
         reasoning = f"{v['reasoning']} (confidenza {v['confidence']}%)"
         source_type = f"corr_{v['root_cause']}"
         title_map = {
@@ -1424,7 +1426,9 @@ async def run_datto_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                 )
                 actions += 1
                 logger.warning("[datto] server offline warn: %s client=%s h=%.1f", name, cname, offline_hours)
-            elif level < 2 and offline_hours >= crit_h:
+            elif level >= 1 and state.get("alert_id"):
+                await touch_alert(db, {"id": state["alert_id"]})
+            if level < 2 and offline_hours >= crit_h and level >= 1:
                 aid = state.get("alert_id")
                 if aid:
                     await db.alerts.update_one(

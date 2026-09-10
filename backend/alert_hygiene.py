@@ -119,6 +119,40 @@ async def resolve_recovered_device_alerts(db) -> int:
         return 0
 
 
+STALE_UNCONFIRMED_MIN = 30
+# Sorgenti valutate periodicamente: se non riconfermano l'alert (last_seen_at) entro
+# STALE_UNCONFIRMED_MIN la condizione non è più verificabile/presente → chiudi.
+_PERIODIC_SOURCE_RE = r"^(threshold_|vendor_|redfish_direct|corr_|datto_server_offline|zyxel_offline)"
+_PERIODIC_DEDUP_RE = r":(cpu|mem|temp|fan_fault|psu_fault|disk_temp|inlet_temp)$"
+
+
+async def resolve_unconfirmed_alerts(db) -> int:
+    """Chiude gli alert attivi di sorgenti periodiche non riconfermati da >= 30 min
+    (heartbeat last_seen_at, fallback created_at). Così TV/Panoramica mostrano solo
+    condizioni verificate di recente."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STALE_UNCONFIRMED_MIN)).isoformat()
+        q = {"status": "active",
+             "$or": [{"source_type": {"$regex": _PERIODIC_SOURCE_RE}},
+                     {"dedup_key": {"$regex": _PERIODIC_DEDUP_RE}}]}
+        n = 0
+        async for a in db.alerts.find(q, {"_id": 0, "id": 1, "last_seen_at": 1, "created_at": 1, "title": 1}):
+            seen = a.get("last_seen_at") or a.get("created_at") or ""
+            if not seen or seen > cutoff:
+                continue
+            await db.alerts.update_one({"id": a["id"]}, {"$set": {
+                "status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat(),
+                "resolution_note": f"Auto-chiuso: condizione non riconfermata da oltre {STALE_UNCONFIRMED_MIN} min",
+            }})
+            n += 1
+        if n:
+            logger.info("Alert hygiene: chiusi %d alert non riconfermati (>%d min)", n, STALE_UNCONFIRMED_MIN)
+        return n
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Alert hygiene (unconfirmed) error: {e}", exc_info=True)
+        return 0
+
+
 def _day_bounds_utc():
     """Inizio/fine della giornata CORRENTE in ora italiana, come iso UTC."""
     now_local = datetime.now(_TZ)

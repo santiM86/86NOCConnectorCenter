@@ -1259,6 +1259,9 @@ class RedfishPoller:
                 "title": alert["title"],
                 "status": "active",
             })
+            if existing:
+                from alert_filter import touch_alert
+                await touch_alert(self.db, {"id": existing["id"]})
             if not existing:
                 _rf_alert = {
                     "id": str(uuid.uuid4()),

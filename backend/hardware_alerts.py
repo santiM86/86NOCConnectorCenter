@@ -341,7 +341,8 @@ async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
         if changed:
             await db.alerts.update_one(
                 {"id": active["id"]},
-                {"$set": {"severity": severity, "title": title, "message": message}},
+                {"$set": {"severity": severity, "title": title, "message": message,
+                          "last_seen_at": datetime.now(timezone.utc).isoformat()}},
             )
         # Ri-notifica su Telegram SOLO se la severità è PEGGIORATA (escalation),
         # non a ogni cambio di messaggio (es. CPU 85%→86% o temperatura che oscilla)
