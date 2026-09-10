@@ -339,6 +339,9 @@ async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
     if active:
         old_sev = active.get("severity")
         changed = old_sev != severity or active.get("message") != message
+        if not changed:
+            from alert_filter import touch_alert
+            await touch_alert(db, {"id": active["id"]})
         if changed:
             await db.alerts.update_one(
                 {"id": active["id"]},
