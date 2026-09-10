@@ -103,14 +103,33 @@ async def send_telegram_text(
                     "disable_web_page_preview": True,
                 },
             )
-            ok = r.status_code == 200 and (r.json() or {}).get("ok", False)
+            body = r.json() if r.status_code == 200 else {}
+            ok = bool((body or {}).get("ok", False))
             if not ok:
                 logger.warning("telegram send failed: %s %s", r.status_code, r.text[:200])
                 return {"success": False, "status": r.status_code, "detail": r.text[:200]}
-            return {"success": True}
+            return {"success": True, "message_id": ((body or {}).get("result") or {}).get("message_id"), "chat_id": cid}
     except Exception as e:  # noqa: BLE001
         logger.warning("telegram send exception: %s", e)
         return {"success": False, "error": str(e)[:160]}
+
+
+async def delete_telegram_message(db, chat_id: str, message_id: int, token: Optional[str] = None) -> bool:
+    """Cancella un messaggio dalla chat (bot: entro 48h). True anche se già assente."""
+    tok = await _resolve_token(db, token)
+    if not tok or not chat_id or not message_id:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as cli:
+            r = await cli.post(_API_BASE.format(token=tok, method="deleteMessage"),
+                               json={"chat_id": chat_id, "message_id": int(message_id)})
+            if r.status_code == 200:
+                return True
+            # 400 "message to delete not found" / "can't be deleted" → considera chiuso
+            return r.status_code == 400
+    except Exception as e:  # noqa: BLE001
+        logger.debug("telegram delete exception: %s", e)
+        return False
 
 
 async def send_alert_telegram(

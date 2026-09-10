@@ -13,6 +13,17 @@ const Sel = ({ value, onChange, children, testid }) => (
     className="h-8 px-2 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]">{children}</select>
 );
 
+/* Cella Inlet/Dischi: temp attuale + soglie effettive del kind (● = override device attivo) */
+const KindCell = ({ k, testid }) => (
+  <td className="px-3 py-1.5 text-right font-mono whitespace-nowrap" data-testid={testid}>
+    {k ? (<>
+      <span className={`font-bold ${STATE_CLS[k.state]}`}>{k.temp_c != null ? `${k.temp_c}°` : "—"}</span>
+      <span className="text-[var(--text-muted)]"> / {k.warn_c ?? "—"}·{k.crit_c ?? "—"}</span>
+      {k.override && <span className="text-indigo-300" title="Override device attivo"> ●</span>}
+    </>) : <span className="text-[var(--text-muted)]">—</span>}
+  </td>
+);
+
 export default function TemperatureManagementPage() {
   const [data, setData] = useState({ devices: [] });
   const [loading, setLoading] = useState(true);
@@ -23,6 +34,7 @@ export default function TemperatureManagementPage() {
   const [fState, setFState] = useState("all");
   const [warn, setWarn] = useState("");
   const [crit, setCrit] = useState("");
+  const [kind, setKind] = useState("general");
   const headers = { Authorization: `Bearer ${localStorage.getItem("noc_token")}` };
 
   const load = useCallback(() => {
@@ -37,7 +49,7 @@ export default function TemperatureManagementPage() {
   const types = useMemo(() => [...new Set(data.devices.map(d => d.device_type))].sort(), [data]);
   const rows = useMemo(() => data.devices.filter(d =>
     (fClient === "all" || d.client_id === fClient) && (fType === "all" || d.device_type === fType) &&
-    (fSource === "all" || d.source === fSource) && (fState === "all" || d.state === fState)), [data, fClient, fType, fSource, fState]);
+    (fSource === "all" || d.source === fSource) && (fState === "all" || (d.worst || d.state) === fState)), [data, fClient, fType, fSource, fState]);
   const allSel = rows.length > 0 && rows.every(d => sel.has(key(d)));
 
   const toggleAll = () => setSel(prev => { const n = new Set(prev); rows.forEach(d => allSel ? n.delete(key(d)) : n.add(key(d))); return n; });
@@ -47,13 +59,13 @@ export default function TemperatureManagementPage() {
   const apply = (clear) => {
     if (!sel.size) return toast.error("Seleziona almeno un dispositivo");
     if (!clear && warn === "" && crit === "") return toast.error("Indica warn e/o crit");
-    const body = clear ? { targets: targets(), clear: true } : { targets: targets(), warn: warn || null, crit: crit || null };
+    const body = clear ? { targets: targets(), kind, clear: true } : { targets: targets(), kind, warn: warn || null, crit: crit || null };
     axios.post(`${API}/api/temperature/bulk`, body, { headers })
       .then(r => { toast.success(clear ? `Override rimosso su ${r.data.updated} device` : `Soglie applicate a ${r.data.updated} device (${r.data.clients} clienti)`); setSel(new Set()); load(); })
       .catch(e => toast.error(e?.response?.data?.detail || "Errore"));
   };
 
-  const counts = useMemo(() => ({ crit: rows.filter(d => d.state === "crit").length, warn: rows.filter(d => d.state === "warn").length, ovr: rows.filter(d => d.source === "device").length }), [rows]);
+  const counts = useMemo(() => ({ crit: rows.filter(d => (d.worst || d.state) === "crit").length, warn: rows.filter(d => (d.worst || d.state) === "warn").length, ovr: rows.filter(d => d.source === "device").length }), [rows]);
 
   return (
     <div className="space-y-4" data-testid="temperature-page">
@@ -80,6 +92,7 @@ export default function TemperatureManagementPage() {
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-500/5 p-3" data-testid="temp-bulk-bar">
         <span className="text-xs font-semibold text-orange-300 mr-1">Applica ai selezionati:</span>
+        <Sel value={kind} onChange={setKind} testid="temp-bulk-kind"><option value="general">Temperatura generale</option><option value="inlet">Inlet / ambiente (iLO)</option><option value="disk">Dischi (NAS)</option></Sel>
         <input type="number" min="0" max="150" placeholder="warn °C" value={warn} onChange={e => setWarn(e.target.value)} data-testid="temp-bulk-warn"
           className="h-8 w-24 px-2 text-xs rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]" />
         <input type="number" min="0" max="150" placeholder="crit °C" value={crit} onChange={e => setCrit(e.target.value)} data-testid="temp-bulk-crit"
@@ -95,12 +108,12 @@ export default function TemperatureManagementPage() {
             <tr className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-muted)] border-b border-[var(--bg-border)]">
               <th className="px-3 py-2 w-8"><input type="checkbox" checked={allSel} onChange={toggleAll} data-testid="temp-select-all" /></th>
               <th className="text-left px-3 py-2">Cliente</th><th className="text-left px-3 py-2">Dispositivo</th><th className="text-left px-3 py-2">Tipo</th>
-              <th className="text-right px-3 py-2">Temp</th><th className="text-right px-3 py-2">Warn</th><th className="text-right px-3 py-2">Crit</th><th className="text-left px-3 py-2">Provenienza soglia</th>
+              <th className="text-right px-3 py-2">Temp</th><th className="text-right px-3 py-2">Warn</th><th className="text-right px-3 py-2">Crit</th><th className="text-left px-3 py-2">Provenienza soglia</th><th className="text-right px-3 py-2">Inlet</th><th className="text-right px-3 py-2">Dischi</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={8} className="px-3 py-6 text-center text-[var(--text-muted)]">Caricamento…</td></tr>}
-            {!loading && rows.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-[var(--text-muted)]">Nessun dispositivo con dati temperatura</td></tr>}
+            {loading && <tr><td colSpan={10} className="px-3 py-6 text-center text-[var(--text-muted)]">Caricamento…</td></tr>}
+            {!loading && rows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-[var(--text-muted)]">Nessun dispositivo con dati temperatura</td></tr>}
             {rows.map(d => (
               <tr key={key(d)} className={`border-b border-[var(--bg-border)]/50 hover:bg-white/[0.02] ${sel.has(key(d)) ? "bg-orange-500/5" : ""}`} data-testid={`temp-row-${d.ip}`}>
                 <td className="px-3 py-1.5"><input type="checkbox" checked={sel.has(key(d))} onChange={() => toggle(d)} data-testid={`temp-check-${d.ip}`} /></td>
@@ -111,6 +124,8 @@ export default function TemperatureManagementPage() {
                 <td className="px-3 py-1.5 text-right font-mono">{d.warn_c ?? "—"}</td>
                 <td className="px-3 py-1.5 text-right font-mono">{d.crit_c ?? "—"}</td>
                 <td className="px-3 py-1.5"><span className={`px-1.5 py-0.5 rounded border text-[10px] ${SRC_CLS[d.source]}`}>{SRC_LABEL[d.source]}</span></td>
+                <KindCell k={d.inlet} testid="temp-inlet" />
+                <KindCell k={d.disk} testid="temp-disk" />
               </tr>
             ))}
           </tbody>

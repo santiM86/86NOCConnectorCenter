@@ -1188,6 +1188,15 @@ async def startup_event():
             next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
             max_instances=1, coalesce=True,
         )
+        from telegram_batcher import tick as _tg_batch_tick
+        async def _tg_batch_job():
+            from database import db as _db
+            await _tg_batch_tick(_db)
+        osint_scheduler.add_job(
+            _tg_batch_job, trigger=_OsTrig(seconds=30), id="telegram_batch_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45),
+            max_instances=1, coalesce=True,
+        )
         from alert_engine import morning_digest_tick as _morning_tick
         async def _morning_digest_job():
             from database import db as _db

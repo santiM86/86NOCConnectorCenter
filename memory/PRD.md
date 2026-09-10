@@ -9567,3 +9567,8 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-09-10 — Gestione Temperature in blocco (cross-cliente)
 - routes/temperature.py: GET /api/temperature/overview (tutti i device di tutti i clienti: temp live da vendor_metrics, soglia effettiva via resolve_temp_thresholds, provenienza device/cliente/profilo/default, stato ok/warn/crit); POST /api/temperature/bulk {targets:[{client_id,ip}], warn, crit | clear} (admin).
 - Frontend pages/TemperatureManagementPage.js (/temperature, menu "Temperature" admin): filtri cliente/tipo/provenienza/stato, selezione multipla, barra bulk imposta/rimuovi override.
+
+## 2026-09-10 — Telegram anti-intasamento + Temperature inlet/disco
+- telegram_batcher.py: outbox per cliente (flush ogni 30s, invia se il più vecchio > telegram_batch_minutes, default 5) con messaggio raggruppato; scarta alert già rientrati; instant hardware bypass. telegram_messages registra message_id (alert e recovery); autodelete_resolved cancella dalla chat N min (telegram_autodelete_resolved_minutes, default 10) dopo che TUTTI gli alert del messaggio sono resolved (recovery: N min dopo invio). Bot limite 48h. telegram_notifier: send ritorna message_id, delete_telegram_message.
+- alert_engine: DEFAULT_CONFIG nuove chiavi; notify_alert_telegram → enqueue se batch attivo; notify_recovery_telegram: se alert ancora in coda lo rimuove e non invia nulla. UI AlertEngineSettingsPage box "Anti-intasamento".
+- Temperature: overview include inlet (ultimo ilo_telemetry, sensori inlet/ambient) e disk (Synology diskTemperature) con soglie effettive per kind; bulk accetta kind=general|inlet|disk. UI: selettore kind + colonne Inlet/Dischi.

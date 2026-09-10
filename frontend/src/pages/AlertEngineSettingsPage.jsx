@@ -376,6 +376,25 @@ export default function AlertEngineSettingsPage() {
               Un unico messaggio con SOLO ciò che è DOWN (vitali spenti, siti/WAN giù, guasti operatori), l'orario da quando è giù e la lista dei "Rientrati nella notte".
             </p>
           </div>
+          <div className="rounded-md border border-orange-500/30 p-3 space-y-2" data-testid="tg-antiflood-box">
+            <div className="flex items-center gap-2">
+              <Switch checked={cfg.telegram_batch_enabled !== false} onCheckedChange={(v) => set("telegram_batch_enabled", v)} data-testid="tg-batch-switch" />
+              <Label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Anti-intasamento: raggruppa gli alert per cliente</Label>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-[var(--text-muted)]">Un messaggio per cliente ogni</span>
+              <Input type="number" min="1" max="60" value={cfg.telegram_batch_minutes ?? 5} onChange={(e) => set("telegram_batch_minutes", Number(e.target.value))}
+                className="h-8 w-20 text-sm bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="tg-batch-minutes" disabled={cfg.telegram_batch_enabled === false} />
+              <span className="text-[10px] text-[var(--text-muted)]">min · cancella dalla chat i messaggi degli alert rientrati dopo</span>
+              <Input type="number" min="0" max="2880" value={cfg.telegram_autodelete_resolved_minutes ?? 10} onChange={(e) => set("telegram_autodelete_resolved_minutes", Number(e.target.value))}
+                className="h-8 w-20 text-sm bg-[var(--bg-panel)] border-[var(--bg-border)]" data-testid="tg-autodelete-minutes" />
+              <span className="text-[10px] text-[var(--text-muted)]">min (0 = mai)</span>
+            </div>
+            <p className="text-[9px] text-[var(--text-muted)]">
+              I guasti hardware istantanei (PSU, ventole, dischi) partono subito. Un alert che rientra prima dell'invio non genera nessun messaggio. Il bot può cancellare solo messaggi più recenti di 48h.
+            </p>
+          </div>
+
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={detectChats} disabled={busy === "detect"} className="h-8 gap-1 text-xs" data-testid="detect-chats-btn">
               <ArrowsClockwise size={12} /> {busy === "detect" ? "Rilevo…" : "Rileva chat"}
