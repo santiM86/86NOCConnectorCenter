@@ -1,6 +1,23 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Fix "incongruenze" soglie temperatura per tipo (Zyxel USG, AP, iLO, generic…)
+**Problema utente**: soglie per tipo impostate (es. 80/85 su tutti i tipi) in Soglie Alert, ma Gestione
+Temperature / alert mostravano soglie effettive diverse. **RCA**: il resolver confrontava
+`alert_thresholds.temp_by_type[<type>]` col `device_type` RAW (`zyxel-usg`, `access-point`, `generic`,
+`endpoint`, `None`, `device_class` SNMP) che non coincide mai con le chiavi della pagina (switch, firewall, ap,
+ilo, nas, storage, hypervisor…) → cadeva su default/fallback 65/80.
+**Fix**: `hardware_alerts.temp_type_key(*hints)` normalizza type/class/profile_key/family nella chiave temp
+(zyxel-usg/usg/fortigate→firewall, access-point→ap, hpe_ilo/idrac/bmc→ilo, hyperv_vm/esxi→hypervisor,
+snmp-switch→switch, synology/qnap→nas…). `resolve_temp_thresholds` normalizza SEMPRE e accetta una tupla di
+hint; callers aggiornati (`evaluate_hardware_alerts`, `connector.py` temp generale+disco con `profile_family`,
+`predictive.py`, `routes/temperature.py` con `best_device_type`). Nuova chiave `other` (tipo non riconosciuto):
+`temp_by_type.other` applicato ai device generici; `/api/thresholds-temp-defaults` include `other` (65/80).
+Frontend `ThresholdsPage.js`: hint per tipo (USG/FortiGate, iDRAC/BMC, Hyper-V/ESXi…) + riga "Altro".
+**Testing**: iteration_142 (13/13 backend + E2E frontend OK, regressioni hardware/predictive OK).
+⚠️ PROD attivo dopo Save to GitHub + redeploy.
+
+
 ## 2026-06 ✅ Soglie temperatura: disco + aria-ingresso (inlet) per device + bulk "Applica impostazioni"
 **Richiesta utente**: (a) override temperatura DISCO e INLET per singolo dispositivo nella scheda device
 (prima solo generale); (b) estendere l'override temperatura al modal "Applica impostazioni" in blocco.

@@ -152,11 +152,15 @@ async def _ctx(db, client_id: str, device_ip: str, sys_name: Optional[str]):
     except Exception:  # noqa: BLE001
         pass
     prof_thr: Dict[str, Any] = {}
+    prof_family = None
     if profile_key:
         try:
-            prof_thr = (await get_effective_profile(db, profile_key) or {}).get("thresholds") or {}
+            _prof = await get_effective_profile(db, profile_key) or {}
+            prof_thr = _prof.get("thresholds") or {}
+            prof_family = _prof.get("family")
         except Exception:  # noqa: BLE001
             pass
+    device_type = (device_type, md.get("device_class"), profile_key, prof_family)
     cbt: Dict[str, Any] = {}
     try:
         t = await db.alert_thresholds.find_one({"client_id": client_id}, {"_id": 0, "temp_by_type": 1})
@@ -170,6 +174,8 @@ async def _ctx(db, client_id: str, device_ip: str, sys_name: Optional[str]):
     d_warn, d_crit = resolve_temp_thresholds(prof_thr, device_type, dov, cbt, kind="disk",
                                              fallback=(DEFAULT_DISK_TEMP_CRIT - 8, DEFAULT_DISK_TEMP_CRIT))
     thresholds = {"temp_warn_c": t_warn, "temp_crit_c": t_crit, "disk_temp_warn_c": d_warn, "disk_temp_crit_c": d_crit}
+    from hardware_alerts import temp_type_key
+    device_type = temp_type_key(device_type) or "generic"
     client_name = ""
     try:
         c = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})

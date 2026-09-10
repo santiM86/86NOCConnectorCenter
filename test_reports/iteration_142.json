@@ -1,0 +1,28 @@
+{
+  "summary": "BUG FIX verified: per-type temperature thresholds now correctly resolve for devices whose raw device_type (e.g. 'zyxel-usg', 'access-point', 'hpe_ilo', 'hyperv_vm') is normalized via new temp_type_key() into the canonical keys used by the ThresholdsPage. All backend unit + E2E tests pass (13/13), both existing regression suites pass (test_hardware_alerts.py, test_predictive_thresholds.py), and frontend flow (ThresholdsPage 12 rows incl. Altro, hints visible, save, verify effective threshold on Gestione Temperature) verified end-to-end. Test data restored to original.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_temp_thresholds_iter142.py",
+    "/app/test_reports/pytest/iter142_temp_thresholds.xml",
+    "/app/backend/tests/test_hardware_alerts.py",
+    "/app/backend/tests/test_predictive_thresholds.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "resolve_temp_thresholds correctly normalizes device_type via temp_type_key (also handles list/tuple of hints), and priority order (device override > client per-type > profile > default-per-type) is respected.",
+    "GET /api/thresholds-temp-defaults now includes 'other' (65/80) alongside 11 canonical types.",
+    "Console shows 3x 403 responses on unrelated resources during navigation - not blocking, but worth checking which endpoint is 403 for admin (likely a background fetch)."
+  ],
+  "updated_files": ["/app/backend/tests/test_temp_thresholds_iter142.py"],
+  "success_rate": {"backend": "100% (13/13 new + 2 legacy suites)", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3",
+  "seed_data_creation": "None. Test toggled alert_thresholds.temp_by_type for client da3d6e40... and RESTORED to original {'switch':{'warn':70,'crit':80}} at end. Verified via GET /api/thresholds/{cid} after run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend BASE = REACT_APP_BACKEND_URL from /app/frontend/.env. Frontend token key in localStorage: 'noc_token'. 2FA input is a single field. Gestione Temperature route is /temperature (TemperatureManagementPage). ThresholdsPage temp keys: switch, router, firewall, ap, server, ilo, hypervisor, printer, nas, storage, ups, other. temp_by_type payload shape: {'<key>':{'warn':N,'crit':M}}. Test client with zyxel-usg firewall device: da3d6e40-b3e5-4d46-9787-dde328a3aa36 / 192.168.1.254. temp_c is currently null (device offline)."
+}

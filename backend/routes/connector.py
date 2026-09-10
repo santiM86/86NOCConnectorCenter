@@ -1784,11 +1784,13 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
         ) or {}
         profile_key = md.get("profile_key")
     profile_thresholds = {}
+    profile_family = None
     if profile_key:
         try:
             from device_profiles import get_effective_profile
             prof = await get_effective_profile(db, profile_key)
             if prof:
+                profile_family = prof.get("family")
                 profile_thresholds = prof.get("thresholds") or {}
                 # Override only if profile specifies (profile wins on per-device tuning)
                 if "cpu_crit_pct" in profile_thresholds:
@@ -1882,11 +1884,12 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             from hardware_alerts import resolve_temp_thresholds
             _dov = await db.managed_devices.find_one(
                 {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
-                {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1}) or {}
+                {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1, "device_type": 1}) or {}
             device_override = {"warn": _dov.get("temp_warn_c"), "crit": _dov.get("temp_crit_c")}
             client_by_type = th.get("temp_by_type") or {}
             t_warn, t_crit = resolve_temp_thresholds(
-                profile_thresholds, device_type, device_override, client_by_type)
+                profile_thresholds, (_dov.get("device_type"), device_type, profile_key, profile_family),
+                device_override, client_by_type)
         except Exception:
             t_warn, t_crit = temp_warn, temp_crit
         if t_crit is not None and temp >= t_crit:
@@ -1949,11 +1952,11 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             from hardware_alerts import resolve_temp_thresholds as _rtt
             _dmd = await db.managed_devices.find_one(
                 {"client_id": client_id, "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
-                {"_id": 0, "disk_temp_warn_c": 1, "disk_temp_crit_c": 1}) or {}
+                {"_id": 0, "disk_temp_warn_c": 1, "disk_temp_crit_c": 1, "device_type": 1}) or {}
             _dov_disk = {"disk_warn": _dmd.get("disk_temp_warn_c"), "disk_crit": _dmd.get("disk_temp_crit_c")}
             disk_temp_warn, disk_temp_crit = _rtt(
-                profile_thresholds, device_type, _dov_disk, th.get("temp_by_type") or {},
-                kind="disk", fallback=(50, 60))
+                profile_thresholds, (_dmd.get("device_type"), device_type, profile_key, profile_family),
+                _dov_disk, th.get("temp_by_type") or {}, kind="disk", fallback=(50, 60))
         except Exception:
             disk_temp_crit = profile_thresholds.get("disk_temp_crit_c", 60)
             disk_temp_warn = profile_thresholds.get("disk_temp_warn_c", 50)

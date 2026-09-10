@@ -3,6 +3,16 @@ import axios from "axios";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
+const TYPE_HINTS = {
+  firewall: "USG, FortiGate, UTM",
+  ap: "Access point / Wi-Fi",
+  ilo: "iLO, iDRAC, BMC",
+  hypervisor: "Hyper-V, ESXi, Proxmox",
+  nas: "Synology, QNAP",
+  storage: "SAN",
+  other: "generico / tipo non riconosciuto",
+};
+
 
 export default function ThresholdsPage() {
   const [clients, setClients] = useState([]);
@@ -186,6 +196,7 @@ export default function ThresholdsPage() {
           <p className="text-[10px] text-[var(--text-secondary)] mb-4">
             Soglie warning/critica per ogni tipo. Lascia vuoto per usare il default indicato. Un eventuale
             override sul singolo dispositivo (scheda device) ha comunque la precedenza su queste.
+            Il tipo viene riconosciuto anche da classe SNMP e profilo (es. Zyxel USG → Firewall, iDRAC → iLO).
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
             {Object.keys(tempDefaults).length === 0 && (
@@ -195,7 +206,10 @@ export default function ThresholdsPage() {
               const row = (thresholds.temp_by_type || {})[dtype] || {};
               return (
                 <div key={dtype} className="flex items-center justify-between gap-2 py-1" data-testid={`thresh-temp-row-${dtype}`}>
-                  <span className="text-xs font-medium text-[var(--text-primary)] capitalize flex-1">{dtype}</span>
+                  <span className="text-xs font-medium text-[var(--text-primary)] flex-1" title={TYPE_HINTS[dtype] || ""}>
+                    <span className="capitalize">{dtype === "other" ? "Altro" : dtype}</span>
+                    {TYPE_HINTS[dtype] && <span className="ml-1 text-[10px] text-[var(--text-secondary)]">({TYPE_HINTS[dtype]})</span>}
+                  </span>
                   <div className="flex items-center gap-1">
                     <input type="number" value={row.warn ?? ""} placeholder={def_.warn}
                       onChange={e => updateTempType(dtype, "warn", e.target.value)}

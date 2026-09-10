@@ -247,7 +247,52 @@ _TEMP_KIND_KEYS = {
 }
 
 
-def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type: Optional[str],
+_TEMP_TYPE_ALIASES = {
+    "access-point": "ap", "access_point": "ap", "accesspoint": "ap", "wifi": "ap", "wlan": "ap",
+    "unifi": "ap", "wifi-ap": "ap", "wifi_ap": "ap",
+    "server_oob": "ilo", "server-oob": "ilo", "bmc": "ilo", "idrac": "ilo", "drac": "ilo",
+    "ipmi": "ilo", "oob": "ilo", "imm": "ilo",
+    "vm": "hypervisor", "hyperv": "hypervisor", "hyper-v": "hypervisor", "esxi": "hypervisor",
+    "vmware": "hypervisor", "proxmox": "hypervisor", "xen": "hypervisor",
+    "san": "storage", "synology": "nas", "qnap": "nas",
+    "zyxel-usg": "firewall", "usg": "firewall", "utm": "firewall", "fortigate": "firewall",
+    "stampante": "printer", "mfp": "printer",
+}
+_TEMP_TYPE_SUBSTR = (
+    ("switch", "switch"), ("router", "router"), ("firewall", "firewall"), ("usg", "firewall"),
+    ("fortigate", "firewall"), ("fortinet", "firewall"), ("printer", "printer"),
+    ("hyperv", "hypervisor"), ("esxi", "hypervisor"), ("proxmox", "hypervisor"), ("vmware", "hypervisor"),
+    ("ilo", "ilo"), ("idrac", "ilo"), ("synology", "nas"), ("qnap", "nas"), ("nas", "nas"),
+    ("storage", "storage"), ("ups", "ups"), ("access", "ap"), ("wifi", "ap"), ("omada_ap", "ap"),
+    ("server", "server"),
+)
+
+
+def temp_type_key(*hints) -> str:
+    """Normalizza device_type / device_class / profile family / profile_key nella chiave
+    usata dalle soglie temperatura per tipo (switch, firewall, ap, ilo, nas, …).
+    Prova gli hint in ordine; '' se nessuno è riconoscibile (→ fallback generico)."""
+    for h in hints:
+        if isinstance(h, (list, tuple)):
+            r = temp_type_key(*h)
+            if r:
+                return r
+            continue
+        s = str(h or "").strip().lower()
+        if not s:
+            continue
+        if s in _DEFAULT_TEMP_THRESHOLDS:
+            return s
+        a = _TEMP_TYPE_ALIASES.get(s)
+        if a:
+            return a
+        for sub, key in _TEMP_TYPE_SUBSTR:
+            if sub in s:
+                return key
+    return ""
+
+
+def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type,
                             device_override: Optional[dict] = None,
                             client_by_type: Optional[dict] = None,
                             kind: str = "general",
@@ -258,8 +303,11 @@ def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type: Opt
       3) soglia esplicita del PROFILO vendor
       4) default: per `kind='general'` = `_DEFAULT_TEMP_THRESHOLDS` per tipo; per
          inlet/disk = `fallback` passato dal chiamante (può essere None).
-    `kind` = general|inlet|disk. warn e crit risolti indipendentemente."""
-    dt = (device_type or "").lower()
+    `kind` = general|inlet|disk. warn e crit risolti indipendentemente.
+    `device_type` può essere una stringa o una sequenza di hint (type, class, profile_key,
+    family): viene SEMPRE normalizzato con `temp_type_key` così 'zyxel-usg' → firewall,
+    'access-point' → ap, 'hpe_ilo' → ilo, ecc."""
+    dt = temp_type_key(device_type)
     km = _TEMP_KIND_KEYS.get(kind, _TEMP_KIND_KEYS["general"])
     if kind == "general" and fallback is None:
         base = _DEFAULT_TEMP_THRESHOLDS.get(dt, _DEFAULT_TEMP_FALLBACK)
@@ -269,7 +317,7 @@ def resolve_temp_thresholds(profile_thresholds: Optional[dict], device_type: Opt
     prof_warn = _threshold(pt, *km["pw"])
     prof_crit = _threshold(pt, *km["pc"])
     dov = device_override or {}
-    cbt = (client_by_type or {}).get(dt) or {}
+    cbt = (client_by_type or {}).get(dt or "other") or {}
     bw = base[0] if base else None
     bc = base[1] if base else None
     warn = _first_num(dov.get(km["dw"]), cbt.get(km["cw"]), prof_warn, bw)
@@ -416,10 +464,11 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
     device_name = sys_name or ""
     device_type = ""
     device_temp_override = {}
+    mdoc = None
     try:
         mdoc = await db.managed_devices.find_one(
             {"client_id": client_id, "ip": device_ip},
-            {"_id": 0, "hostname": 1, "name": 1, "device_name": 1,
+            {"_id": 0, "hostname": 1, "name": 1, "device_name": 1, "device_class": 1,
              "device_type": 1, "profile_key": 1, "temp_warn_c": 1, "temp_crit_c": 1},
         )
         if mdoc:
@@ -453,7 +502,8 @@ async def evaluate_hardware_alerts(db, *, client_id: str, device_ip: str,
             client_temp_by_type = _at.get("temp_by_type") or {}
     except Exception:  # noqa: BLE001
         pass
-    _dt = (device_type or "").lower()
+    _dt = temp_type_key(device_type, mdoc.get("device_class") if mdoc else None, profile_key, prof.get("family"))
+    device_type = _dt or device_type
     _has_temp_override = any(
         isinstance(v, (int, float)) for v in (device_temp_override or {}).values())
     _has_client_temp = bool(client_temp_by_type.get(_dt))
