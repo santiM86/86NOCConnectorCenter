@@ -9584,3 +9584,6 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-09-10 — FIX predictive.py soglie ignorate + heartbeat
 - predictive._ctx usa resolve_temp_thresholds (override device > cliente temp_by_type > profilo effettivo > default) per temperatura generale e dischi (disk_temp_*). Prima: solo seed profile / default 78°C → "GUASTO IMMINENTE" nonostante soglie alzate.
 - _emit/_emit_or_update: touch_alert sempre su alert attivo (heartbeat anche se invariato). predictive_ aggiunto alle sorgenti periodiche di resolve_unconfirmed_alerts. Test: iteration_139/140.
+
+## 2026-09-10 — FIX incoerenza vitali TV/Panoramica vs scheda cliente
+- liveness_resolver.PositiveEvidence/build_positive_evidence: Datto RMM online (<30 min) e Hyper-V VM Running (<15 min) → online; Off/Saved/Paused → off. Applicato in tv_dashboard, overview e alert_hygiene.resolve_recovered_device_alerts (prima solo in routes/devices.get_devices → SRVDC verde in scheda ma "giù da 3g" in TV + popup). Test iteration_141 PASS.

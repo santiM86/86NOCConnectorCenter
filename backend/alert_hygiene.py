@@ -68,7 +68,7 @@ async def resolve_recovered_device_alerts(db) -> int:
     Evita che un alert rimanga attivo su TV/Panoramica dopo il rientro."""
     try:
         from liveness_resolver import build_evidence_maps, compute_status, \
-            build_clients_without_online_agent, build_blackout_clients
+            build_clients_without_online_agent, build_blackout_clients, build_positive_evidence
         q = {"status": "active", "device_ip": {"$nin": [None, ""]}, "$or": [
             {"source_type": {"$regex": "^corr_"}},
             {"source_type": {"$in": ["vital_device_offline", "datto_server_offline"]}},
@@ -79,6 +79,7 @@ async def resolve_recovered_device_alerts(db) -> int:
         ip_ev, mac_ev = await build_evidence_maps(db, window_minutes=15)
         off_clients = await build_clients_without_online_agent(db)
         blackout = await build_blackout_clients(db, off_clients)
+        pos_ev = await build_positive_evidence(db)
         now_iso = datetime.now(timezone.utc).isoformat()
         n = 0
         for a in cands:
@@ -88,6 +89,7 @@ async def resolve_recovered_device_alerts(db) -> int:
             if not pd and not md:
                 continue
             status, _ = compute_status(pd, md, ip_ev, mac_ev, off_clients, blackout)
+            status = pos_ev.apply(status, md or {}, ip)
             if status != "online":
                 continue
             await db.alerts.update_one({"id": a["id"]}, {"$set": {

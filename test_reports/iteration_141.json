@@ -1,0 +1,31 @@
+{
+  "summary": "Testato il fix del bug di coerenza vitalità SRVDC: PositiveEvidence (Datto RMM online + Hyper-V snapshot state) ora applicato in tv_dashboard._compute_tv_dashboard, overview._compute_clients_overview e alert_hygiene. Tutti e 4 i casi passano: (1) Hyper-V Running -> online in TV/overview/devices, (2) Hyper-V Off -> status 'off' non conteggiato come offline, (3) Datto online -> online in TV/overview/devices, (4) senza evidenze positive -> SRVDC offline in TV (offline_devices) e overview.vital_offline>=1. Coerenza confermata anche con GET /api/devices?client_id= (stessa verità).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_liveness_positive_evidence.py",
+    "/app/test_reports/pytest/liveness_positive_evidence.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "tv_dashboard.py riga 684: max(vital_repoll_times) confronta timestamp misti datetime/str, può sollevare TypeError se il DB contiene entrambi i formati (ho aggirato inserendo ISO strings in test). Consigliata normalizzazione difensiva.",
+    "PositiveEvidence.build_positive_evidence su datto_devices filtra last_seen >30min ma non filtra online=False: la query è già online:True quindi ok. Su hyperv_snapshots il filtro >=15min è coerente con /api/devices."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_liveness_positive_evidence.py (nuovo)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "test_credentials": "admin info@86bit.it / TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (da /app/memory/test_credentials.md)",
+  "seed_data_creation": "Dati fittizi (clients, managed_agents, managed_devices, device_poll_status, hyperv_snapshots, datto_devices) creati e ripuliti per client_id TEST_liveness_*. Nessun dato residuo.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Test riutilizzabile: /app/backend/tests/test_liveness_positive_evidence.py. Nota: /api/devices ritorna il campo 'ip_address', non 'ip'. Il compute è invocato direttamente (bypass cache TV 4s / overview 20s).",
+  "rca of the issue": "Non applicabile: bug già risolto dal main agent. Il fix consiste nell'applicare le stesse override positive (Datto RMM <30m + Hyper-V snapshot <15m) usate da /api/devices anche in TV dashboard, Overview clients e resolve_recovered_device_alerts, garantendo un'unica fonte di verità."
+}
