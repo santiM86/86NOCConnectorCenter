@@ -48,10 +48,13 @@ async def _emit(db, cfg, *, source_type: str, dedup_key: str, client_id: str,
                 severity: str, title: str, message: str) -> None:
     active = await db.alerts.find_one({"dedup_key": dedup_key, "status": "active"}, {"_id": 0})
     if active:
+        from alert_filter import touch_alert
+        await touch_alert(db, {"id": active["id"]})
         if active.get("severity") != severity or active.get("message") != message:
             await db.alerts.update_one(
                 {"id": active["id"]},
-                {"$set": {"severity": severity, "title": title, "message": message}},
+                {"$set": {"severity": severity, "title": title, "message": message,
+                          "last_seen_at": datetime.now(timezone.utc).isoformat()}},
             )
             try:
                 await _dispatch_notification(db, cfg, {**active, "severity": severity, "title": title, "message": message})
@@ -74,7 +77,7 @@ async def _resolve(db, cfg, dedup_key: str, recovery_msg: str) -> None:
         return
     now = datetime.now(timezone.utc).isoformat()
     await db.alerts.update_one({"id": active["id"]},
-                               {"$set": {"status": "resolved", "resolved_at": now}})
+                               {"$set": {"status": "resolved", "resolved_at": now, "resolution_reason": "recovered"}})
     rec = {**active, "status": "resolved", "resolved_at": now, "severity": "low",
            "title": "Ripristino: " + active.get("title", ""), "message": recovery_msg}
     try:
@@ -134,25 +137,39 @@ def _eta_hours(current: float, slope: float, target: float) -> Optional[float]:
 # Context
 # ---------------------------------------------------------------------------
 async def _ctx(db, client_id: str, device_ip: str, sys_name: Optional[str]):
+    """Contesto device + soglie EFFETTIVE (stesso resolver del motore alert:
+    override device > soglia cliente per tipo > profilo effettivo > default tipo)."""
+    from device_profiles import get_effective_profile
+    from hardware_alerts import resolve_temp_thresholds
     device_name, device_type, profile_key = sys_name or device_ip, "", None
+    md: Dict[str, Any] = {}
     try:
-        md = await db.managed_devices.find_one(
-            {"client_id": client_id, "ip": device_ip},
-            {"_id": 0, "hostname": 1, "name": 1, "device_name": 1, "device_type": 1, "profile_key": 1},
-        )
+        md = await db.managed_devices.find_one({"client_id": client_id, "ip": device_ip}, {"_id": 0}) or {}
         if md:
             device_name = md.get("hostname") or md.get("name") or md.get("device_name") or device_name
-            device_type = md.get("device_type") or ""
+            device_type = (md.get("device_type") or "").lower()
             profile_key = md.get("profile_key")
     except Exception:  # noqa: BLE001
         pass
-    thresholds: Dict[str, Any] = {}
+    prof_thr: Dict[str, Any] = {}
     if profile_key:
         try:
-            from device_profiles import get_profile
-            thresholds = (get_profile(profile_key) or {}).get("thresholds") or {}
+            prof_thr = (await get_effective_profile(db, profile_key) or {}).get("thresholds") or {}
         except Exception:  # noqa: BLE001
             pass
+    cbt: Dict[str, Any] = {}
+    try:
+        t = await db.alert_thresholds.find_one({"client_id": client_id}, {"_id": 0, "temp_by_type": 1})
+        cbt = (t or {}).get("temp_by_type") or {}
+    except Exception:  # noqa: BLE001
+        pass
+    dov = {"warn": md.get("temp_warn_c"), "crit": md.get("temp_crit_c"),
+           "disk_warn": md.get("disk_temp_warn_c"), "disk_crit": md.get("disk_temp_crit_c"),
+           "inlet_warn": md.get("inlet_temp_warn_c"), "inlet_crit": md.get("inlet_temp_crit_c")}
+    t_warn, t_crit = resolve_temp_thresholds(prof_thr, device_type, dov, cbt)
+    d_warn, d_crit = resolve_temp_thresholds(prof_thr, device_type, dov, cbt, kind="disk",
+                                             fallback=(DEFAULT_DISK_TEMP_CRIT - 8, DEFAULT_DISK_TEMP_CRIT))
+    thresholds = {"temp_warn_c": t_warn, "temp_crit_c": t_crit, "disk_temp_warn_c": d_warn, "disk_temp_crit_c": d_crit}
     client_name = ""
     try:
         c = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
@@ -207,10 +224,8 @@ async def evaluate_predictive_alerts(db, *, client_id: str, device_ip: str,
         await _resolve(db, cfg, dk, f"RAID/array tornato normale su {device_name} ({device_ip}).")
 
     # ---- Trend TEMPERATURA chassis/CPU ----
-    temp_crit = _threshold(thresholds, "temp_crit_c", "inlet_temp_crit_c", "cpu_temp_crit_c",
-                           default=DEFAULT_TEMP_CRIT)
-    temp_warn = _threshold(thresholds, "temp_warn_c", "inlet_temp_warn_c", "cpu_temp_warn_c",
-                           default=temp_crit - 10)
+    temp_crit = _threshold(thresholds, "temp_crit_c", default=DEFAULT_TEMP_CRIT)
+    temp_warn = _threshold(thresholds, "temp_warn_c", default=temp_crit - 10)
     await _eval_temp_trend(base, metric="temperature", crit=temp_crit, warn=temp_warn,
                            label="Temperatura", unit="°C")
 
@@ -223,10 +238,11 @@ async def evaluate_predictive_alerts(db, *, client_id: str, device_ip: str,
     for m in await db.metric_history.distinct("metric", {"client_id": client_id, "device_ip": device_ip}):
         if isinstance(m, str) and m.startswith("disk_temp_"):
             disk_metrics.add(m)
+    disk_crit = _threshold(thresholds, "disk_temp_crit_c", default=DEFAULT_DISK_TEMP_CRIT)
+    disk_warn = _threshold(thresholds, "disk_temp_warn_c", default=disk_crit - 8)
     for m in disk_metrics:
         idx = m.replace("disk_temp_", "")
-        await _eval_temp_trend(base, metric=m, crit=DEFAULT_DISK_TEMP_CRIT,
-                               warn=DEFAULT_DISK_TEMP_CRIT - 8,
+        await _eval_temp_trend(base, metric=m, crit=disk_crit, warn=disk_warn,
                                label=f"Temperatura disco #{idx}", unit="°C", key_suffix=m)
 
     # ---- Batteria UPS ----

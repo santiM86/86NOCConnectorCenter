@@ -123,7 +123,7 @@ async def resolve_recovered_device_alerts(db) -> int:
 STALE_UNCONFIRMED_MIN = 30
 # Sorgenti valutate periodicamente: se non riconfermano l'alert (last_seen_at) entro
 # STALE_UNCONFIRMED_MIN la condizione non è più verificabile/presente → chiudi.
-_PERIODIC_SOURCE_RE = r"^(threshold_|vendor_|redfish_direct|corr_|datto_server_offline|zyxel_offline)"
+_PERIODIC_SOURCE_RE = r"^(threshold_|vendor_|redfish_direct|corr_|datto_server_offline|zyxel_offline|predictive_)"
 _PERIODIC_DEDUP_RE = r":(cpu|mem|temp|fan_fault|psu_fault|disk_temp|inlet_temp)$"
 
 

@@ -9580,3 +9580,7 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-09-10 — Motivo chiusura alert
 - Campo alerts.resolution_reason: recovered | unconfirmed | false_positive | expired | manual (+resolution_note, resolved_by). Scritto da: hygiene (recovered/unconfirmed/expired), connector/redfish/hardware/alert_engine/watchdog auto-resolve (recovered), migrazioni (false_positive), PATCH manuale (manual). Storici senza campo: derive_resolution_reason() da nota (regex) → fallback recovered.
 - GET /api/alerts?resolution_reason=… (forza status=resolved). AlertResponse include resolution_reason/resolution_note. AlertsPage: badge sotto lo stato + filtro "Chiusura".
+
+## 2026-09-10 — FIX predictive.py soglie ignorate + heartbeat
+- predictive._ctx usa resolve_temp_thresholds (override device > cliente temp_by_type > profilo effettivo > default) per temperatura generale e dischi (disk_temp_*). Prima: solo seed profile / default 78°C → "GUASTO IMMINENTE" nonostante soglie alzate.
+- _emit/_emit_or_update: touch_alert sempre su alert attivo (heartbeat anche se invariato). predictive_ aggiunto alle sorgenti periodiche di resolve_unconfirmed_alerts. Test: iteration_139/140.

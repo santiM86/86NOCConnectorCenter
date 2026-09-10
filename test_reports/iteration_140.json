@@ -1,0 +1,18 @@
+{
+  "summary": "RETEST heartbeat fix: PASS. predictive._emit ora chiama alert_filter.touch_alert su alert attivo (aggiorna last_seen_at anche se severity/message invariati); stessa correzione applicata a hardware_alerts._emit_or_update nel ramo 'not changed'. Verificato empiricamente con forzatura last_seen_at=2000-01-01 tra 2 evaluate consecutive: CASO A predictive_temp (NAS64C, default crit=68) -> last_seen_at aggiornato a ora (2026-09-10T10:53:...). CASO D hardware_alerts (switch hpe_comware, h3cEntityExtTemperature=75, default crit=70) -> alert :temp critical creato al 1° ciclo (no debounce come cpu), last_seen_at forzato a 2000, 2° ciclo stessi valori -> last_seen_at aggiornato a ora. Regressione CASO B (override device 80/90) confermata: alert predictive_temp resolved con resolution_reason=recovered.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_predictive_thresholds.py"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "predictive._emit e hardware_alerts._emit_or_update ora usano touch_alert per il heartbeat: il comportamento e' coerente con alert_hygiene.resolve_unconfirmed_alerts (che usa last_seen_at). Non ci sono piu' rischi di auto-chiusura prematura di alert predictive/hardware quando la condizione persiste con severity/message stabili.",
+    "Minor code-quality: sarebbe utile inizializzare last_seen_at=created_at in _mk_alert al momento della creazione (attualmente None fino al primo touch_alert/update). Non blocca il test ma allinea semantica sin dal primo ciclo."
+  ],
+  "updated_files": ["/app/backend/tests/test_predictive_thresholds.py"],
+  "success_rate": {"backend": "100% (4/4 casi: A create, A.heartbeat predictive, B recovered, D.heartbeat hardware_alerts)"},
+  "seed_data_creation": "Client TEST_pred_<uuid>, managed_devices NAS01 (10.99.99.99, nas) e SW01 (10.99.99.98, switch, profile_key=hpe_comware), metric_history temperature 60->64 6 punti span 50min. Cleanup completo a fine test (clients/managed_devices/metric_history/alerts/alert_thresholds/pre_blackout_events/hardware_alert_state del client_id).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file /app/backend/tests/test_predictive_thresholds.py e' idempotente e auto-cleanup. Comando: cd /app/backend && set -a && . ./.env && set +a && python3 tests/test_predictive_thresholds.py. Copre sia predictive._emit heartbeat che hardware_alerts._emit_or_update heartbeat via forzatura last_seen_at=2000-01-01 tra due evaluate consecutive. Il caso hardware usa temp (soglia scattante al 1° ciclo) invece di cpu (debounce 3 cicli).",
+  "rca of the issue": "Bug precedente (iteration 139): predictive._emit early-return quando severity/message invariati -> last_seen_at MAI aggiornato -> alert_hygiene.resolve_unconfirmed_alerts chiudeva l'alert al fallback created_at+30min anche con condizione persistente. FIX: entrambi _emit e _emit_or_update ora chiamano alert_filter.touch_alert(db, {'id': active['id']}) che fa update_many $set last_seen_at=now sui documenti active. Verificato che la funzione touch_alert (alert_filter.py:92) fa esattamente $set last_seen_at=datetime.now(utc).isoformat()."
+}
