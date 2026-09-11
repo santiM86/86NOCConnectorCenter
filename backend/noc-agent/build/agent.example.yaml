@@ -1,0 +1,52 @@
+# 86NocAgent — sample configuration
+#
+# Copy to:
+#   Linux/macOS: /etc/86nocagent/agent.yaml
+#   Windows:     C:\ProgramData\86NocAgent\agent.yaml
+#
+# Required: backend.url, client_id, token. Everything else has sane defaults.
+
+agent_id: ""               # generated on first run if empty
+client_id: "REPLACE_ME"    # tenant id from the 86NOC backend
+token: "REPLACE_ME"        # bearer token issued by the backend
+
+backend:
+  url: "wss://argus.86bit.it/api/agent/ws"
+  insecure_skip: false
+
+heartbeat: 15s
+reconnect_min: 1s
+reconnect_max: 60s
+
+discovery:
+  enabled: true
+  interval: 5m
+  arp: true
+  mdns: true
+  # subnets: ["192.168.10.0/24", "10.0.0.0/24"]  # active probes (future)
+
+snmp:
+  enabled: true
+  interval: 60s
+  communities: ["public"]
+  timeout: 2s
+  retries: 1
+  # targets:
+  #   - { ip: "192.168.1.1", community: "public", profile: "zyxel" }
+  #   - { ip: "192.168.1.10", community: "public", profile: "printer" }
+
+watchdog:
+  enabled: true
+  heartbeat_file: "/var/lib/86nocagent/heartbeat.tick"
+  stale_after: 90s
+  # restart_cmd: ["/usr/local/bin/nocagent", "--config", "/etc/86nocagent/agent.yaml"]
+
+update:
+  enabled: false           # enable when the backend publishes signed manifests
+  manifest_url: "https://argus.86bit.it/api/agent/update/manifest"
+  check_interval: 1h
+  public_key: ""           # ed25519 public key (hex)
+
+labels:
+  site: "main-office"
+  env: "prod"
