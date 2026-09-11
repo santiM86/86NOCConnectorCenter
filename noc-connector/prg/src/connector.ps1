@@ -1526,6 +1526,8 @@ function Send-DeviceReport($config, $devices) {
                             memory_dimms = $rfMetrics.memory_dimms
                             network_adapters = $rfMetrics.network_adapters
                             storage_controllers = $rfMetrics.storage_controllers
+                            iml_events = $rfMetrics.iml_events
+                            iml_log_path = $rfMetrics.iml_log_path
                         }
                         # Ensure device_class is set so backend/UI recognises it as iLO
                         if (-not $deviceReport.device_class) { $deviceReport.device_class = "hpe-ilo" }

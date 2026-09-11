@@ -2687,6 +2687,17 @@ async def connector_device_report(request: Request):
             doc["consecutive_failures"] = 0
             doc["last_reachable_at"] = now_iso
 
+        # Eventi IML/SEL raccolti dal connector on-prem → cache separata (non in poll_status)
+        _rf = doc.get("redfish")
+        if isinstance(_rf, dict) and isinstance(_rf.get("iml_events"), list):
+            try:
+                from .server_intelligence import normalize_redfish_log_entry, store_ilo_events_cache
+                _evs = [normalize_redfish_log_entry(m) for m in _rf.pop("iml_events") if isinstance(m, dict)]
+                _evs.sort(key=lambda e: (e.get("created") or ""), reverse=True)
+                await store_ilo_events_cache(client_id, dev["device_ip"], _evs, _rf.pop("iml_log_path", None), "connector")
+            except Exception as _e:  # noqa: BLE001
+                logger.warning(f"ilo_events cache da connector fallita per {dev['device_ip']}: {_e}")
+
         await db.device_poll_status.update_one(
             {"client_id": client_id, "device_ip": dev["device_ip"]},
             {"$set": doc}, upsert=True

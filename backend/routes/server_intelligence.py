@@ -257,74 +257,145 @@ async def bulk_credentials(payload: BulkCredPayload, current_user: dict = Depend
 # FASE 1 — IML / SEL events (LogService Redfish)
 # ============================================================================
 
+# Percorsi LogService Redfish per vendor. NB: su HPE l'IML sta sotto Systems/1
+# (Managers/1 espone solo l'IEL = log eventi iLO, non hardware).
+_REDFISH_LOG_PATHS = [
+    "/redfish/v1/Systems/1/LogServices/IML/Entries/",          # HPE iLO 4/5/6 — IML
+    "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries/",    # Dell iDRAC
+    "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Lclog/Entries/",
+    "/redfish/v1/Systems/1/LogServices/ActiveLog/Entries/",    # Lenovo XCC
+    "/redfish/v1/Managers/1/LogServices/StandardLog/Entries/",
+    "/redfish/v1/Systems/1/LogServices/SEL/Entries/",          # Supermicro / generic
+    "/redfish/v1/Managers/1/LogServices/SEL/Entries/",
+    "/redfish/v1/Managers/1/LogServices/IEL/Entries/",         # HPE iLO Event Log (ultimo fallback)
+]
+
+
+def normalize_redfish_log_entry(m: dict) -> dict:
+    """LogEntry Redfish (+ Oem.Hpe) → evento compatto per UI/cache."""
+    oem = ((m.get("Oem") or {}).get("Hpe") or (m.get("Oem") or {}).get("Hp") or {})
+    sev = (oem.get("Severity") or m.get("Severity") or "").lower()
+    return {
+        "id": str(m.get("Id") or oem.get("EventNumber") or oem.get("RecordId") or ""),
+        "severity": sev,
+        "created": m.get("Created"),
+        "updated": oem.get("Updated"),
+        "subject": m.get("Subject") or m.get("EntryCode") or m.get("EntryType"),
+        "message": (m.get("Message") or "")[:400],
+        "sensor": m.get("SensorType"),
+        "class": oem.get("Class"),
+        "code": oem.get("Code"),
+        "count": oem.get("Count") or oem.get("Number"),
+        "repaired": bool(oem.get("Repaired")) if "Repaired" in oem else (sev == "repaired"),
+        "action": (oem.get("RecommendedAction") or "")[:300] or None,
+    }
+
+
+def _sort_events(events: list, limit: int) -> list:
+    events.sort(key=lambda e: (e.get("created") or ""), reverse=True)
+    return events[:limit]
+
+
+async def fetch_redfish_log_entries(base_url: str, auth: tuple, limit: int = 50) -> tuple[list, str | None]:
+    """Prova i LogService noti; ritorna (events, path usato). Nessun `$top`: iLO 4
+    rifiuta le query OData (400 QueryNotSupported), quindi leggiamo la collection
+    intera e tagliamo lato nostro."""
+    deadline = asyncio.get_event_loop().time() + 45
+    async with httpx.AsyncClient(verify=False, timeout=httpx.Timeout(20.0, connect=6.0)) as cli:
+        for path in _REDFISH_LOG_PATHS:
+            if asyncio.get_event_loop().time() > deadline:
+                break
+            try:
+                r = await cli.get(f"{base_url}{path}", auth=auth)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                break  # host irraggiungibile: inutile provare gli altri path
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                members = (r.json() or {}).get("Members") or []
+            except Exception:
+                continue
+            events = [normalize_redfish_log_entry(m) for m in members if isinstance(m, dict) and (m.get("Message") or m.get("Created"))]
+            # Collection con soli @odata.id (iDRAC): espandi le ultime N
+            if not events and members:
+                for ref in members[-limit:]:
+                    href = ref.get("@odata.id") if isinstance(ref, dict) else None
+                    if not href:
+                        continue
+                    try:
+                        rr = await cli.get(f"{base_url}{href}", auth=auth)
+                        if rr.status_code == 200:
+                            events.append(normalize_redfish_log_entry(rr.json()))
+                    except Exception:
+                        continue
+            return _sort_events(events, limit), path
+    return [], None
+
+
+async def store_ilo_events_cache(client_id: str | None, device_ip: str, events: list, log_path: str | None, source: str):
+    """Cache eventi IML/SEL (alimentata dal fetch diretto o dal connector on-prem)."""
+    await db.ilo_events.update_one(
+        {"device_ip": device_ip, "client_id": client_id},
+        {"$set": {"events": events[:100], "log_path": log_path, "source": source,
+                  "fetched_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+
 @router.get("/ilo-events/{device_ip}")
 async def get_ilo_events(device_ip: str, limit: int = 50, client_id: str = None, current_user: dict = Depends(get_current_user)):
-    """Recupera IML (HP) / SEL (Dell/Lenovo) events dal log service Redfish.
-    Mostra eventi hardware (PSU failed, fan replaced, memory error, BIOS update, ecc.)
+    """Recupera IML (HPE) / SEL (Dell/Lenovo/Supermicro) events dal LogService Redfish.
+    Canale diretto (external_url o IP) con fallback alla cache alimentata dal connector on-prem.
     """
     require_admin(current_user)
     # MULTI-TENANT: usa le credenziali del cliente corretto (IP collidono tra tenant).
     from .tenant_scope import resolve_device_client_id
     cid = await resolve_device_client_id(device_ip, client_id)
-    cred_q = {"device_ip": device_ip}
+    cred_q: dict = {"device_ip": device_ip, "credential_type": {"$in": ["ilo", "redfish", "idrac", "bmc"]}}
     if cid:
         cred_q["client_id"] = cid
-    cred = await db.vault_credentials.find_one(cred_q, {"_id": 0})
-    if not cred:
-        raise HTTPException(status_code=404, detail="Credenziali iLO non trovate per questo server")
+    cred = await db.device_credentials.find_one(cred_q, {"_id": 0}) or await db.vault_credentials.find_one(
+        {k: v for k, v in cred_q.items() if k != "credential_type"}, {"_id": 0})
+    cache_q = {"device_ip": device_ip, **({"client_id": cid} if cid else {})}
+    cached = await db.ilo_events.find_one(cache_q, {"_id": 0})
 
+    def _from_cache(err: str | None):
+        if not cached:
+            raise HTTPException(status_code=404, detail=err or "Credenziali iLO non trovate per questo server")
+        return {
+            "device_ip": device_ip, "log_path": cached.get("log_path"),
+            "total_events": len(cached.get("events") or []), "events": (cached.get("events") or [])[:limit],
+            "fetched_at": cached.get("fetched_at"), "source": cached.get("source") or "cache", "stale": True, "error": err,
+        }
+
+    if not cred:
+        return _from_cache("Credenziali iLO non trovate per questo server")
     try:
         username = security_manager.decrypt_credential(cred["username_enc"])
         password = security_manager.decrypt_credential(cred["password_enc"])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Decrypt failed: {e}")
+        return _from_cache(f"Decrypt credenziali fallito: {e}")
 
     port = cred.get("port") or 443
-    base_url = cred.get("external_url", "").rstrip("/") or f"https://{device_ip}:{port}"
-    auth = (username, password)
-    events: list = []
-    log_paths = [
-        # HP iLO
-        "/redfish/v1/Managers/1/LogServices/IML/Entries/",
-        "/redfish/v1/Managers/1/LogServices/IEL/Entries/",
-        # Dell iDRAC
-        "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries/",
-        "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Lclog/Entries/",
-        # Lenovo XCC
-        "/redfish/v1/Systems/1/LogServices/ActiveLog/Entries/",
-        "/redfish/v1/Managers/1/LogServices/StandardLog/Entries/",
-    ]
-    used_path = None
+    base_url = (cred.get("external_url") or "").rstrip("/") or f"https://{device_ip}:{port}"
     try:
-        async with httpx.AsyncClient(verify=False, timeout=15.0) as cli:
-            for path in log_paths:
-                try:
-                    r = await cli.get(f"{base_url}{path}?$top={limit}", auth=auth)
-                except Exception:
-                    continue
-                if r.status_code == 200:
-                    data = r.json()
-                    members = data.get("Members", [])
-                    used_path = path
-                    for m in members[:limit]:
-                        events.append({
-                            "id": m.get("Id"),
-                            "severity": (m.get("Severity") or "").lower(),
-                            "created": m.get("Created"),
-                            "subject": m.get("Subject") or m.get("EntryCode"),
-                            "message": m.get("Message", "")[:400],
-                            "sensor": m.get("SensorType"),
-                        })
-                    break
+        events, used_path = await fetch_redfish_log_entries(base_url, (username, password), limit)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Errore fetch eventi: {e}")
+        return _from_cache(f"Errore fetch eventi: {e}")
+    if used_path is None:
+        return _from_cache(f"LogService Redfish non raggiungibile da {base_url} (nessun external_url? il connector alimenta la cache)")
 
+    await store_ilo_events_cache(cid or cred.get("client_id"), device_ip, events, used_path, "direct")
     return {
         "device_ip": device_ip,
         "log_path": used_path,
         "total_events": len(events),
         "events": events,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": "direct",
+        "stale": False,
     }
 
 
