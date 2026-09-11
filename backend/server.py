@@ -376,6 +376,8 @@ from routes.ilo_ai import router as ilo_ai_router
 app.include_router(ilo_ai_router)
 from routes.port_ai import router as port_ai_router
 app.include_router(port_ai_router)
+from routes.fusion import router as fusion_router
+app.include_router(fusion_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -969,6 +971,7 @@ async def startup_event():
         await db.ilo_events.create_index([("client_id", 1), ("device_ip", 1)])
         await db.ilo_ai_analyses.create_index([("client_id", 1), ("device_ip", 1), ("created_at", -1)])
         await db.port_ai_analyses.create_index([("kind", 1), ("client_id", 1), ("device_ip", 1), ("idx", 1), ("created_at", -1)])
+        await db.fusion_shadow.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
         await db.ilo_status.create_index([("client_id", 1), ("device_ip", 1)])
         logger.info("KPI snapshot scheduler started (tick: 10min)")
     except Exception as e:

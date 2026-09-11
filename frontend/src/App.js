@@ -82,6 +82,7 @@ const MaintenancePage = lazyRetry(() => import("@/pages/MaintenancePage"));
 const CorrelationPage = lazyRetry(() => import("@/pages/CorrelationPage"));
 const ThresholdsPage = lazyRetry(() => import("@/pages/ThresholdsPage"));
 const TemperatureManagementPage = lazyRetry(() => import("@/pages/TemperatureManagementPage"));
+const DiagnosisCertaintyPage = lazyRetry(() => import("@/pages/DiagnosisCertaintyPage"));
 const BandwidthPage = lazyRetry(() => import("@/pages/BandwidthPage"));
 const BackupPage = lazyRetry(() => import("@/pages/BackupPage"));
 const ClientPortalPage = lazyRetry(() => import("@/pages/ClientPortalPage"));
@@ -314,6 +315,7 @@ function App() {
               <Route path="correlation" element={<CorrelationPage />} />
               <Route path="thresholds" element={<ThresholdsPage />} />
               <Route path="temperature" element={<TemperatureManagementPage />} />
+              <Route path="certainty" element={<DiagnosisCertaintyPage />} />
               <Route path="bandwidth" element={<BandwidthPage />} />
               <Route path="backup" element={<BackupPage />} />
               <Route path="security-dashboard" element={<SecurityDashboardPage />} />
