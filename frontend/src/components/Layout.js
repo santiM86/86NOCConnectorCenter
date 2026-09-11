@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "@/App";
 import axios from "axios";
@@ -278,7 +278,7 @@ export default function Layout() {
       } catch {}
     };
     fetchAlertCount();
-    const interval = setInterval(fetchAlertCount, 30000);
+    const interval = setInterval(() => { if (!document.hidden) fetchAlertCount(); }, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -413,7 +413,9 @@ export default function Layout() {
           </div>
           <div className="w-8" />
         </header>
-        <Outlet />
+        <Suspense fallback={<div className="flex items-center justify-center h-[60vh]" data-testid="page-loader"><div className="w-6 h-6 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" /></div>}>
+          <Outlet />
+        </Suspense>
       </main>
 
       {/* ==================== MOBILE BOTTOM NAV ==================== */}

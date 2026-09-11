@@ -1,6 +1,22 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Performance pass (code-splitting + indici + polling)
+- `App.js`: 66 pagine in `React.lazy` via `lazyRetry` (ricarica 1 volta su ChunkLoadError post-deploy), `Suspense`
+  attorno a `<Routes>` e dentro `Layout.js` attorno a `<Outlet/>` (sidebar persistente). Eager: Login, 2FA, Dashboard, SharedConsole.
+  Bundle prod `main.js`: **896 kB → 287 kB gzip** (−68%), pagine in chunk separati.
+- Polling sospeso a tab nascosta (`document.hidden`): DashboardPage, ClientOverviewPage, Layout badge alert, KpiStrip.
+- Backend: `kpi.py` aggregazione `$group` per alert attivi; nuovi indici in `server.py` (alerts status+source_type,
+  created_at, resolved_at, client+device+created; discovered_endpoints client+switch+port; switch_ports; ilo_events; ilo_ai_analyses; ilo_status).
+- Test: iteration_148 (20 route smoke, 2FA, mobile, backend regressioni) tutto OK.
+- **Audit sicurezza (security_audit_agent) — PIANO IN ATTESA DI OK UTENTE**: SEC-001 CRIT password default seed
+  "password" + setup 2FA senza password (`server.py` seed users, `routes/auth.py setup-2fa`) → RCE via self-update;
+  SEC-002 HIGH segreti in `backend/.env` committati; SEC-003 HIGH self-update `package_url` arbitrario
+  (`routes/system_admin.py`); SEC-004 MED IDOR `client_id` non verificato (`routes/tenant_scope.py`);
+  SEC-005 MED HMAC connector opzionale + default secret (`middleware/connector_security.py`) + vault credenziali globali
+  (`routes/connector.py` ~1231); LOW: CORS `*`, residui VPN `scripts/setup-wireguard-server.sh`, `teardown-wireguard-server.sh`, `noc-connector/prg/uninstall.ps1`.
+
+
 ## 2026-06 ✅ Fix Panoramica HTTP 500 (KeyError client_id) + rimozione totale VPN WireGuard
 **Bug PROD**: `/api/overview/clients` → 500 `overview error: '<client_id>'`. RCA in `routes/overview.py`: un endpoint
 (PC) VITALE processato prima di un device infra dello stesso cliente creava `devices_by_client[cid]` nel blocco vitali,

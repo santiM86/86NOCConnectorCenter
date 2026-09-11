@@ -1,0 +1,24 @@
+{
+  "summary": "Iter148 — Performance pass regression (React.lazy code-splitting on 66 pages, document.hidden polling guards, KPI aggregation, Mongo indexes). BACKEND: (1) /api/overview/kpi?period=24h returns 9 kpis (list under 'kpis'); alerts.value=1660 matches DB count of active+acknowledged (1660); alerts.breakdown={critical:11, high:1593, medium:56, low:0} sums to 1660 == alerts.value ✓. (2) /api/overview/clients 200 (1 client). (3) db.alerts indexes verified: 'status_1_source_type_1' and 'created_at_1' both present (created at startup). (4) Regression scripts pass: test_overview_keyerror_iter147.py and test_shutdown_diagnosis_iter144.py both green. FRONTEND: (1) Full smoke of 20 requested routes after 2FA login — ALL render OK (body>4KB, no ChunkLoadError, no infinite page-loader, no error overlay). Routes: /, /alerts, /clients, /client/da3d6e40-...36, /network-status, /agents, /settings, /settings/alert-engine, /thresholds, /temperature, /tv, /incidents, /trends, /vault, /inventory, /security-dashboard, /osint, /reports, /users, /settings/audit. (2) 2FA flow (info@86bit.it + TOTP) works end-to-end and lands on dashboard. (3) Sidebar persistent during lazy-chunk navigation — sidebar aside stays visible before/during/after navigating from / → /alerts (Suspense correctly scoped inside Layout around <Outlet/>). (4) Mobile 390px: / renders MobileDashboard (Home/Alert/Menu tabs, 3-tile grid, kpi-strip absent as expected); /client/{id} renders on mobile (body 7262 chars, has content). Only 1 console error observed globally: a 403 on a background resource (likely SSE while backgrounded/hidden) — unrelated to code-splitting.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_perf_pass_iter148.py",
+    "/app/backend/tests/test_overview_keyerror_iter147.py",
+    "/app/backend/tests/test_shutdown_diagnosis_iter144.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The requested /audit route does not exist standalone; the audit page is at /settings/audit — this is correct per App.js, but if any UI link points to /audit it would 404 (not observed).",
+    "The requested /security route also doesn't exist; /security-dashboard does. Tested /security-dashboard successfully.",
+    "Mobile /client/{id} initially shows an internal 'Loading...' state for a few seconds while data fetches — this is NOT a Suspense page-loader (page loaded), it's the ClientOverviewPage's own loading state. Consider adding a skeleton for better UX.",
+    "App.js: 66 lazy imports use lazyRetry wrapper — verify retry logic surfaces failures rather than silently spinning (not reproducible in this run since no chunk failures happened)."
+  ],
+  "updated_files": ["/app/backend/tests/test_perf_pass_iter148.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin info@86bit.it via TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — worked",
+  "seed_data_creation": "None (regression only)",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Performance pass (React.lazy + Suspense + Mongo indexes + KPI aggregation) is stable. 20/20 route smoke green, backend KPI aggregation returns correct sums, Mongo indexes verified. Note: kpi response is {period, from, to, snapshots, baseline_at, kpis:[...]} — kpi entries are a LIST keyed by 'key' attr, not a dict. Available regression: /app/backend/tests/test_perf_pass_iter148.py (needs pyotp, dotenv, motor)."
+}

@@ -70,7 +70,7 @@ export function KpiStrip() {
       .then(r => { if (alive) { setData(r.data); setErr(null); } })
       .catch(e => { if (alive) setErr(e?.response?.data?.detail || "KPI non disponibili"); });
     load();
-    const t = setInterval(load, 60000);
+    const t = setInterval(() => { if (!document.hidden) load(); }, 60000);
     return () => { alive = false; clearInterval(t); };
   }, [period]);
 

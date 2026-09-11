@@ -149,7 +149,7 @@ export default function ClientOverviewPage() {
     if (ok(iloRes) !== undefined) setIloHealth(iloRes.value.data || []);
   }, [clientId]);
 
-  useEffect(() => { fetchAll(); const i = setInterval(fetchAll, 30000); return () => clearInterval(i); }, [fetchAll]);
+  useEffect(() => { fetchAll(); const i = setInterval(() => { if (!document.hidden) fetchAll(); }, 30000); return () => clearInterval(i); }, [fetchAll]);
 
   // v2026-02-14: ascolto evento globale "argus:device-renamed" emesso da
   // DeviceInfoCard quando l'admin rinomina manualmente un device.

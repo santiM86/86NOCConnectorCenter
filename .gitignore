@@ -106,3 +106,4 @@ frontend/node_modules/.cache/default-development/8.pack_
 .env
 .env.*
 *.env
+frontend/build/dl/frontend-build-v1.tar.gz
