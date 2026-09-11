@@ -452,6 +452,37 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
         except Exception:
             pass
 
+        # Tutti i dispositivi visti su questa porta (es. host Hyper-V + le sue VM, trunk)
+        attached: list = []
+        if oper == 1:
+            _cand = endpoints_by_idx.get(p.get("idx") or 0) or []
+            if not _cand:
+                _pn = _port_number_from_name(p.get("name") or "")
+                _cand = (endpoints_by_port_num.get(_pn) or []) if _pn else []
+            _seen_macs: set = set()
+            for e in _cand:
+                _mac = (e.get("mac") or "").upper()
+                if not _mac or _mac in _seen_macs:
+                    continue
+                _seen_macs.add(_mac)
+                _ip = e.get("ip") or e.get("manual_binding_ip") or ""
+                _md = md_by_ip.get(_ip, {}) if _ip else {}
+                _ven = e.get("vendor") or lookup_oui(_mac)
+                if e.get("datto_name"):
+                    _nm, _src = e["datto_name"], "datto_rmm"
+                elif e.get("manual_binding_name"):
+                    _nm, _src = e["manual_binding_name"], "mac_manual"
+                elif _md.get("device_name") or _md.get("name"):
+                    _nm, _src = (_md.get("device_name") or _md.get("name")), "mac_managed"
+                elif e.get("hostname"):
+                    _nm, _src = e["hostname"], "hostname"
+                else:
+                    _nm, _src = (f"{_ven} device" if _ven else "Sconosciuto"), ("mac_oui" if _ven else "mac_unknown")
+                attached.append({"mac": _mac, "ip": _ip, "name": _nm, "source": _src, "vendor": _ven or "",
+                                 "device_type": _md.get("device_type") or "", "is_managed": bool(_md) or bool(e.get("is_managed")),
+                                 "last_seen_at": e.get("last_seen_at")})
+            attached.sort(key=lambda a: (not a["is_managed"], a["source"] not in ("datto_rmm", "mac_manual"), a["name"].lower()))
+
         out.append({
             "idx": p.get("idx"),
             "name": p.get("name"),
@@ -474,6 +505,8 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
             "poe_class": int(p.get("poe_class") or 0),
             "port_type": port_type,
             "neighbor": neighbor_obj,
+            "attached": attached[:24],
+            "attached_count": len(attached),
         })
 
     # Port_number summary for UI badge

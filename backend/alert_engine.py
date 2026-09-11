@@ -1289,8 +1289,12 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             _impact_msg = f" — {n} dispositivi a valle impattati: {_names}"
 
         if state.get("level", 0) == 0:
+            _ev_msg = ""
+            if v.get("evidence"):
+                _top = sorted(v["evidence"], key=lambda e: -max(e.get("votes", {}).values() or [0]))[:4]
+                _ev_msg = "\nProve: " + " · ".join(e.get("title", "") for e in _top if e.get("title"))
             alert = _mk_alert(cid, cname, dev_name, ip, dev_type, sev, source_type, title,
-                              f"Cliente {cname}: {reasoning}{_impact_msg}")
+                              f"Cliente {cname}: {reasoning}{_impact_msg}{_ev_msg}")
             if _impacts:
                 alert["impacted_count"] = len(_impacts)
                 alert["impacted_devices"] = _impacts[:50]

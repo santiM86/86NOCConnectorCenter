@@ -9716,3 +9716,8 @@ Health null è normale HPE (usa i sottosistemi).
 - UI: pages/DiagnosisCertaintyPage.js (/certainty, menu Amministrazione "Certezza diagnosi", admin) + components/FusionEvidence.js. KPI, "Confronto motori", tabella device con Max%, fonti, verdetto, azioni "Per arrivare al 90%".
 - Seed: tests/seed_fusion_iter151.py (PC-MARIO scenario). Test: iteration_151 PASS (v1 80% → v2 91%).
 - NB produzione: v2 resta in shadow finché l'utente non attiva il toggle dopo aver verificato "Confronto motori" per qualche giorno.
+
+## 2026-09-11 — Porte switch: tutti i dispositivi sulla porta + prove negli alert v2
+- topology.get_switch_ports: per porta UP nuovo campo `attached[]` (max 24) + `attached_count`: TUTTI i MAC visti sulla porta (host Hyper-V + VM 00:15:5D, trunk) con nome (Datto > binding > managed > hostname > OUI), IP, source, is_managed, last_seen_at.
+- SwitchPortsPage: componente AttachedList — in tabella sotto il neighbor principale "Sulla stessa porta anche N · VM Hyper-V" (max 3 + "+N altri"; ≥9 MAC = trunk → riga sintetica), nel pannello dettaglio lista completa (switch-port-attached-detail-<idx>). Seed: tests/seed_attached_iter152.py.
+- alert_engine: quando fusion_v2_enabled, il messaggio dell'alert (e quindi Telegram, diretto o batch) include "Prove: …" con le 4 prove più pesanti. In shadow Telegram resta su v1.

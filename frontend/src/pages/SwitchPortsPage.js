@@ -208,6 +208,12 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
         </div>
       )}
       {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
+      {(p.attached || []).length > 0 && (
+        <div className="text-[11px]" data-testid={`switch-port-attached-detail-${p.idx}`}>
+          <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Dispositivi visti sulla porta · {p.attached_count}</span>
+          <AttachedList p={p} full />
+        </div>
+      )}
 
       {/* Status row */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -431,6 +437,55 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
 }
 
 // ----- Page -----
+
+const SRC_BADGE = {
+  datto_rmm: ["DATTO", "bg-fuchsia-500/20 text-fuchsia-300"], mac_manual: ["B", "bg-violet-500/20 text-violet-300"],
+  mac_managed: ["M", "bg-cyan-500/20 text-cyan-300"], hostname: ["H", "bg-emerald-500/20 text-emerald-300"],
+  mac_oui: ["V", "bg-amber-500/20 text-amber-300"], mac_unknown: ["?", "bg-neutral-500/20 text-neutral-300"],
+};
+const TRUNK_MIN = 9;
+function AttachedList({ p, full = false }) {
+  const [open, setOpen] = useState(full);
+  const primaryMac = (p.neighbor?.remote_chassis_id || "").toUpperCase();
+  const others = (p.attached || []).filter(a => a.mac !== primaryMac);
+  if (others.length === 0) return null;
+  if (!full && others.length >= TRUNK_MIN) {
+    return (
+      <div className="mt-1 text-[9px] text-sky-300 flex items-center gap-1" data-testid={`port-attached-trunk-${p.idx}`}>
+        <Stack size={10} weight="bold" /> {p.attached_count} dispositivi su questa porta (trunk / switch a valle) — apri il dettaglio
+      </div>
+    );
+  }
+  const shown = open ? others : others.slice(0, 3);
+  return (
+    <div className="mt-1 border-t border-dashed border-[var(--bg-border)] pt-1" data-testid={`port-attached-${p.idx}`}>
+      <div className="text-[9px] text-[var(--text-muted)] mb-0.5">
+        {p.neighbor ? "Sulla stessa porta anche" : "Dispositivi sulla porta"} <b className="text-neutral-200">{others.length}</b>
+        {others.some(a => a.mac.startsWith("00:15:5D")) && <span className="ml-1 text-indigo-300" title="MAC 00:15:5D = Hyper-V: VM sullo stesso host">· VM Hyper-V</span>}
+      </div>
+      <ul className="space-y-0.5">
+        {shown.map(a => {
+          const [lbl, cls] = SRC_BADGE[a.source] || SRC_BADGE.mac_unknown;
+          return (
+            <li key={a.mac} className="flex items-baseline gap-1.5 text-[10px] leading-tight" data-testid={`port-attached-item-${p.idx}-${a.mac}`}>
+              <span className={`px-1 rounded text-[8px] font-bold flex-shrink-0 ${cls}`}>{lbl}</span>
+              {a.ip ? (
+                <Link to={`/devices/${encodeURIComponent(a.ip)}`} className="font-semibold text-cyan-200 hover:underline truncate max-w-[180px]" onClick={e => e.stopPropagation()}>{a.name}</Link>
+              ) : <span className="font-semibold text-neutral-200 truncate max-w-[180px]">{a.name}</span>}
+              {a.ip && <span className="font-mono text-[9px] text-[var(--text-secondary)]">{a.ip}</span>}
+              <span className="font-mono text-[9px] text-[var(--text-muted)]">{a.mac}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {!full && others.length > 3 && (
+        <button onClick={e => { e.stopPropagation(); setOpen(o => !o); }} className="text-[9px] text-cyan-300 hover:underline mt-0.5" data-testid={`port-attached-toggle-${p.idx}`}>
+          {open ? "mostra meno" : `+${others.length - 3} altri`}
+        </button>
+      )}
+    </div>
+  );
+}
 
 const HABIT_CLS = {
   anomalous: "bg-red-500/20 text-red-200 border-red-500/40",
@@ -1173,6 +1228,7 @@ export default function SwitchPortsPage() {
                       ) : (
                         <span className="text-[10px] text-[var(--text-muted)] italic">—</span>
                       )}
+                      <AttachedList p={p} />
                     </td>
                   </tr>
                 );
