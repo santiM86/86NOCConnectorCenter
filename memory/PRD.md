@@ -1,6 +1,12 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Panoramica 500 (KeyError cid) — hardening definitivo
+Il 500 persisteva in PROD dopo il primo fix (prod backend = GitHub main + commit di altra origine, hash codice diverso
+dal preview). `routes/overview.py`: tutte le mappe per-cliente (`*_by_client`) sono ora `defaultdict` → nessun path può
+sollevare KeyError(cid). Se ricompare, chiedere all'utente il traceback: `sudo journalctl -u noc-backend --since "1 hour ago" | grep -A25 "overview/clients failed"`.
+
+
 ## 2026-06 ✅ Performance pass (code-splitting + indici + polling)
 - `App.js`: 66 pagine in `React.lazy` via `lazyRetry` (ricarica 1 volta su ChunkLoadError post-deploy), `Suspense`
   attorno a `<Routes>` e dentro `Layout.js` attorno a `<Outlet/>` (sidebar persistente). Eager: Login, 2FA, Dashboard, SharedConsole.
