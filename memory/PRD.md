@@ -1,6 +1,19 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Memoria porte switch (abitudini → down abituale vs anomalo)
+`backend/port_memory.py`: doc `port_memory` per porta (client_id, local_ip, idx) con istogramma ora-della-settimana
+(`how_up[168]`/`how_total[168]`), samples, `usual_speed_mbps`, PoE abituale, `last_device` (FDB, refresh 15 min, ≤3 MAC),
+first_seen. `record_ports` chiamato da `store_switch_ports` (connector.py) a ogni poll (admin-down ignorati).
+`classify()` → profilo learning(<7gg o <50 campioni) | always_on(≥95%) | scheduled | sporadic(<12%) | unused; verdetto per
+porta DOWN: anomalous / habitual (fascia ±1h ora-settimana <50% up, o saltuaria) / standby_poe (PoE ≥0.5W con baseline) /
+unused / learning. Integrazioni: `port_link_alerts.py` sopprime l'alert "porta giù verso vitale/uplink" se habitual/standby/unused
+e aggiunge nota abitudine se anomalo; `routes/topology.py` GET /devices/{ip}/switch-ports espone `habit` per porta;
+`SwitchPortsPage.js` badge (Anomalo/Abituale/Standby PoE/Inutilizzata/In apprendimento) + "ultimo: device · MAC · visto";
+`shutdown_diagnosis.py` usa l'abitudine della porta quando lo storico device è scarso.
+Test: tests/test_port_memory_iter149.py (4/4) + screenshot UI. Scelte utente: alert solo porte vitali/uplink; apprendimento 7 gg.
+
+
 ## 2026-06 ✅ Panoramica 500 (KeyError cid) — hardening definitivo
 Il 500 persisteva in PROD dopo il primo fix (prod backend = GitHub main + commit di altra origine, hash codice diverso
 dal preview). `routes/overview.py`: tutte le mappe per-cliente (`*_by_client`) sono ora `defaultdict` → nessun path può

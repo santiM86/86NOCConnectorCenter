@@ -4053,6 +4053,12 @@ async def store_switch_ports(client_id: str, switches: list) -> dict:
             await evaluate_and_alert(db, client_id, local_ip, ports)
         except Exception:
             pass
+        # Memoria porte: abitudini (istogramma ora-settimana), ultimo device, PoE/velocità
+        try:
+            from port_memory import record_ports
+            await record_ports(db, client_id, local_ip, ports)
+        except Exception as _e:  # noqa: BLE001
+            logger.debug(f"port_memory record {local_ip}: {_e}")
         # Porte critiche giù (verso device vitali / uplink) — modello 1+1
         try:
             from port_link_alerts import evaluate_port_links

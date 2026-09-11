@@ -414,6 +414,28 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
 }
 
 // ----- Page -----
+
+const HABIT_CLS = {
+  anomalous: "bg-red-500/20 text-red-200 border-red-500/40",
+  habitual: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  standby_poe: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  unused: "bg-neutral-600/20 text-neutral-400 border-neutral-500/30",
+  learning: "bg-amber-500/10 text-amber-300/80 border-amber-500/20",
+};
+function HabitBadge({ habit, idx }) {
+  const cls = HABIT_CLS[habit.verdict] || HABIT_CLS.learning;
+  const tip = [habit.reason, habit.profile_label ? `Profilo: ${habit.profile_label}` : null,
+    habit.up_ratio != null ? `Up ${Math.round(habit.up_ratio * 100)}% in ${habit.days} gg` : null,
+    habit.usual_speed_mbps ? `Velocità abituale ${habit.usual_speed_mbps >= 1000 ? habit.usual_speed_mbps / 1000 + " Gbps" : habit.usual_speed_mbps + " Mbps"}` : null,
+    habit.usual_poe_w ? `PoE abituale ${habit.usual_poe_w} W` : null].filter(Boolean).join("\n");
+  return (
+    <span title={tip} data-testid={`port-habit-${idx}`}
+      className={`ml-1 text-[9px] px-1.5 py-0.5 rounded border cursor-help ${cls}`}>
+      {habit.label}
+    </span>
+  );
+}
+
 export default function SwitchPortsPage() {
   const { deviceIp } = useParams();
   const [searchParams] = useSearchParams();
@@ -1027,6 +1049,7 @@ export default function SwitchPortsPage() {
                       ) : (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
                       )}
+                      {!isUp && p.admin !== 2 && p.habit && <HabitBadge habit={p.habit} idx={p.idx} />}
                       {p.loop_suspect && (
                         <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-0.5" title={(p.loop_reasons || []).join(" · ")} data-testid={`switch-port-row-loop-${p.idx}`}>
                           <Warning size={9} weight="fill" /> LOOP
@@ -1044,7 +1067,12 @@ export default function SwitchPortsPage() {
                       ) : <span className="text-[10px] text-[var(--text-muted)]">—</span>}
                     </td>
                     <td>
-                      {p.neighbor ? (
+                      {!p.neighbor && p.habit?.last_device?.mac ? (
+                        <div className="flex flex-col leading-tight text-[10px]" data-testid={`port-last-device-${p.idx}`}>
+                          <span className="text-[var(--text-muted)] italic">ultimo: <span className="text-neutral-200 not-italic font-semibold">{p.habit.last_device.name || p.habit.last_device.ip || "device"}</span></span>
+                          <span className="font-mono text-[9px] text-[var(--text-muted)]">{p.habit.last_device.mac}{p.habit.last_device.seen_at ? ` · visto ${new Date(p.habit.last_device.seen_at).toLocaleDateString("it-IT")}` : ""}</span>
+                        </div>
+                      ) : p.neighbor ? (
                         <div className="flex items-start gap-1.5 text-[10px]">
                           <PortIcon p={p} size={13} />
                           <div className="flex flex-col leading-tight min-w-0">
