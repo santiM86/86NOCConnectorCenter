@@ -1,0 +1,36 @@
+{
+  "summary": "Tested shutdown-diagnosis feature (iter144). Backend regression tests (8/8) pass. Auth-gated API returns 200 with valid schema {verdict, confidence, label, summary, evidence[3] port/schedule/datto, offline_since}; 403 for unauth; unknown IP returns 200 (no 500). Frontend renders <ShutdownDiagnosis> inside DeviceInfoCard 'Stato Live' for OFFLINE device 192.168.1.254 (trigger: data-testid grouped-device-info-192.168.1.254 in 'Dispositivi Vitali' tab) with all data-testids present (shutdown-diagnosis, -verdict, -confidence, -summary, -evidence-port/-schedule/-datto, -refresh). Ricalcola works and re-renders without error. Block correctly NOT rendered on ONLINE device (switch-test 10.100.61.100). No console errors. ISSUE: verdict is 'Spento o scollegato' (disconnected, 60%) instead of expected 'crash' because a pre-existing switch_ports doc (oper=2 int, stale updated_at 2026-08-17) shadows the demo-seeded doc (oper='up', fresh updated_at) — find_switch_port() uses find_one() without sort by updated_at desc.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/shutdown-diagnosis/192.168.1.254", "issue": "Returns verdict='disconnected' instead of expected 'crash'. Root cause: db.switch_ports has TWO docs for client=da3d6e40, local_ip=10.10.41.221, idx=5 — a stale one (oper=2 int, updated_at 2026-08-17) and the demo-seeded one (oper='up', updated_at fresh, _demo_shutdown=true). shutdown_diagnosis.find_switch_port() calls db.switch_ports.find_one({...}) without sort, returning the stale one. Additionally, oper values are inconsistent across the DB (int '2' vs string 'up'/'down')."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_shutdown_diagnosis_iter144.py",
+    "/app/backend/tests/test_shutdown_api_iter144b.py"
+  ],
+  "action_items": [
+    "Fix find_switch_port() in /app/backend/shutdown_diagnosis.py: db.switch_ports.find_one(..., sort=[('updated_at', -1)]) to prefer the freshest port state. Also normalize oper values (accept int 1/2 → 'up'/'down' or map from IF-MIB ifOperStatus).",
+    "Alternatively, in demo_shutdown_seed.py: delete/update the pre-existing switch_ports doc for (10.10.41.221, idx=5) instead of inserting a duplicate.",
+    "Consider a unique index on switch_ports(client_id, local_ip, idx) to prevent duplicates."
+  ],
+  "critical_code_review_comments": [
+    "find_switch_port() find_one() has no deterministic ordering — with duplicate docs the result is undefined. Add sort by updated_at desc.",
+    "_port_signal() compares port.get('oper') != 'up' as string, but DB may store oper as int (IF-MIB ifOperStatus 1=up, 2=down). Normalize before compare.",
+    "shutdown_diagnosis.py 397 lines is fine but the module mixes recording (tick) + diagnosis; consider splitting."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "95%", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — worked.",
+  "seed_data_creation": "None (used pre-seeded demo data). No cleanup needed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Correct UI trigger to open DeviceInfoCard for 192.168.1.254 is data-testid='grouped-device-info-192.168.1.254' inside the 'Dispositivi Vitali' tab of ClientOverviewPage. The shutdown-diagnosis block correctly rendered with 3 evidence rows and refresh button. Only remaining issue is verdict mismatch due to duplicate switch_ports docs — after main agent applies the sort fix in find_switch_port() or cleans the stale doc, verdict should flip to 'crash' with evidence[0].level='crit'.",
+  "rca of the issue": "Two switch_ports docs match query {client_id, local_ip=10.10.41.221, idx=5}: (A) legacy doc {oper:2, admin:1, speed_mbps:1000, updated_at:'2026-08-17'} and (B) demo-seeded {oper:'up', admin:'up', speed_mbps:1000, updated_at:now, _demo_shutdown:true}. Motor find_one() returns (A) first (insertion order). Code treats oper=2 as not 'up' → signal='down' → verdict='disconnected'. Fix: sort=[('updated_at',-1)] in find_one, plus oper normalization."
+}

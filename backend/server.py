@@ -449,6 +449,10 @@ from routes.device_info_card import router as device_info_card_router
 app.include_router(device_info_card_router)
 from routes.temperature import router as temperature_router
 app.include_router(temperature_router)
+from routes.shutdown_diagnosis import router as shutdown_diagnosis_router
+app.include_router(shutdown_diagnosis_router)
+from routes.kpi import router as kpi_router
+app.include_router(kpi_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -971,6 +975,55 @@ async def startup_event():
         logger.info("Connectivity correlation scheduler started (tick: 10min)")
     except Exception as e:
         logger.error(f"Failed to start connectivity scheduler: {e}")
+
+    # === Diagnosi spegnimento: registra transizioni up/down + baseline velocità porta ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from shutdown_diagnosis import record_status_transitions_tick
+
+        async def _status_transitions_tick():
+            try:
+                await record_status_transitions_tick(db)
+            except Exception as e:
+                logger.warning(f"[status-transitions] tick failed: {e}")
+
+        global status_transitions_scheduler
+        status_transitions_scheduler = AsyncIOScheduler()
+        status_transitions_scheduler.add_job(
+            _status_transitions_tick, trigger=IntervalTrigger(minutes=1), id="status_transitions_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=45), max_instances=1, coalesce=True,
+        )
+        status_transitions_scheduler.start()
+        await db.device_status_events.create_index([("client_id", 1), ("device_ip", 1), ("at", -1)])
+        await db.device_status_state.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
+        logger.info("Status transitions scheduler started (tick: 1min)")
+    except Exception as e:
+        logger.error(f"Failed to start status transitions scheduler: {e}")
+
+    # === KPI snapshots (Panoramica): ogni 10 min, retention 45 gg ===
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from routes.kpi import record_kpi_snapshot
+
+        async def _kpi_snapshot_tick():
+            try:
+                await record_kpi_snapshot(db)
+            except Exception as e:
+                logger.warning(f"[kpi-snapshot] tick failed: {e}")
+
+        global kpi_scheduler
+        kpi_scheduler = AsyncIOScheduler()
+        kpi_scheduler.add_job(
+            _kpi_snapshot_tick, trigger=IntervalTrigger(minutes=10), id="kpi_snapshot_tick",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90), max_instances=1, coalesce=True,
+        )
+        kpi_scheduler.start()
+        await db.kpi_snapshots.create_index("at")
+        logger.info("KPI snapshot scheduler started (tick: 10min)")
+    except Exception as e:
+        logger.error(f"Failed to start KPI snapshot scheduler: {e}")
 
     # === Auto-Dispatch cron (hardware risk + predictive failure → incident) ===
     try:

@@ -365,15 +365,20 @@ export default function IloServerPanel({ s, clientId, defaultOpen = false }) {
 function IloEventLog({ ip, clientId, defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState(null);
+  const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => { if (defaultOpen) load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await axios.get(`${API}/servers/ilo-events/${ip}`, { params: { client_id: clientId, limit: 40 } });
       setEvents(res.data?.events || []);
+      setMeta({ source: res.data?.source, stale: res.data?.stale, fetched_at: res.data?.fetched_at, error: res.data?.error, log_path: res.data?.log_path });
     } catch (e) {
       setEvents([]);
+      setMeta({ error: e.response?.data?.detail || "Errore lettura eventi IML/SEL" });
       toast.error(e.response?.data?.detail || "Errore lettura eventi IML/SEL");
     } finally {
       setLoading(false);
@@ -386,12 +391,15 @@ function IloEventLog({ ip, clientId, defaultOpen }) {
     if (n && events === null) load();
   };
 
-  const sevColor = (s) => {
+  const sevColor = (s, repaired) => {
+    if (repaired) return "#64748b";
     const l = (s || "").toLowerCase();
     if (l.includes("crit") || l.includes("fatal")) return "#ef4444";
-    if (l.includes("warn") || l.includes("degrad")) return "#f59e0b";
+    if (l.includes("warn") || l.includes("degrad") || l.includes("caution")) return "#f59e0b";
     return "#10b981";
   };
+
+  const unrepaired = (events || []).filter(ev => !ev.repaired && /crit|fatal|warn|caution/i.test(ev.severity || "")).length;
 
   return (
     <div className="rounded-md border border-[var(--bg-border)]">
@@ -399,31 +407,52 @@ function IloEventLog({ ip, clientId, defaultOpen }) {
         <span className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-[var(--text-secondary)]">
           <ListBullets size={13} weight="bold" /> Log eventi hardware (IML / SEL)
           {events && <span className="text-[9px] font-normal text-[var(--text-muted)]">· {events.length}</span>}
+          {unrepaired > 0 && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300" data-testid={`ilo-events-unrepaired-${ip}`}>{unrepaired} da riparare</span>}
         </span>
         <span className="text-[10px] text-[var(--text-muted)]">{open ? "Nascondi" : "Mostra"}</span>
       </button>
       {open && (
         <div className="border-t border-[var(--bg-border)] p-2 max-h-72 overflow-auto" data-testid={`ilo-events-list-${ip}`}>
+          {meta && (
+            <div className="flex items-center justify-between gap-2 px-2 pb-1.5 text-[9px] text-[var(--text-muted)]" data-testid={`ilo-events-meta-${ip}`}>
+              <span className="truncate">
+                {meta.error ? <span className="text-amber-300">{meta.error}</span>
+                  : meta.source === "direct" ? "Letto ora dalla iLO (canale diretto)"
+                  : meta.source === "connector" ? `Cache connector on-prem · ${meta.fetched_at ? new Date(meta.fetched_at).toLocaleString("it-IT") : ""}`
+                  : meta.stale ? `Cache · ${meta.fetched_at ? new Date(meta.fetched_at).toLocaleString("it-IT") : ""}` : ""}
+              </span>
+              <button onClick={load} disabled={loading} className="flex items-center gap-1 hover:text-[var(--text-primary)] disabled:opacity-50" data-testid={`ilo-events-refresh-${ip}`}>
+                <ArrowClockwise size={11} className={loading ? "animate-spin" : ""} /> Aggiorna
+              </button>
+            </div>
+          )}
           {loading ? (
             <div className="text-center py-4 text-[11px] text-[var(--text-muted)]"><CircleNotch size={16} className="animate-spin inline mr-1" /> Lettura eventi…</div>
           ) : !events || events.length === 0 ? (
             <p className="text-[11px] text-[var(--text-muted)] text-center py-3">Nessun evento hardware disponibile (o LogService non esposto dalla iLO).</p>
           ) : (
             <div className="space-y-1">
-              {events.map((ev, i) => (
-                <div key={i} className="flex items-start gap-2 px-2 py-1.5 rounded bg-[var(--bg-card)]" data-testid={`ilo-event-${ip}-${i}`}>
-                  <span className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{ background: sevColor(ev.severity) }} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] text-[var(--text-primary)] leading-snug">{ev.message || ev.subject || "—"}</p>
-                    <p className="text-[9px] text-[var(--text-muted)] font-mono mt-0.5">
-                      {ev.created ? new Date(ev.created).toLocaleString("it-IT") : ""} {ev.sensor ? `· ${ev.sensor}` : ""}
-                    </p>
+              {events.map((ev, i) => {
+                const c = sevColor(ev.severity, ev.repaired);
+                return (
+                  <div key={ev.id || i} className="flex items-start gap-2 px-2 py-1.5 rounded bg-[var(--bg-card)]" data-testid={`ilo-event-${ip}-${i}`}>
+                    <span className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{ background: c }} />
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-[11px] leading-snug ${ev.repaired ? "text-[var(--text-muted)] line-through decoration-slate-500/60" : "text-[var(--text-primary)]"}`}>{ev.message || ev.subject || "—"}</p>
+                      <p className="text-[9px] text-[var(--text-muted)] font-mono mt-0.5">
+                        {ev.created ? new Date(ev.created).toLocaleString("it-IT") : ""}
+                        {ev.class != null && ev.code != null ? ` · cls ${ev.class}/${ev.code}` : ""}
+                        {ev.count > 1 ? ` · ×${ev.count}` : ""}
+                        {ev.sensor ? ` · ${ev.sensor}` : ""}
+                      </p>
+                      {ev.action && !ev.repaired && <p className="text-[9px] text-sky-300/80 mt-0.5 leading-snug">↳ {ev.action}</p>}
+                    </div>
+                    <span className="text-[8px] font-bold uppercase px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: c, background: `${c}18` }}>
+                      {ev.repaired ? "RIPARATO" : (ev.severity || "info").toUpperCase()}
+                    </span>
                   </div>
-                  <span className="text-[8px] font-bold uppercase px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: sevColor(ev.severity), background: `${sevColor(ev.severity)}18` }}>
-                    {(ev.severity || "info").toUpperCase()}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

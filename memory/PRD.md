@@ -1,6 +1,46 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ KPI Strip Panoramica (spunto Prometheus/Nagios NNA 2026)
+9 tile in testa alla Panoramica (`frontend/src/components/KpiStrip.js` ← `DashboardPage.js`): disponibilità vitali,
+clienti con problemi, alert attivi (crit/high/med), alert aperti nel periodo (istogramma 24 bucket), MTTR (min → h se ≥120),
+rumore auto-chiusi %, backup KO, hardware a rischio (+ predetti), agent/connector offline. Selettore 24h/7gg/30gg
+(localStorage `kpi_period`), trend vs baseline, sparkline SVG, click → pagina di dettaglio.
+Backend `routes/kpi.py`: `GET /api/overview/kpi?period=` (riusa cache `/overview/clients`), cron 10 min
+`record_kpi_snapshot` → `kpi_snapshots` (alimenta sparkline/trend dei KPI di stato). Vecchie 4 KpiCard rimosse.
+Test: iteration_145 (11/11 backend + E2E frontend OK).
+
+## 2026-06 ✅ Diagnosi spegnimento (PC spento volutamente vs crash)
+`backend/shutdown_diagnosis.py` + `routes/shutdown_diagnosis.py` (`GET /api/devices/shutdown-diagnosis/{ip}?client_id=`)
++ `frontend/src/components/ShutdownDiagnosis.js` dentro DeviceInfoCard → Stato Live (solo se reachable=false).
+Prove: (1) porta switch via FDB `discovered_endpoints`(switch_ip, port) → `switch_ports` (oper/speed, sort updated_at desc,
+oper int 1/2 normalizzato; uplink scartato = porta con più MAC); baseline velocità in `device_status_state.usual_speed_mbps`;
+(2) orario abituale da `device_status_events` (cron 1 min `record_status_transitions_tick`, debounce 3 min) + alert offline,
+fallback fascia lavorativa 07-19 se <5 eventi; (3) Datto `datto_devices.online/datto_last_seen`.
+Verdetti: intentional / crash / disconnected / reachable_elsewhere / unknown + confidenza %. Test: iteration_144 + tests/test_shutdown_diagnosis_iter144.py.
+Backlog spunti Prometheus/NNA (in ordine consigliato): regole alert su metriche + inibizione; Nmap schedulato con Ndiff;
+report PDF via email schedulati; RBAC granulare; NetFlow/sFlow collector nell'agent Go.
+
+
+## 2026-06 ✅ Fix Log eventi hardware IML/SEL (iLO) sempre "0"
+**RCA (3 cause)**: `GET /api/servers/ilo-events/{ip}` (routes/server_intelligence.py) leggeva le credenziali da
+`vault_credentials` (collection vuota; le credenziali iLO reali stanno in `device_credentials`) → 404;
+percorso HPE errato (`Managers/1/LogServices/IML` — l'IML sta sotto `Systems/1`); query `?$top=` rifiutata da iLO 4.
+**Fix**: credenziali da `device_credentials` (fallback vault), path corretti (HPE IML Systems/1, iDRAC Sel/Lclog,
+Lenovo, Supermicro, IEL come ultimo fallback), nessun `$top`, stop immediato se host irraggiungibile (deadline 45s),
+normalizzazione Oem.Hpe/Hp (class, code, count, repaired, RecommendedAction). Cache `ilo_events`
+{client_id, device_ip, events, log_path, source: direct|connector, fetched_at}: il diretto la popola; il connector
+PowerShell (snmp_poller.ps1 `Poll-RedfishMetrics` → `iml_events`/`iml_log_path`, ultime 40) la alimenta via
+device-report (connector.py strippa `iml_events` da poll_status e chiama `store_ilo_events_cache`). Se il diretto
+non risponde l'endpoint serve la cache con `stale:true` + `error`. Frontend `IloServerPanel.IloEventLog`: auto-load
+se aperto di default, riga meta (fonte/cache/errore) + bottone Aggiorna, badge "N da riparare", eventi riparati
+barrati, cls/code, ×count, RecommendedAction. Test: `tests/test_ilo_events_iter143.py` (mock iLO 4, 6/6 OK).
+⚠️ Connector on-prem: serve nuova release del connector PowerShell per la cache (il diretto via external_url funziona subito).
+⚠️ APERTO: la PROD argus.86bit.it (bundle main.55cc29b4.js) contiene feature NON presenti in questo repo
+(Stato Live: effective_status, Soft/Hard, max_check_attempts, Padre dipendenza) → deployata da un altro fork.
+Utente non ha ancora chiarito. Feature "Diagnosi spegnimento" (porta switch + orario abituale + Datto lastSeen) in attesa.
+
+
 ## 2026-06 ✅ Fix "incongruenze" soglie temperatura per tipo (Zyxel USG, AP, iLO, generic…)
 **Problema utente**: soglie per tipo impostate (es. 80/85 su tutti i tipi) in Soglie Alert, ma Gestione
 Temperature / alert mostravano soglie effettive diverse. **RCA**: il resolver confrontava

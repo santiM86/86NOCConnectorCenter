@@ -1951,6 +1951,8 @@ function Poll-RedfishMetrics([string]$ip, [hashtable]$cred) {
         total_memory_gb = $null
         network_adapters = @()
         storage_controllers = @()
+        iml_events = @()
+        iml_log_path = $null
         error = $null
     }
     
@@ -2097,6 +2099,33 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
                         }
                     }
                     $result.storage_controllers += $ctrlInfo
+                }
+            }
+        }
+
+        # Log eventi hardware (IML HPE sotto Systems/1; SEL iDRAC/Lenovo/Supermicro).
+        # Nessun $top: iLO 4 rifiuta le query OData. Teniamo le ultime 40 entry.
+        $logPaths = @(
+            "/redfish/v1/Systems/1/LogServices/IML/Entries/",
+            "/redfish/v1/Managers/iDRAC.Embedded.1/LogServices/Sel/Entries/",
+            "/redfish/v1/Systems/1/LogServices/ActiveLog/Entries/",
+            "/redfish/v1/Systems/1/LogServices/SEL/Entries/",
+            "/redfish/v1/Managers/1/LogServices/SEL/Entries/"
+        )
+        foreach ($lp in $logPaths) {
+            $logColl = Invoke-RedfishGet $lp
+            if ($logColl -and $logColl.Members) {
+                $entries = @($logColl.Members | Where-Object { $_.Message -or $_.Created })
+                if ($entries.Count -gt 0) {
+                    $result.iml_log_path = $lp
+                    $result.iml_events = @($entries | Select-Object -Last 40 | ForEach-Object {
+                        @{
+                            Id = "$($_.Id)"; Severity = $_.Severity; Created = $_.Created
+                            Message = $_.Message; SensorType = $_.SensorType; EntryType = $_.EntryType
+                            Oem = $_.Oem
+                        }
+                    })
+                    break
                 }
             }
         }
