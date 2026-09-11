@@ -9702,3 +9702,9 @@ Health null è normale HPE (usa i sottosistemi).
 
 ## 2026-09-10 — FIX incoerenza vitali TV/Panoramica vs scheda cliente
 - liveness_resolver.PositiveEvidence/build_positive_evidence: Datto RMM online (<30 min) e Hyper-V VM Running (<15 min) → online; Off/Saved/Paused → off. Applicato in tv_dashboard, overview e alert_hygiene.resolve_recovered_device_alerts (prima solo in routes/devices.get_devices → SRVDC verde in scheda ma "giù da 3g" in TV + popup). Test iteration_141 PASS.
+
+## 2026-09-11 — AI sulle abitudini porte + festività italiane
+- port_memory.py: `is_italian_holiday()` (festività nazionali + Pasquetta via computus). Nei festivi record_ports NON aggiorna istogrammi/samples (giornata non rappresentativa); classify(holiday=) → porta "A orario" giù in festivo = Abituale ("azienda chiusa"). `schedule_summary(mem)` → {Lun:"08-18",…} (ore con up ≥50%), esposto in GET switch-ports come habit.schedule.
+- routes/port_ai.py (GPT-5.4 Universal Key, on-demand, salvato in `port_ai_analyses`): POST/GET /api/devices/{ip}/switch-ports/{idx}/ai-explain (verdetto spento_dal_cliente|guasto_probabile|standby|inutilizzata|incerto|attiva + azioni + suggest_reclassify) e POST/GET /api/devices/{ip}/switch-ports/ai-audit (score, findings security/hygiene/reliability/capacity, disable_candidates, label_missing). Contesto: memoria porta, schedule, ultimo device, Datto (shutdown_diagnosis._datto_signal), flap 7gg, alert attivi, festivo/weekend.
+- UI SwitchPortsPage: pannello dettaglio porta → blocco "Abitudine" (badge, profilo, orari settimanali, motivo) + PortAiExplain ("Spiega con AI"); header bottone "✦ Audit AI" → SwitchAiAudit (chip porta cliccabili → seleziona porta).
+- Seed test: backend/tests/seed_port_memory_iter150.py. Test: iteration_150.json PASS. Backlog: santo patrono per cliente (campo clients.patron_day + UI).

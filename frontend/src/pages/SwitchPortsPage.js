@@ -20,6 +20,8 @@ import {
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
 import PortFlapHistory from "@/components/PortFlapHistory";
+import PortAiExplain from "@/components/PortAiExplain";
+import SwitchAiAudit from "@/components/SwitchAiAudit";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -191,6 +193,21 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
           <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} clientId={clientId} />
         </div>
       )}
+
+      {p.habit && (
+        <div className="flex flex-wrap items-center gap-2 text-[10px]" data-testid={`switch-port-habit-detail-${p.idx}`}>
+          <span className="text-[var(--text-muted)] uppercase tracking-wider font-semibold">Abitudine</span>
+          <HabitBadge habit={p.habit} idx={`detail-${p.idx}`} />
+          {p.habit.profile_label && <span className="text-[var(--text-secondary)]">{p.habit.profile_label}{p.habit.up_ratio != null ? ` · up ${Math.round(p.habit.up_ratio * 100)}% in ${p.habit.days} gg` : ""}</span>}
+          {p.habit.schedule && (
+            <span className="font-mono text-[9px] text-[var(--text-muted)] w-full flex flex-wrap gap-x-2" data-testid={`switch-port-schedule-${p.idx}`}>
+              {Object.entries(p.habit.schedule).map(([d, h]) => <span key={d}><b className="text-[var(--text-secondary)]">{d}</b> {h}</span>)}
+            </span>
+          )}
+          {p.habit.reason && <span className="w-full text-[var(--text-secondary)] italic">{p.habit.reason}</span>}
+        </div>
+      )}
+      {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
 
       {/* Status row */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -460,6 +477,7 @@ export default function SwitchPortsPage() {
   // IP condiviso fra clienti diversi + nessun clientId in URL: NON mostriamo dati
   // di altri tenant, chiediamo solo di aprire dal cliente corretto.
   const [needClientPick, setNeedClientPick] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
 
   const runDiagnose = useCallback(async () => {
     setDiagLoading(true);
@@ -764,6 +782,7 @@ export default function SwitchPortsPage() {
             {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
           </p>
         </div>
+        <Button size="sm" variant="outline" onClick={() => setShowAudit(s => !s)} className="h-7 gap-1 text-[11px] border-indigo-500/40 text-indigo-300" data-testid="switch-ports-ai-audit-toggle">✦ Audit AI</Button>
         <Button size="sm" variant="outline" onClick={runDiagnose} className="h-7 gap-1 text-[11px] border-amber-500/40 text-amber-300" data-testid="switch-ports-diagnose">🩺 Diagnosi</Button>
         <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px]" data-testid="switch-ports-refresh"><ArrowsClockwise size={12} /> Refresh</Button>
       </div>
@@ -928,6 +947,11 @@ export default function SwitchPortsPage() {
         );
       })()}
 
+
+      {showAudit && (
+        <SwitchAiAudit deviceIp={data.device_ip} clientId={clientId || data.client_id} onClose={() => setShowAudit(false)}
+          onSelectPort={(i) => { const p = ports.find(x => x.idx === i); if (p) setSelected(p); }} />
+      )}
 
       {/* Matrice porte Nebula-style */}
       <div className="noc-panel p-3 md:p-4">

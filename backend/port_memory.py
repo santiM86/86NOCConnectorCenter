@@ -57,11 +57,70 @@ def _how(d: datetime) -> int:
     return loc.weekday() * 24 + loc.hour
 
 
+FIXED_HOLIDAYS = {
+    (1, 1): "Capodanno", (1, 6): "Epifania", (4, 25): "Festa della Liberazione", (5, 1): "Festa dei Lavoratori",
+    (6, 2): "Festa della Repubblica", (8, 15): "Ferragosto", (11, 1): "Ognissanti", (12, 8): "Immacolata",
+    (12, 25): "Natale", (12, 26): "Santo Stefano",
+}
+
+
+def _easter(y: int):
+    a, b, c = y % 19, y // 100, y % 100
+    d, e, f, g = b // 4, b % 4, (b + 8) // 25, (b - (b + 8) // 25 + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7  # noqa: E741
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime(y, month, day, tzinfo=timezone.utc).date()
+
+
+def is_italian_holiday(d: Optional[datetime] = None) -> Optional[str]:
+    """Nome della festività nazionale italiana (ora locale) oppure None."""
+    loc = _local(d or _now()).date()
+    name = FIXED_HOLIDAYS.get((loc.month, loc.day))
+    if name:
+        return name
+    if loc == _easter(loc.year) + timedelta(days=1):
+        return "Lunedì dell'Angelo"
+    return None
+
+
+DAY_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
+
+
+def schedule_summary(mem: Optional[dict]) -> dict:
+    """{Lun: "08-18", Mar: "08-18, 20-22", Sab: "—"} dalle ore con up ratio ≥ 50%."""
+    if not mem:
+        return {}
+    how_up = mem.get("how_up") or {}
+    how_total = mem.get("how_total") or {}
+    out = {}
+    for d in range(7):
+        hours = []
+        for h in range(24):
+            k = str(d * 24 + h)
+            t = int(how_total.get(k) or 0)
+            if t and int(how_up.get(k) or 0) / t >= 0.5:
+                hours.append(h)
+        ranges, start = [], None
+        for h in range(25):
+            if h in hours and start is None:
+                start = h
+            elif h not in hours and start is not None:
+                ranges.append(f"{start:02d}-{h:02d}")
+                start = None
+        out[DAY_LABELS[d]] = ", ".join(ranges) if ranges else "—"
+    return out
+
+
 async def record_ports(db, client_id: str, local_ip: str, ports: list) -> int:
     """Chiamata da store_switch_ports dopo ogni poll: aggiorna gli istogrammi per porta."""
     now = _now()
     now_iso = now.isoformat()
     b = _how(now)
+    holiday = is_italian_holiday(now)  # festivo: non insegna abitudini (giornata non rappresentativa)
     n = 0
     for p in ports:
         try:
@@ -74,19 +133,22 @@ async def record_ports(db, client_id: str, local_ip: str, ports: list) -> int:
         speed = int(p.get("speed_mbps", 0) or 0)
         poe_w = float(p.get("poe_watt", 0) or 0)
         q = {"client_id": client_id, "local_ip": local_ip, "idx": idx}
-        inc = {"samples": 1, f"how_total.{b}": 1}
+        inc = {} if holiday else {"samples": 1, f"how_total.{b}": 1}
         setv = {"name": p.get("name") or f"port{idx}", "updated_at": now_iso, "last_oper_up": up,
                 "last_poe_w": poe_w, "last_speed_mbps": speed}
         if up:
-            inc["up_samples"] = 1
-            inc[f"how_up.{b}"] = 1
+            if not holiday:
+                inc["up_samples"] = 1
+                inc[f"how_up.{b}"] = 1
             setv["last_up_at"] = now_iso
             if poe_w > 0:
                 inc["poe_samples"] = 1
                 inc["poe_w_sum"] = poe_w
         else:
             setv["last_down_at"] = now_iso
-        upd = {"$inc": inc, "$set": setv, "$setOnInsert": {"first_seen": now_iso}}
+        upd = {"$set": setv, "$setOnInsert": {"first_seen": now_iso}}
+        if inc:
+            upd["$inc"] = inc
         if up and speed > 0:
             upd["$max"] = {"usual_speed_mbps": speed}
         await db.port_memory.update_one(q, upd, upsert=True)
@@ -136,7 +198,8 @@ async def _refresh_devices(db, client_id: str, local_ip: str, up_ports: list, no
         await db.port_memory.update_one({"client_id": client_id, "local_ip": local_ip, "idx": pi}, {"$set": setv})
 
 
-def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optional[datetime] = None) -> dict:
+def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optional[datetime] = None,
+             holiday: Optional[str] = None) -> dict:
     """→ {profile, verdict, label, up_ratio, days, reason, last_device, usual_speed_mbps, usual_poe_w}"""
     at = at or _now()
     if not mem:
@@ -177,6 +240,9 @@ def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optiona
     if profile == "sporadic":
         return {**base, "verdict": "habitual", "label": VERDICT_LABELS["habitual"],
                 "reason": f"Porta saltuaria: attiva solo il {int(ratio * 100)}% del tempo (laptop/uso occasionale)."}
+    if holiday and profile == "scheduled":
+        return {**base, "verdict": "habitual", "label": VERDICT_LABELS["habitual"], "holiday": holiday,
+                "reason": f"Oggi è festivo ({holiday}): porta a orario d'ufficio giù come atteso, azienda chiusa."}
     if profile == "always_on":
         return {**base, "verdict": "anomalous", "label": VERDICT_LABELS["anomalous"],
                 "reason": f"Porta sempre attiva (up {int(ratio * 100)}% in {days:.0f} giorni) ora giù: probabile guasto device/cavo/alimentazione."}
@@ -201,12 +267,13 @@ def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optiona
 
 async def classify_port(db, client_id: str, local_ip: str, idx: int, oper_up: bool, poe_w: float = 0.0) -> dict:
     mem = await db.port_memory.find_one({"client_id": client_id, "local_ip": local_ip, "idx": int(idx)}, {"_id": 0})
-    return classify(mem, oper_up, poe_w)
+    return classify(mem, oper_up, poe_w, holiday=is_italian_holiday())
 
 
 async def memory_for_switch(db, client_id: str, local_ip: str) -> dict:
     """{idx: classify(...)} usando l'ultimo stato noto salvato nel doc stesso."""
     out = {}
+    hol = is_italian_holiday()
     async for m in db.port_memory.find({"client_id": client_id, "local_ip": local_ip}, {"_id": 0}):
-        out[m["idx"]] = classify(m, bool(m.get("last_oper_up")), float(m.get("last_poe_w") or 0))
+        out[m["idx"]] = classify(m, bool(m.get("last_oper_up")), float(m.get("last_poe_w") or 0), holiday=hol)
     return out
