@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from database import db
 from deps import get_current_user
@@ -303,15 +304,15 @@ async def _compute_clients_overview() -> dict:
     for r in wan_results_raw:
         wan_results_map[r.get("target_id")] = r
 
-    wan_targets_by_client = {}
+    wan_targets_by_client = defaultdict(list)
     for t in wan_targets:
         cid = t.get("client_id")
         if cid not in wan_targets_by_client:
             wan_targets_by_client[cid] = []
         wan_targets_by_client[cid].append(t)
 
-    alerts_by_client = {}
-    alerts_detail_by_client = {}
+    alerts_by_client = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
+    alerts_detail_by_client = defaultdict(list)
     # v3.8.29 FIX: gestione severity sconosciute (es. "info", "notice", null)
     # senza far crashare l'endpoint con KeyError. Il counter di severity custom
     # viene aggiunto dinamicamente al dict.
@@ -349,11 +350,12 @@ async def _compute_clients_overview() -> dict:
     # le statistiche e la salute dell'infrastruttura. Vengono contati in un
     # blocco separato `endpoints`. Il conteggio VITALI resta trasversale (un PC
     # marcato vitale conta comunque nei vitali del cliente).
-    devices_by_client = {}
-    endpoints_by_client = {}
-    devices_detail_by_client = {}
-    endpoints_detail_by_client = {}
-    vital_detail_by_client = {}  # SOLO dispositivi vitali (per vista mobile tecnici)
+    # defaultdict: nessun path (vitali/endpoint/infra) può più sollevare KeyError(cid)
+    devices_by_client = defaultdict(_empty_counts)
+    endpoints_by_client = defaultdict(_empty_counts)
+    devices_detail_by_client = defaultdict(list)
+    endpoints_detail_by_client = defaultdict(list)
+    vital_detail_by_client = defaultdict(list)  # SOLO dispositivi vitali (per vista mobile tecnici)
     for d in devices:
         cid = d.get("client_id")
         status = d.get("status")
@@ -411,7 +413,7 @@ async def _compute_clients_overview() -> dict:
             "type": d.get("device_type", ""),
         })
 
-    backup_by_client = {}
+    backup_by_client = defaultdict(lambda: {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0})
     for b in backup_data:
         cid = b.get("client_id")
         if cid not in backup_by_client:
@@ -441,7 +443,7 @@ async def _compute_clients_overview() -> dict:
         backup_by_client[cid]["warning"] += v.get("warning", 0)
         backup_by_client[cid]["stale"] += v.get("stale", 0)
 
-    printer_by_client = {}
+    printer_by_client = defaultdict(lambda: {"total": 0, "low_toner": 0, "ok": 0})
     for p in printer_data:
         cid = p.get("client_id")
         if cid not in printer_by_client:
@@ -460,7 +462,7 @@ async def _compute_clients_overview() -> dict:
     # Permette al frontend di mostrare un banner "Scanner inattivo da Xh, riavvia
     # il servizio" senza richiedere modifiche al connector PowerShell.
     SCANNER_HEALTH_STALE_MIN = 30
-    scanner_health_by_client = {}
+    scanner_health_by_client = defaultdict(list)
     now = datetime.now(timezone.utc)
     for c in connectors:
         cid = c.get("client_id")
