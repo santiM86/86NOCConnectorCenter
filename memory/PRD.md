@@ -1,6 +1,16 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Analisi AI log iLO (GPT-5.4 via EMERGENT_LLM_KEY)
+`routes/ilo_ai.py`: `POST/GET /api/servers/ilo-ai-analysis/{ip}?client_id=`. Contesto = eventi IML/SEL (cache `ilo_events`
+o fetch diretto) + `ilo_status` live (temp/fan/PSU/dischi/DIMM/NIC) + alert attivi. Output JSON in italiano
+(risk_level, headline, diagnosis, patterns, actions con priorità/when, ignore, watch, confidence) salvato in `ilo_ai_analyses`.
+Trigger automatico da `store_ilo_events_cache` → `maybe_auto_analyze` (solo nuovi eventi crit/warn non riparati,
+debounce 6h/device) + Telegram se rischio high/critical. Frontend `components/IloAiAnalysis.js` nel pannello iLO
+(bottone Analisi AI/Rianalizza, badge rischio, azioni, pattern, storico). `.env`: EMERGENT_LLM_KEY. emergentintegrations in requirements.
+Test: tests/test_ilo_ai_iter146.py (5/5: manuale, GET, auto-trigger, no-trigger su riparati, 404/auth) + screenshot UI.
+
+
 ## 2026-06 ✅ KPI Strip Panoramica (spunto Prometheus/Nagios NNA 2026)
 9 tile in testa alla Panoramica (`frontend/src/components/KpiStrip.js` ← `DashboardPage.js`): disponibilità vitali,
 clienti con problemi, alert attivi (crit/high/med), alert aperti nel periodo (istogramma 24 bucket), MTTR (min → h se ≥120),

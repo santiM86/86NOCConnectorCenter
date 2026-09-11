@@ -10,6 +10,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import HealthBadge from "@/components/HealthBadge";
+import IloAiAnalysis from "@/components/IloAiAnalysis";
 
 /* ==========================================================================
    IloServerPanel — vista premium per singolo server iLO/Redfish.
@@ -356,6 +357,9 @@ export default function IloServerPanel({ s, clientId, defaultOpen = false }) {
 
         {/* Log eventi hardware IML/SEL inline */}
         <IloEventLog ip={ip} clientId={clientId} defaultOpen={defaultOpen} />
+
+        {/* Analisi AI (GPT) dei log + stato hardware */}
+        <IloAiAnalysis ip={ip} clientId={clientId} />
       </div>
     </div>
   );

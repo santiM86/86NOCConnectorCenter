@@ -335,13 +335,20 @@ async def fetch_redfish_log_entries(base_url: str, auth: tuple, limit: int = 50)
 
 
 async def store_ilo_events_cache(client_id: str | None, device_ip: str, events: list, log_path: str | None, source: str):
-    """Cache eventi IML/SEL (alimentata dal fetch diretto o dal connector on-prem)."""
+    """Cache eventi IML/SEL (alimentata dal fetch diretto o dal connector on-prem).
+    Se compaiono nuovi eventi crit/warn non riparati → analisi AI automatica (routes.ilo_ai)."""
+    prev = await db.ilo_events.find_one({"device_ip": device_ip, "client_id": client_id}, {"_id": 0, "events": 1}) or {}
     await db.ilo_events.update_one(
         {"device_ip": device_ip, "client_id": client_id},
         {"$set": {"events": events[:100], "log_path": log_path, "source": source,
                   "fetched_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
     )
+    try:
+        from .ilo_ai import maybe_auto_analyze
+        await maybe_auto_analyze(client_id, device_ip, events, prev.get("events") or [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"ilo-ai trigger fallito {device_ip}: {e}")
 
 
 @router.get("/ilo-events/{device_ip}")
