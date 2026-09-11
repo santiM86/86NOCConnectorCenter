@@ -1,0 +1,28 @@
+{
+  "summary": "Iter150 — Feature test: AI porta analysis + Audit AI panel on Switch Ports page (Italian NOC UI). BACKEND (5/5 pytest green in test_port_ai_iter150.py): (a) GET /api/devices/10.10.41.220/switch-ports/ai-audit?client_id=... returns {latest,history} with latest.result keys {score,headline,summary,findings,disable_candidates,label_missing,confidence}; (b) GET /api/devices/10.10.41.220/switch-ports/1/ai-explain returns latest.result.verdict='guasto_probabile'; (c) unauth on both endpoints -> 401/403; (d) GET /api/devices/10.10.41.220/switch-ports returns habit for port 8 = {profile:'unused', label:'Inutilizzata', schedule all '—'}. FRONTEND (Italian): 2FA login OK (info@86bit.it + TOTP). Correct route is /switch-ports/10.10.41.220?clientId=... — E1's task URL '/devices/{ip}/switch-ports?...' does NOT match App.js route (Route path='switch-ports/:deviceIp'); after correction all elements present: switch-ports-ai-audit-toggle ('✦ Audit AI'), switch-ai-audit panel with score 58/100, headline 'Switch con molta capacità libera ma 2 porte critiche anomale...', findings block with 31 clickable port chips; clicking first chip (port 1) opens switch-port-detail-1 correctly; switch-ai-audit-close closes the panel; port-habit-8 shows 'Inutilizzata' in table; row1 detail shows habit 'Anomalo', schedule Lun..Dom 00-24, port-ai-1 with port-ai-verdict-1='GUASTO PROBABILE', port-ai-body-1 with explanation, port-ai-run-1 label='Rispiega'; row3 shows port-ai-3 with helper text ('L\\'AI incrocia abitudini...') and port-ai-run-3='Spiega con AI' (no prior verdict, as expected); row8 shows habit 'Inutilizzata' + schedule all '—'. POST endpoints (real LLM) NOT invoked to save cost (main agent already validated per task).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_port_ai_iter150.py"
+  ],
+  "action_items": [
+    "Non-blocking: the task URL described by E1 (/devices/{ip}/switch-ports?clientId=...) does not match the actual React route (/switch-ports/:deviceIp) — either update the review doc or add a redirect from /devices/:ip/switch-ports for consistency."
+  ],
+  "critical_code_review_comments": [
+    "port_ai.py _run() sets ports_analyzed=len(ctx.ports) only for audit; ctx.port (singular) is used in explain — the doc field 'port_name' correctly reads ctx.port.name, good.",
+    "port_ai.py alerts regex uses re.escape(pname) but no anchors — could match substring in unrelated messages (low risk).",
+    "port_ai.py timezone offset uses `2 if 3 < month < 11 else 1` — heuristic for CET/CEST that is off by a couple weeks vs actual DST. Cosmetic (used only for the prompt's 'local' string).",
+    "SwitchPortsPage flow relies on route param /switch-ports/:deviceIp; if any nav sends /devices/:ip/switch-ports the user gets a blank page (No routes matched location warning observed)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin info@86bit.it + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — worked",
+  "seed_data_creation": "None (seed already produced by /app/backend/tests/seed_port_memory_iter150.py per main agent)",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "SwitchPortsPage route is /switch-ports/:deviceIp?clientId=... (NOT /devices/:ip/switch-ports). Seeded switch 10.10.41.220 for client da3d6e40... has 10 ports of realistic profiles. Pre-seeded records in db.port_ai_analyses: 1 audit (score 58) + 1 explain for port 1 (verdict guasto_probabile). Testid coverage: switch-ports-ai-audit-toggle, switch-ai-audit[-score|-headline|-findings|-close|-run], switch-port-row-<idx>, switch-port-detail-<idx>, switch-port-habit-detail-<idx>, switch-port-schedule-<idx>, port-habit-<idx>, port-ai-<idx>, port-ai-verdict-<idx>, port-ai-body-<idx>, port-ai-run-<idx>. POST /ai-audit and POST /ai-explain call real LLM (~15-25s and ~10s) so keep to minimum. Regression: /app/backend/tests/test_port_ai_iter150.py (needs pyotp, dotenv, requests)."
+}

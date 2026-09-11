@@ -569,6 +569,22 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
     except Exception as _ce:
         pass
 
+    # Memoria porte: abitudine/verdetto per ogni porta (Abituale / Anomalo / Standby PoE / Inutilizzata / In apprendimento)
+    try:
+        from port_memory import classify, is_italian_holiday, schedule_summary
+        hol = is_italian_holiday()
+        mem_by_idx = {m["idx"]: m async for m in db.port_memory.find({"client_id": client_id, "local_ip": device_ip}, {"_id": 0})}
+        for o in out:
+            m = mem_by_idx.get(o.get("idx"))
+            if m or int(o.get("oper", 0) or 0) != 1:
+                o["habit"] = classify(m, int(o.get("oper", 0) or 0) == 1, float(o.get("poe_watt", 0) or 0), holiday=hol)
+                if m:
+                    o["habit"]["schedule"] = schedule_summary(m)
+            else:
+                o["habit"] = None
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "device_ip": device_ip,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",

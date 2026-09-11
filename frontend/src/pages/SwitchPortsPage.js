@@ -20,6 +20,8 @@ import {
 import { Button } from "@/components/ui/button";
 import PortCableView from "@/components/PortCableView";
 import PortFlapHistory from "@/components/PortFlapHistory";
+import PortAiExplain from "@/components/PortAiExplain";
+import SwitchAiAudit from "@/components/SwitchAiAudit";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -191,6 +193,21 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
           <PortFlapHistory deviceIp={deviceIp} idx={p.idx} hours={24} clientId={clientId} />
         </div>
       )}
+
+      {p.habit && (
+        <div className="flex flex-wrap items-center gap-2 text-[10px]" data-testid={`switch-port-habit-detail-${p.idx}`}>
+          <span className="text-[var(--text-muted)] uppercase tracking-wider font-semibold">Abitudine</span>
+          <HabitBadge habit={p.habit} idx={`detail-${p.idx}`} />
+          {p.habit.profile_label && <span className="text-[var(--text-secondary)]">{p.habit.profile_label}{p.habit.up_ratio != null ? ` · up ${Math.round(p.habit.up_ratio * 100)}% in ${p.habit.days} gg` : ""}</span>}
+          {p.habit.schedule && (
+            <span className="font-mono text-[9px] text-[var(--text-muted)] w-full flex flex-wrap gap-x-2" data-testid={`switch-port-schedule-${p.idx}`}>
+              {Object.entries(p.habit.schedule).map(([d, h]) => <span key={d}><b className="text-[var(--text-secondary)]">{d}</b> {h}</span>)}
+            </span>
+          )}
+          {p.habit.reason && <span className="w-full text-[var(--text-secondary)] italic">{p.habit.reason}</span>}
+        </div>
+      )}
+      {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
 
       {/* Status row */}
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -414,6 +431,28 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
 }
 
 // ----- Page -----
+
+const HABIT_CLS = {
+  anomalous: "bg-red-500/20 text-red-200 border-red-500/40",
+  habitual: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  standby_poe: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  unused: "bg-neutral-600/20 text-neutral-400 border-neutral-500/30",
+  learning: "bg-amber-500/10 text-amber-300/80 border-amber-500/20",
+};
+function HabitBadge({ habit, idx }) {
+  const cls = HABIT_CLS[habit.verdict] || HABIT_CLS.learning;
+  const tip = [habit.reason, habit.profile_label ? `Profilo: ${habit.profile_label}` : null,
+    habit.up_ratio != null ? `Up ${Math.round(habit.up_ratio * 100)}% in ${habit.days} gg` : null,
+    habit.usual_speed_mbps ? `Velocità abituale ${habit.usual_speed_mbps >= 1000 ? habit.usual_speed_mbps / 1000 + " Gbps" : habit.usual_speed_mbps + " Mbps"}` : null,
+    habit.usual_poe_w ? `PoE abituale ${habit.usual_poe_w} W` : null].filter(Boolean).join("\n");
+  return (
+    <span title={tip} data-testid={`port-habit-${idx}`}
+      className={`ml-1 text-[9px] px-1.5 py-0.5 rounded border cursor-help ${cls}`}>
+      {habit.label}
+    </span>
+  );
+}
+
 export default function SwitchPortsPage() {
   const { deviceIp } = useParams();
   const [searchParams] = useSearchParams();
@@ -438,6 +477,7 @@ export default function SwitchPortsPage() {
   // IP condiviso fra clienti diversi + nessun clientId in URL: NON mostriamo dati
   // di altri tenant, chiediamo solo di aprire dal cliente corretto.
   const [needClientPick, setNeedClientPick] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
 
   const runDiagnose = useCallback(async () => {
     setDiagLoading(true);
@@ -742,6 +782,7 @@ export default function SwitchPortsPage() {
             {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
           </p>
         </div>
+        <Button size="sm" variant="outline" onClick={() => setShowAudit(s => !s)} className="h-7 gap-1 text-[11px] border-indigo-500/40 text-indigo-300" data-testid="switch-ports-ai-audit-toggle">✦ Audit AI</Button>
         <Button size="sm" variant="outline" onClick={runDiagnose} className="h-7 gap-1 text-[11px] border-amber-500/40 text-amber-300" data-testid="switch-ports-diagnose">🩺 Diagnosi</Button>
         <Button size="sm" variant="outline" onClick={reload} className="h-7 gap-1 text-[11px]" data-testid="switch-ports-refresh"><ArrowsClockwise size={12} /> Refresh</Button>
       </div>
@@ -907,6 +948,11 @@ export default function SwitchPortsPage() {
       })()}
 
 
+      {showAudit && (
+        <SwitchAiAudit deviceIp={data.device_ip} clientId={clientId || data.client_id} onClose={() => setShowAudit(false)}
+          onSelectPort={(i) => { const p = ports.find(x => x.idx === i); if (p) setSelected(p); }} />
+      )}
+
       {/* Matrice porte Nebula-style */}
       <div className="noc-panel p-3 md:p-4">
         {/* Group in row of 8 (typical switch layout) */}
@@ -1027,6 +1073,7 @@ export default function SwitchPortsPage() {
                       ) : (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
                       )}
+                      {!isUp && p.admin !== 2 && p.habit && <HabitBadge habit={p.habit} idx={p.idx} />}
                       {p.loop_suspect && (
                         <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-0.5" title={(p.loop_reasons || []).join(" · ")} data-testid={`switch-port-row-loop-${p.idx}`}>
                           <Warning size={9} weight="fill" /> LOOP
@@ -1044,7 +1091,12 @@ export default function SwitchPortsPage() {
                       ) : <span className="text-[10px] text-[var(--text-muted)]">—</span>}
                     </td>
                     <td>
-                      {p.neighbor ? (
+                      {!p.neighbor && p.habit?.last_device?.mac ? (
+                        <div className="flex flex-col leading-tight text-[10px]" data-testid={`port-last-device-${p.idx}`}>
+                          <span className="text-[var(--text-muted)] italic">ultimo: <span className="text-neutral-200 not-italic font-semibold">{p.habit.last_device.name || p.habit.last_device.ip || "device"}</span></span>
+                          <span className="font-mono text-[9px] text-[var(--text-muted)]">{p.habit.last_device.mac}{p.habit.last_device.seen_at ? ` · visto ${new Date(p.habit.last_device.seen_at).toLocaleDateString("it-IT")}` : ""}</span>
+                        </div>
+                      ) : p.neighbor ? (
                         <div className="flex items-start gap-1.5 text-[10px]">
                           <PortIcon p={p} size={13} />
                           <div className="flex flex-col leading-tight min-w-0">

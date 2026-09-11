@@ -101,6 +101,16 @@ async def evaluate_port_links(db, client_id: str, local_ip: str,
 
             # Transizione UP -> DOWN (con admin up) = link caduto
             if prev_oper == _UP and new_oper == _DOWN and new_admin == _UP:
+                # Memoria porte: se il down è ABITUALE (orario/saltuaria) o standby PoE → niente alert
+                try:
+                    from port_memory import classify_port
+                    habit = await classify_port(db, client_id, local_ip, idx, False, float(p.get("poe_watt", 0) or 0))
+                except Exception:  # noqa: BLE001
+                    habit = {"verdict": "learning"}
+                if habit.get("verdict") in ("habitual", "standby_poe", "unused"):
+                    logger.info(f"port_link_down soppresso ({habit['verdict']}) {local_ip}:{pname} — {habit.get('reason')}")
+                    continue
+                habit_note = f" Abitudine porta: {habit.get('reason')}" if habit.get("verdict") == "anomalous" else ""
                 if vital_ips:
                     targets = ", ".join(f"{vital_by_ip[ip]} ({ip})" for ip in vital_ips)
                     title = f"PORTA GIÙ verso vitale: {pname} su switch {local_ip}"
@@ -116,7 +126,7 @@ async def evaluate_port_links(db, client_id: str, local_ip: str,
                     db, cfg, client_id=client_id, client_name=client_name,
                     device_name=f"switch {local_ip}", device_ip=local_ip,
                     device_type="switch", dedup_key=dedup_key, severity=severity,
-                    title=title, message=message, source_type=SOURCE_TYPE)
+                    title=title, message=message + habit_note, source_type=SOURCE_TYPE)
 
             # Transizione DOWN -> UP = link ripristinato (1 messaggio di rientro)
             elif prev_oper == _DOWN and new_oper == _UP:

@@ -388,6 +388,19 @@ async def diagnose(db, client_id: str, ip: str) -> dict:
     port_sig, port_ev = _port_signal(port, st.get("usual_speed_mbps"))
     downs = await _down_history(db, client_id, ip)
     sched_sig, sched_ev, history = _schedule_signal(downs, offline_since)
+    # Memoria porte: se lo storico del device è scarso ma la PORTA ha abitudini apprese, usale
+    if port and history.get("fallback") == "business_hours":
+        try:
+            from port_memory import classify_port
+            habit = await classify_port(db, client_id, port["switch_ip"], port["port"], False)
+            if habit.get("verdict") in ("habitual", "anomalous"):
+                sched_sig = "usual" if habit["verdict"] == "habitual" else "unusual"
+                sched_ev = {"kind": "schedule", "level": "ok" if sched_sig == "usual" else "warn",
+                            "title": f"Abitudine porta switch: {habit.get('label')}", "where": f"{port['switch_name']} · {port['name']}",
+                            "text": habit.get("reason", "")}
+                history = {**history, "source": "port_memory", "profile": habit.get("profile")}
+        except Exception:  # noqa: BLE001
+            pass
     datto_sig, datto_ev = await _datto_signal(db, client_id, ip, offline_since)
     verdict, conf = _combine(port_sig, sched_sig, datto_sig)
     label, summary = VERDICTS[verdict]
