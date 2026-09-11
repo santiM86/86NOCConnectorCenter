@@ -1,6 +1,19 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Fix Panoramica HTTP 500 (KeyError client_id) + rimozione totale VPN WireGuard
+**Bug PROD**: `/api/overview/clients` → 500 `overview error: '<client_id>'`. RCA in `routes/overview.py`: un endpoint
+(PC) VITALE processato prima di un device infra dello stesso cliente creava `devices_by_client[cid]` nel blocco vitali,
+poi il device infra saltava l'init di `devices_detail_by_client[cid]` → KeyError. Fix: `detail_bucket.setdefault(cid, [])`.
+Riprodotto e verificato con `tests/test_overview_keyerror_iter147.py`.
+**VPN eliminata (policy sicurezza)**: rimossi `routes/wireguard.py`, `wireguard_embedded.py`, `WireGuardPage.js`,
+`wireguard_client.ps1` (connector), voce Impostazioni, route `/settings/wireguard`, transport WG in
+`web_console_live.py` (resta solo connector long-poll), hook sessione VPN in `WebConsoleTabs.js`/`ClientOverviewPage.js`
+(`openConsole`), campi `enable_wireguard/wireguard_host` in `system_admin.py` + `self_update.sh`, sezione WG in
+`deploy-backend-linux.sh`. Startup `server.py`: drop collection `wireguard_*` e cartella `data/wireguard`; gli script di
+deploy/self-update rimuovono le var `WG_*` dal .env e chiudono UDP 51820 su ufw. Endpoint `/api/admin/wireguard/*` → 404.
+
+
 ## 2026-06 ✅ Analisi AI log iLO (GPT-5.4 via EMERGENT_LLM_KEY)
 `routes/ilo_ai.py`: `POST/GET /api/servers/ilo-ai-analysis/{ip}?client_id=`. Contesto = eventi IML/SEL (cache `ilo_events`
 o fetch diretto) + `ilo_status` live (temp/fan/PSU/dischi/DIMM/NIC) + alert attivi. Output JSON in italiano

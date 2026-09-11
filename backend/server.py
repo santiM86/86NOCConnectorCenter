@@ -356,8 +356,6 @@ from routes.console_rmt_v2 import router as console_rmt_v2_router
 app.include_router(console_rmt_v2_router)
 from routes.security_allowlist import router as security_allowlist_router, IPAllowlistMiddleware
 app.include_router(security_allowlist_router)
-from routes.wireguard import router as wireguard_router
-app.include_router(wireguard_router)
 from routes.system_admin import router as system_admin_router
 app.include_router(system_admin_router)# IP Allowlist middleware: blocca admin endpoints da IP non autorizzati.
 # Posizionato dopo il routing setup in modo da intercettare ogni request.
@@ -924,6 +922,21 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start status transitions scheduler: {e}")
 
+    # === VPN WireGuard rimossa (policy sicurezza): pulizia residui DB/filesystem ===
+    try:
+        import shutil
+        for _cn in await db.list_collection_names():
+            if "wireguard" in _cn.lower() or _cn.lower().startswith("wg_"):
+                await db.drop_collection(_cn)
+                logger.info(f"Dropped legacy VPN collection: {_cn}")
+        _wg_dir = Path(__file__).parent / "data" / "wireguard"
+        if _wg_dir.exists():
+            shutil.rmtree(_wg_dir, ignore_errors=True)
+            logger.info("Removed legacy WireGuard data dir")
+    except Exception as e:
+        logger.warning(f"VPN cleanup skipped: {e}")
+
+
     # === KPI snapshots (Panoramica): ogni 10 min, retention 45 gg ===
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1144,27 +1157,6 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Hyper-V poll scheduler: {e}")
 
-    # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
-    if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
-        try:
-            from wireguard_embedded import wg_manager
-            await wg_manager.start()
-            st = wg_manager.status()
-            if st.get("running"):
-                logger.info(
-                    f"WG embedded runtime started: pid={st['pid']} iface={st['interface']} "
-                    f"port={st['listen_port']}"
-                )
-            else:
-                logger.warning(
-                    f"WG embedded runtime NOT started (host requirements unmet): "
-                    f"{st.get('last_error') or st['environment'].get('missing_prerequisites')}"
-                )
-        except Exception as e:
-            logger.error(f"WG embedded runtime startup error: {e}")
-    else:
-        logger.info("WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)")
-
     # === OSINT / Threat Intelligence schedulers ===
     try:
         await db.threat_intel.create_index([("source", 1), ("indicator", 1)], unique=True)
@@ -1315,13 +1307,6 @@ async def shutdown_db_client():
     try:
         if 'escalation_scheduler' in globals() and escalation_scheduler:
             await escalation_scheduler.stop()
-    except Exception:
-        pass
-    # Stop embedded WG runtime if running
-    try:
-        from wireguard_embedded import wg_manager
-        if wg_manager.process is not None:
-            await wg_manager.stop()
     except Exception:
         pass
     mongo_client.close()

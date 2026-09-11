@@ -121,7 +121,6 @@ def test_zip_contains_all_required_files():
         "prg/src/tray_app.ps1",
         "prg/src/tray_launcher.vbs",
         "prg/src/update_check.ps1",
-        "prg/src/wireguard_client.ps1",
         "prg/src/remote_browser.ps1",
         "prg/src/backup_monitor.ps1",
         "prg/src/switch_enrichment.ps1",

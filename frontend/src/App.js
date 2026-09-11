@@ -20,7 +20,6 @@ import ClientsPage from "@/pages/ClientsPage";
 import DevicesPage from "@/pages/DevicesPage";
 import SettingsPage from "@/pages/SettingsPage";
 import IPAllowlistPage from "@/pages/IPAllowlistPage";
-import WireGuardPage from "@/pages/WireGuardPage";
 import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
 import DattoRmmSettingsPage from "@/pages/DattoRmmSettingsPage";
 import ZyxelNebulaSettingsPage from "@/pages/ZyxelNebulaSettingsPage";
@@ -259,7 +258,6 @@ function App() {
               <Route path="passkeys" element={<PasskeysPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="settings/ip-allowlist" element={<IPAllowlistPage />} />
-              <Route path="settings/wireguard" element={<WireGuardPage />} />
               <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
               <Route path="settings/datto" element={<DattoRmmSettingsPage />} />
               <Route path="settings/zyxel" element={<ZyxelNebulaSettingsPage />} />

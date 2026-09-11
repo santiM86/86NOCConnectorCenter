@@ -198,10 +198,10 @@ if [[ -d "$OLD_DIR/data" ]]; then
   ok "data/ preservato"
 fi
 
-# Mantieni eventuali keys/secrets preesistenti (es. wireguard server.key)
-if [[ -d "$OLD_DIR/data/wireguard" ]]; then
-  mkdir -p "$BACKEND_DIR/data/wireguard"
-  cp -a "$OLD_DIR/data/wireguard/." "$BACKEND_DIR/data/wireguard/" 2>/dev/null || true
+# VPN WireGuard rimossa per policy di sicurezza: elimina chiavi/config residue
+rm -rf "$BACKEND_DIR/data/wireguard" 2>/dev/null || true
+if [[ -f "$BACKEND_DIR/.env" ]] && grep -qE "^WG_" "$BACKEND_DIR/.env"; then
+  sed -i -E '/^WG_/d' "$BACKEND_DIR/.env"
 fi
 
 # ---- Step 7: pip install ----
@@ -285,14 +285,5 @@ ${GREEN}============================================================
 
   Backup vecchi (>30 giorni) puoi rimuoverli con:
     find $BACKUP_ROOT -maxdepth 1 -name 'backend-*' -mtime +30 -exec rm -rf {} \;
-
-  Per attivare il server WireGuard EMBEDDED ora:
-    1) Aggiungi al file $BACKEND_DIR/.env:
-         WG_EMBEDDED_ENABLED=true
-         WG_SERVER_HOST=argus.86bit.it
-    2) Riavvia il backend:
-         sudo systemctl restart $SYSTEMD_UNIT
-    3) Apri il Center -> Impostazioni -> WireGuard
-       Vedrai il banner "Server WireGuard Embedded" verde con "RUNTIME ATTIVO"
 
 EOF

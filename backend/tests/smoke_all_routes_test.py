@@ -214,11 +214,6 @@ def test_admin_integrations(session):
     gget(session, "admin.fingerbank", "/api/admin/integrations/fingerbank")
 
 
-def test_wireguard(session):
-    gget(session, "wg.peers", "/api/admin/wireguard/peers")
-    gget(session, "wg.server_status", "/api/admin/wireguard/server-status")
-
-
 def test_console_v4(session):
     gget(session, "console_v4.sessions", "/api/console-v4/sessions")
 

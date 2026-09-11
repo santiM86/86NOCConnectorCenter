@@ -14,7 +14,7 @@ Crea ZIP con questa struttura:
     src/
       connector.ps1, snmp_poller.ps1, argus-scanner.ps1, ...
       installer_gui.ps1, tray_app.ps1, tray_launcher.vbs
-      update_check.ps1, wireguard_client.ps1, remote_browser.ps1
+      update_check.ps1, remote_browser.ps1
       backup_monitor.ps1, switch_enrichment.ps1, printer_probe.ps1
       network_scanner.ps1, diagnostica.ps1, service_wrapper.ps1
       86bit_logo.ico, 86bit_logo.jpg, 86bit_logo_256.png
@@ -63,7 +63,6 @@ PRG_SRC_FILES = [
     "tray_app.ps1",
     "tray_launcher.vbs",
     "update_check.ps1",
-    "wireguard_client.ps1",
     "remote_browser.ps1",
     "backup_monitor.ps1",
     "switch_enrichment.ps1",
