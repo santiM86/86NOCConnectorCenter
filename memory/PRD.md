@@ -1,6 +1,27 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ KPI Strip Panoramica (spunto Prometheus/Nagios NNA 2026)
+9 tile in testa alla Panoramica (`frontend/src/components/KpiStrip.js` ← `DashboardPage.js`): disponibilità vitali,
+clienti con problemi, alert attivi (crit/high/med), alert aperti nel periodo (istogramma 24 bucket), MTTR (min → h se ≥120),
+rumore auto-chiusi %, backup KO, hardware a rischio (+ predetti), agent/connector offline. Selettore 24h/7gg/30gg
+(localStorage `kpi_period`), trend vs baseline, sparkline SVG, click → pagina di dettaglio.
+Backend `routes/kpi.py`: `GET /api/overview/kpi?period=` (riusa cache `/overview/clients`), cron 10 min
+`record_kpi_snapshot` → `kpi_snapshots` (alimenta sparkline/trend dei KPI di stato). Vecchie 4 KpiCard rimosse.
+Test: iteration_145 (11/11 backend + E2E frontend OK).
+
+## 2026-06 ✅ Diagnosi spegnimento (PC spento volutamente vs crash)
+`backend/shutdown_diagnosis.py` + `routes/shutdown_diagnosis.py` (`GET /api/devices/shutdown-diagnosis/{ip}?client_id=`)
++ `frontend/src/components/ShutdownDiagnosis.js` dentro DeviceInfoCard → Stato Live (solo se reachable=false).
+Prove: (1) porta switch via FDB `discovered_endpoints`(switch_ip, port) → `switch_ports` (oper/speed, sort updated_at desc,
+oper int 1/2 normalizzato; uplink scartato = porta con più MAC); baseline velocità in `device_status_state.usual_speed_mbps`;
+(2) orario abituale da `device_status_events` (cron 1 min `record_status_transitions_tick`, debounce 3 min) + alert offline,
+fallback fascia lavorativa 07-19 se <5 eventi; (3) Datto `datto_devices.online/datto_last_seen`.
+Verdetti: intentional / crash / disconnected / reachable_elsewhere / unknown + confidenza %. Test: iteration_144 + tests/test_shutdown_diagnosis_iter144.py.
+Backlog spunti Prometheus/NNA (in ordine consigliato): regole alert su metriche + inibizione; Nmap schedulato con Ndiff;
+report PDF via email schedulati; RBAC granulare; NetFlow/sFlow collector nell'agent Go.
+
+
 ## 2026-06 ✅ Fix Log eventi hardware IML/SEL (iLO) sempre "0"
 **RCA (3 cause)**: `GET /api/servers/ilo-events/{ip}` (routes/server_intelligence.py) leggeva le credenziali da
 `vault_credentials` (collection vuota; le credenziali iLO reali stanno in `device_credentials`) → 404;

@@ -11,6 +11,7 @@ import AllMetricsDialog from "@/components/AllMetricsDialog";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
 import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import ShutdownDiagnosis from "@/components/ShutdownDiagnosis";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -658,6 +659,9 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             <Field label="Uptime (gg)" value={st.uptime_days} />
             <Field label="Connector" value={st.connector_hostname} mono />
             {st.unreachable_since && <Field label="Offline da" value={fmtDateTime(st.unreachable_since)} />}
+            {st.reachable === false && (
+              <ShutdownDiagnosis deviceIp={deviceIp} clientId={clientId || card?.client?.id || card?.client_id || card?.identity?.client_id} />
+            )}
           </Section>
 
           {/* Hardware */}

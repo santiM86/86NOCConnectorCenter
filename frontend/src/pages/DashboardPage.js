@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import MobileDashboard from "@/components/MobileDashboard";
 import { ClientStatusTable } from "@/components/ClientStatusTable";
+import { KpiStrip } from "@/components/KpiStrip";
 
 export default function DashboardPage() {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
@@ -146,25 +147,22 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Global KPI Bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-        <KpiCard label="Clienti" value={g.total_clients || 0} sub={`${g.clients_ok || 0} OK`} color="#34C759" testId="kpi-clients" />
-        <KpiCard label="Problemi" value={(g.clients_warning || 0) + (g.clients_critical || 0)} sub={`${g.clients_critical || 0} critici`} color={g.clients_critical > 0 ? "#FF3B30" : "#FF9500"} testId="kpi-problems" />
-        <KpiCard label="Alert Attivi" value={g.total_alerts || 0} sub={`${g.critical_alerts || 0} critici`} color={g.critical_alerts > 0 ? "#FF3B30" : "#34C759"} testId="kpi-alerts" />
-        <KpiCard label="Dispositivi Vitali" value={g.total_devices || 0} sub={`${g.devices_online || 0} online`} color="#6366F1" testId="kpi-devices" />
-        <div className="noc-panel p-3 lg:col-span-2">
-          <div className="flex items-center gap-2">
-            <MagnifyingGlass size={14} className="text-[var(--text-muted)]" />
-            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca cliente..."
-              className="h-6 text-xs bg-transparent border-none shadow-none focus-visible:ring-0 text-[var(--text-primary)] placeholder:text-[var(--text-muted)]" data-testid="search-client" />
-          </div>
-          <div className="flex gap-1 mt-2">
-            {[["all", "Tutti"], ["problems", "Problemi"], ["ok", "OK"]].map(([v, l]) => (
-              <button key={v} onClick={() => setFilter(v)}
-                className={`text-[9px] px-2 py-0.5 rounded-md font-semibold transition-all ${filter === v ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
-                data-testid={`filter-${v}`}>{l}</button>
-            ))}
-          </div>
+      {/* Fascia KPI con trend + sparkline (periodo 24h/7g/30g) */}
+      <KpiStrip />
+
+      {/* Ricerca / filtro clienti */}
+      <div className="noc-panel p-3 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+          <MagnifyingGlass size={14} className="text-[var(--text-muted)]" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca cliente..."
+            className="h-6 text-xs bg-transparent border-none shadow-none focus-visible:ring-0 text-[var(--text-primary)] placeholder:text-[var(--text-muted)]" data-testid="search-client" />
+        </div>
+        <div className="flex gap-1">
+          {[["all", "Tutti"], ["problems", "Problemi"], ["ok", "OK"]].map(([v, l]) => (
+            <button key={v} onClick={() => setFilter(v)}
+              className={`text-[9px] px-2 py-0.5 rounded-md font-semibold transition-all ${filter === v ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+              data-testid={`filter-${v}`}>{l}</button>
+          ))}
         </div>
       </div>
 
@@ -236,13 +234,3 @@ export default function DashboardPage() {
   );
 }
 
-/* ==================== CLIENT CARD ==================== */
-function KpiCard({ label, value, sub, color, testId }) {
-  return (
-    <div className="noc-panel p-3" data-testid={testId}>
-      <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-widest">{label}</p>
-      <p className="font-heading text-2xl font-bold leading-none mt-1" style={{ color }}>{value}</p>
-      {sub && <p className="text-[9px] text-[var(--text-muted)] mt-1">{sub}</p>}
-    </div>
-  );
-}
