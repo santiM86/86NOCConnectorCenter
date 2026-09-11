@@ -47,7 +47,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(() => { if (!document.hidden) fetchData(); }, 30000);
     connectWebSocket();
     const onResize = () => setIsMobile(window.matchMedia("(max-width: 767px)").matches);
     window.addEventListener("resize", onResize);

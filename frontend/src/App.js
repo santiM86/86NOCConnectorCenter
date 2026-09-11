@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, lazy, Suspense } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
@@ -14,74 +14,96 @@ import SecurityGuard from "@/components/SecurityGuard";
 import LoginPage from "@/pages/LoginPage";
 import SharedConsolePage from "@/pages/SharedConsolePage";
 import DashboardPage from "@/pages/DashboardPage";
-import AlertsPage from "@/pages/AlertsPage";
-import AlertDetailPage from "@/pages/AlertDetailPage";
-import ClientsPage from "@/pages/ClientsPage";
-import DevicesPage from "@/pages/DevicesPage";
-import SettingsPage from "@/pages/SettingsPage";
-import IPAllowlistPage from "@/pages/IPAllowlistPage";
-import WireGuardPage from "@/pages/WireGuardPage";
-import HornetsecuritySettingsPage from "@/pages/HornetsecuritySettingsPage";
-import DattoRmmSettingsPage from "@/pages/DattoRmmSettingsPage";
-import ZyxelNebulaSettingsPage from "@/pages/ZyxelNebulaSettingsPage";
-import NetworkPathDiagnosisPage from "@/pages/NetworkPathDiagnosisPage";
-import DiagnosisCatalogPage from "@/pages/DiagnosisCatalogPage";
-import EntityInventoryPage from "@/pages/EntityInventoryPage";
-import AlertEngineSettingsPage from "@/pages/AlertEngineSettingsPage";
-import FingerbankSettingsPage from "@/pages/FingerbankSettingsPage";
-import OutageSourcesSettingsPage from "@/pages/OutageSourcesSettingsPage";import EncryptionPage from "@/pages/EncryptionPage";
-import AuditPage from "@/pages/AuditPage";
 import TwoFactorPage from "@/pages/TwoFactorPage";
-import TwoFactorSetupPage from "@/pages/TwoFactorSetupPage";
-import EnterprisePage from "@/pages/EnterprisePage";
-import AgentsPage from "@/pages/AgentsPage";
-import ServerMetricsPage from "@/pages/ServerMetricsPage";
-import ClientStatusPage from "@/pages/ClientStatusPage";
-import UsersPage from "@/pages/UsersPage";
-import PasskeysPage from "@/pages/PasskeysPage";
-import VaultPage from "@/pages/VaultPage";
-import ReportsPage from "@/pages/ReportsPage";
-import InventoryPage from "@/pages/InventoryPage";
-import IncidentsPage from "@/pages/IncidentsPage";
-import PortMonitorPage from "@/pages/PortMonitorPage";
-import SwitchPortsPage from "@/pages/SwitchPortsPage";
-import PrintersPage from "@/pages/PrintersPage";
-import PrinterDiscoveryPage from "@/pages/PrinterDiscoveryPage";
-import PublicDashboard from "@/pages/PublicDashboard";
-import TvDashboardPage from "@/pages/TvDashboardPage";
-import MobileConsolePage from "@/pages/MobileConsolePage";
-import MobileMonitorPage from "@/pages/MobileMonitorPage";
-import MobileAccessPage from "@/pages/MobileAccessPage";
-import VulnerabilityPage from "@/pages/VulnerabilityPage";
-import OsintPage from "@/pages/OsintPage";
-import RogueDevicesPage from "@/pages/RogueDevicesPage";
-import TrendPage from "@/pages/TrendPage";
-import DeviceMetricsPage from "@/pages/DeviceMetricsPage";
-import SyslogPage from "@/pages/SyslogPage";
-import TrapsPage from "@/pages/TrapsPage";
-import DiscoveryPage from "@/pages/DiscoveryPage";
-import LanScannerPage from "@/pages/LanScannerPage";
-import MaintenancePage from "@/pages/MaintenancePage";
-import CorrelationPage from "@/pages/CorrelationPage";
-import ThresholdsPage from "@/pages/ThresholdsPage";
-import TemperatureManagementPage from "@/pages/TemperatureManagementPage";
-import BandwidthPage from "@/pages/BandwidthPage";
-import BackupPage from "@/pages/BackupPage";
-import ClientPortalPage from "@/pages/ClientPortalPage";
-import ClientOverviewPage from "@/pages/ClientOverviewPage";
-import OnCallPage from "@/pages/OnCallPage";
-import SecurityDashboardPage from "@/pages/SecurityDashboardPage";
-import CMDBPage from "@/pages/CMDBPage";
-import RunbooksPage from "@/pages/RunbooksPage";
-import DeviceProfilesPage from "@/pages/DeviceProfilesPage";
-import SLAPage from "@/pages/SLAPage";
-import RemediationPage from "@/pages/RemediationPage";
-import LifecyclePage from "@/pages/LifecyclePage";
-import IntelligencePage from "@/pages/IntelligencePage";
-import ChannelHealthPage from "@/pages/ChannelHealthPage";
-import CustomerPortalPage from "@/pages/CustomerPortalPage";
-import ExternalMonitorPage from "@/pages/ExternalMonitorPage";
 import Layout from "@/components/Layout";
+
+// Code-splitting: ogni pagina è un chunk separato caricato al primo accesso.
+// lazyRetry: dopo un deploy i vecchi chunk non esistono più (ChunkLoadError) →
+// ricarica la pagina una sola volta per prendere la build nuova.
+const lazyRetry = (importer) => lazy(() =>
+  importer().catch((err) => {
+    const key = "argus_chunk_reload";
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, "1");
+      window.location.reload();
+      return new Promise(() => {});
+    }
+    sessionStorage.removeItem(key);
+    throw err;
+  }).then((m) => { sessionStorage.removeItem("argus_chunk_reload"); return m; })
+);
+const AlertsPage = lazyRetry(() => import("@/pages/AlertsPage"));
+const AlertDetailPage = lazyRetry(() => import("@/pages/AlertDetailPage"));
+const ClientsPage = lazyRetry(() => import("@/pages/ClientsPage"));
+const DevicesPage = lazyRetry(() => import("@/pages/DevicesPage"));
+const SettingsPage = lazyRetry(() => import("@/pages/SettingsPage"));
+const IPAllowlistPage = lazyRetry(() => import("@/pages/IPAllowlistPage"));
+const HornetsecuritySettingsPage = lazyRetry(() => import("@/pages/HornetsecuritySettingsPage"));
+const DattoRmmSettingsPage = lazyRetry(() => import("@/pages/DattoRmmSettingsPage"));
+const ZyxelNebulaSettingsPage = lazyRetry(() => import("@/pages/ZyxelNebulaSettingsPage"));
+const NetworkPathDiagnosisPage = lazyRetry(() => import("@/pages/NetworkPathDiagnosisPage"));
+const DiagnosisCatalogPage = lazyRetry(() => import("@/pages/DiagnosisCatalogPage"));
+const EntityInventoryPage = lazyRetry(() => import("@/pages/EntityInventoryPage"));
+const AlertEngineSettingsPage = lazyRetry(() => import("@/pages/AlertEngineSettingsPage"));
+const FingerbankSettingsPage = lazyRetry(() => import("@/pages/FingerbankSettingsPage"));
+const OutageSourcesSettingsPage = lazyRetry(() => import("@/pages/OutageSourcesSettingsPage"));
+const EncryptionPage = lazyRetry(() => import("@/pages/EncryptionPage"));
+const AuditPage = lazyRetry(() => import("@/pages/AuditPage"));
+const TwoFactorSetupPage = lazyRetry(() => import("@/pages/TwoFactorSetupPage"));
+const EnterprisePage = lazyRetry(() => import("@/pages/EnterprisePage"));
+const AgentsPage = lazyRetry(() => import("@/pages/AgentsPage"));
+const ServerMetricsPage = lazyRetry(() => import("@/pages/ServerMetricsPage"));
+const ClientStatusPage = lazyRetry(() => import("@/pages/ClientStatusPage"));
+const UsersPage = lazyRetry(() => import("@/pages/UsersPage"));
+const PasskeysPage = lazyRetry(() => import("@/pages/PasskeysPage"));
+const VaultPage = lazyRetry(() => import("@/pages/VaultPage"));
+const ReportsPage = lazyRetry(() => import("@/pages/ReportsPage"));
+const InventoryPage = lazyRetry(() => import("@/pages/InventoryPage"));
+const IncidentsPage = lazyRetry(() => import("@/pages/IncidentsPage"));
+const PortMonitorPage = lazyRetry(() => import("@/pages/PortMonitorPage"));
+const SwitchPortsPage = lazyRetry(() => import("@/pages/SwitchPortsPage"));
+const PrintersPage = lazyRetry(() => import("@/pages/PrintersPage"));
+const PrinterDiscoveryPage = lazyRetry(() => import("@/pages/PrinterDiscoveryPage"));
+const PublicDashboard = lazyRetry(() => import("@/pages/PublicDashboard"));
+const TvDashboardPage = lazyRetry(() => import("@/pages/TvDashboardPage"));
+const MobileConsolePage = lazyRetry(() => import("@/pages/MobileConsolePage"));
+const MobileMonitorPage = lazyRetry(() => import("@/pages/MobileMonitorPage"));
+const MobileAccessPage = lazyRetry(() => import("@/pages/MobileAccessPage"));
+const VulnerabilityPage = lazyRetry(() => import("@/pages/VulnerabilityPage"));
+const OsintPage = lazyRetry(() => import("@/pages/OsintPage"));
+const RogueDevicesPage = lazyRetry(() => import("@/pages/RogueDevicesPage"));
+const TrendPage = lazyRetry(() => import("@/pages/TrendPage"));
+const DeviceMetricsPage = lazyRetry(() => import("@/pages/DeviceMetricsPage"));
+const SyslogPage = lazyRetry(() => import("@/pages/SyslogPage"));
+const TrapsPage = lazyRetry(() => import("@/pages/TrapsPage"));
+const DiscoveryPage = lazyRetry(() => import("@/pages/DiscoveryPage"));
+const LanScannerPage = lazyRetry(() => import("@/pages/LanScannerPage"));
+const MaintenancePage = lazyRetry(() => import("@/pages/MaintenancePage"));
+const CorrelationPage = lazyRetry(() => import("@/pages/CorrelationPage"));
+const ThresholdsPage = lazyRetry(() => import("@/pages/ThresholdsPage"));
+const TemperatureManagementPage = lazyRetry(() => import("@/pages/TemperatureManagementPage"));
+const BandwidthPage = lazyRetry(() => import("@/pages/BandwidthPage"));
+const BackupPage = lazyRetry(() => import("@/pages/BackupPage"));
+const ClientPortalPage = lazyRetry(() => import("@/pages/ClientPortalPage"));
+const ClientOverviewPage = lazyRetry(() => import("@/pages/ClientOverviewPage"));
+const OnCallPage = lazyRetry(() => import("@/pages/OnCallPage"));
+const SecurityDashboardPage = lazyRetry(() => import("@/pages/SecurityDashboardPage"));
+const CMDBPage = lazyRetry(() => import("@/pages/CMDBPage"));
+const RunbooksPage = lazyRetry(() => import("@/pages/RunbooksPage"));
+const DeviceProfilesPage = lazyRetry(() => import("@/pages/DeviceProfilesPage"));
+const SLAPage = lazyRetry(() => import("@/pages/SLAPage"));
+const RemediationPage = lazyRetry(() => import("@/pages/RemediationPage"));
+const LifecyclePage = lazyRetry(() => import("@/pages/LifecyclePage"));
+const IntelligencePage = lazyRetry(() => import("@/pages/IntelligencePage"));
+const ChannelHealthPage = lazyRetry(() => import("@/pages/ChannelHealthPage"));
+const CustomerPortalPage = lazyRetry(() => import("@/pages/CustomerPortalPage"));
+const ExternalMonitorPage = lazyRetry(() => import("@/pages/ExternalMonitorPage"));
+
+const PageLoader = () => (
+  <div className="flex items-center justify-center h-[60vh]" data-testid="page-loader">
+    <div className="w-6 h-6 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" />
+  </div>
+);
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
@@ -232,6 +254,7 @@ function App() {
         <BrowserRouter>
           <OfflineIndicator />
           <UpdateBanner />
+          <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/shared-console/:token" element={<SharedConsolePage />} />
@@ -259,7 +282,6 @@ function App() {
               <Route path="passkeys" element={<PasskeysPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="settings/ip-allowlist" element={<IPAllowlistPage />} />
-              <Route path="settings/wireguard" element={<WireGuardPage />} />
               <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
               <Route path="settings/datto" element={<DattoRmmSettingsPage />} />
               <Route path="settings/zyxel" element={<ZyxelNebulaSettingsPage />} />
@@ -314,6 +336,7 @@ function App() {
             <Route path="/2fa" element={<TwoFactorPage />} />
             <Route path="/2fa-setup" element={<TwoFactorSetupPage />} />
           </Routes>
+          </Suspense>
           <SecurityGuard />
           <PwaInstallBanner />
           <NotificationPermissionBanner />

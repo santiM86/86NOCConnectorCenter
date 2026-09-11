@@ -107,12 +107,8 @@ class SelfUpdateRequest(BaseModel):
     """Body per POST /self-update.
 
     `package_url`: dove scaricare il tarball (default: /downloads/argus-backend-latest.tar.gz)
-    `enable_wireguard`: se true, lo script aggiunge `WG_EMBEDDED_ENABLED=true` al .env
-    `wireguard_host`: hostname pubblico server (per WG_SERVER_HOST)
     """
     package_url: Optional[str] = None
-    enable_wireguard: bool = False
-    wireguard_host: Optional[str] = Field(default=None, max_length=200)
 
 
 @router.get("/api/admin/system/version")
@@ -270,9 +266,6 @@ async def trigger_self_update(
                 ),
             )
 
-    # Auto-detect host per WG_SERVER_HOST se enable_wireguard e nessun host fornito
-    wg_host = payload.wireguard_host or ""
-
     # Reset status file
     initial = {
         "phase": "queued",
@@ -292,8 +285,6 @@ async def trigger_self_update(
         package_url,
         str(STATUS_FILE),
         backend_dir_arg,
-        "true" if payload.enable_wireguard else "false",
-        wg_host,
     ]
 
     try:
@@ -310,7 +301,7 @@ async def trigger_self_update(
         audit.warning(
             f"SYSTEM_SELF_UPDATE_STARTED by={current_user.get('name', 'admin')} "
             f"url={package_url} source={url_source} size={content_length} "
-            f"pid={proc.pid} enable_wg={payload.enable_wireguard}"
+            f"pid={proc.pid}"
         )
         return {
             "job_started": True,

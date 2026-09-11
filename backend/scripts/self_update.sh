@@ -11,8 +11,6 @@
 #   $1 = URL del tarball
 #   $2 = path file status JSON (default /tmp/argus-update-status.json)
 #   $3 = backend_dir (default /opt/argus/backend, override da env ARGUS_BACKEND_DIR)
-#   $4 = enable_wg (true/false): se true, aggiunge WG_EMBEDDED_ENABLED=true al .env
-#   $5 = wg_host: hostname per WG_SERVER_HOST (es. argus.86bit.it)
 #
 
 set +e   # NON usiamo exit-on-error: vogliamo gestire ogni fallimento per scrivere lo status
@@ -20,13 +18,11 @@ set +e   # NON usiamo exit-on-error: vogliamo gestire ogni fallimento per scrive
 URL="${1:?missing URL}"
 STATUS_FILE="${2:-/tmp/argus-update-status.json}"
 BACKEND_DIR="${3:-${ARGUS_BACKEND_DIR:-/opt/argus/backend}}"
-ENABLE_WG="${4:-false}"
-WG_HOST="${5:-}"
 
 LOG_FILE="/tmp/argus-update-runner.log"
 exec >>"$LOG_FILE" 2>&1
 echo "==================== self_update.sh start $(date -Iseconds) ===================="
-echo "URL=$URL  BACKEND_DIR=$BACKEND_DIR  ENABLE_WG=$ENABLE_WG  WG_HOST=$WG_HOST"
+echo "URL=$URL  BACKEND_DIR=$BACKEND_DIR"
 
 write_status() {
   local phase="$1" progress="$2" message="$3" error="${4:-}"
@@ -143,25 +139,15 @@ if [[ -d "$OLD_DIR/data" ]]; then
   cp -a "$OLD_DIR/data" "$BACKEND_DIR/data"
 fi
 
-# -- Step 5b: Update .env per WireGuard se richiesto --
-if [[ "$ENABLE_WG" == "true" ]]; then
-  ENV_FILE="$BACKEND_DIR/.env"
-  if ! grep -q "^WG_EMBEDDED_ENABLED=" "$ENV_FILE" 2>/dev/null; then
-    echo "WG_EMBEDDED_ENABLED=true" >> "$ENV_FILE"
-    echo "added WG_EMBEDDED_ENABLED=true to .env"
-  fi
-  if [[ -n "$WG_HOST" ]] && ! grep -q "^WG_SERVER_HOST=" "$ENV_FILE" 2>/dev/null; then
-    echo "WG_SERVER_HOST=$WG_HOST" >> "$ENV_FILE"
-    echo "added WG_SERVER_HOST=$WG_HOST to .env"
-  fi
+# -- Step 5b: rimozione residui WireGuard (VPN eliminata per policy di sicurezza) --
+ENV_FILE="$BACKEND_DIR/.env"
+if [[ -f "$ENV_FILE" ]] && grep -qE "^WG_" "$ENV_FILE"; then
+  sed -i -E '/^WG_/d' "$ENV_FILE"
+  echo "removed WG_* vars from .env"
 fi
-
-# -- Step 5c: Apertura firewall UDP 51820 (best-effort, solo se ufw c'e' e siamo root) --
-if [[ "$ENABLE_WG" == "true" ]] && command -v ufw >/dev/null && [[ $EUID -eq 0 ]]; then
-  if ! ufw status | grep -q "51820/udp"; then
-    echo "ufw allow 51820/udp"
-    ufw allow 51820/udp >/dev/null 2>&1 || echo "ufw allow fallito (non bloccante)"
-  fi
+if command -v ufw >/dev/null && [[ $EUID -eq 0 ]] && ufw status | grep -q "51820/udp"; then
+  ufw delete allow 51820/udp >/dev/null 2>&1 || true
+  echo "ufw: closed 51820/udp"
 fi
 
 # -- Step 6: pip install --

@@ -61,15 +61,18 @@ async def _current_state(user: Optional[dict] = None) -> dict:
     sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     hw_devices: set = set()
     hw_predicted = 0
-    async for a in db.alerts.find({"status": {"$in": ["active", "acknowledged"]}},
-                                  {"_id": 0, "severity": 1, "source_type": 1, "device_ip": 1, "client_id": 1, "id": 1}):
-        s = (a.get("severity") or "low").lower()
-        sev[s] = sev.get(s, 0) + 1
-        st = a.get("source_type") or ""
+    async for g_ in db.alerts.aggregate([
+        {"$match": {"status": {"$in": ["active", "acknowledged"]}}},
+        {"$group": {"_id": {"sev": {"$toLower": {"$ifNull": ["$severity", "low"]}}, "st": {"$ifNull": ["$source_type", ""]}},
+                    "n": {"$sum": 1}, "devices": {"$addToSet": {"$ifNull": ["$device_ip", "$id"]}}}},
+    ]):
+        s = g_["_id"]["sev"] or "low"
+        sev[s] = sev.get(s, 0) + g_["n"]
+        st = g_["_id"]["st"]
         if HW_RISK_RX.match(st):
-            hw_devices.add(a.get("device_ip") or a.get("id"))
+            hw_devices.update(d for d in g_["devices"] if d)
             if st.startswith("predictive_"):
-                hw_predicted += 1
+                hw_predicted += g_["n"]
 
     vital_total = int(g.get("total_devices") or 0)
     vital_online = int(g.get("devices_online") or 0)

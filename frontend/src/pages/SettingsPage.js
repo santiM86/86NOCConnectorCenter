@@ -179,20 +179,6 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
               <div>
-                <p className="text-[var(--text-primary)] text-xs font-medium">VPN WireGuard (Accesso Remoto)</p>
-                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
-                  Tunnel on-demand verso i dispositivi del cliente con crittografia ChaCha20-Poly1305.
-                </p>
-              </div>
-              <Button size="sm" variant="outline"
-                onClick={() => navigate("/settings/wireguard")}
-                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
-                data-testid="manage-wireguard-btn">
-                Gestisci
-              </Button>
-            </div>
-            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
-              <div>
                 <p className="text-[var(--text-primary)] text-xs font-medium">Alert Engine proattivo</p>
                 <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
                   Avvisi automatici (Push + Telegram) per dispositivi vitali offline e disconnessioni Datto RMM, con escalation e auto-recovery.

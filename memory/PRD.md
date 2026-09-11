@@ -1,6 +1,45 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Performance pass (code-splitting + indici + polling)
+- `App.js`: 66 pagine in `React.lazy` via `lazyRetry` (ricarica 1 volta su ChunkLoadError post-deploy), `Suspense`
+  attorno a `<Routes>` e dentro `Layout.js` attorno a `<Outlet/>` (sidebar persistente). Eager: Login, 2FA, Dashboard, SharedConsole.
+  Bundle prod `main.js`: **896 kB → 287 kB gzip** (−68%), pagine in chunk separati.
+- Polling sospeso a tab nascosta (`document.hidden`): DashboardPage, ClientOverviewPage, Layout badge alert, KpiStrip.
+- Backend: `kpi.py` aggregazione `$group` per alert attivi; nuovi indici in `server.py` (alerts status+source_type,
+  created_at, resolved_at, client+device+created; discovered_endpoints client+switch+port; switch_ports; ilo_events; ilo_ai_analyses; ilo_status).
+- Test: iteration_148 (20 route smoke, 2FA, mobile, backend regressioni) tutto OK.
+- **Audit sicurezza (security_audit_agent) — PIANO IN ATTESA DI OK UTENTE**: SEC-001 CRIT password default seed
+  "password" + setup 2FA senza password (`server.py` seed users, `routes/auth.py setup-2fa`) → RCE via self-update;
+  SEC-002 HIGH segreti in `backend/.env` committati; SEC-003 HIGH self-update `package_url` arbitrario
+  (`routes/system_admin.py`); SEC-004 MED IDOR `client_id` non verificato (`routes/tenant_scope.py`);
+  SEC-005 MED HMAC connector opzionale + default secret (`middleware/connector_security.py`) + vault credenziali globali
+  (`routes/connector.py` ~1231); LOW: CORS `*`, residui VPN `scripts/setup-wireguard-server.sh`, `teardown-wireguard-server.sh`, `noc-connector/prg/uninstall.ps1`.
+
+
+## 2026-06 ✅ Fix Panoramica HTTP 500 (KeyError client_id) + rimozione totale VPN WireGuard
+**Bug PROD**: `/api/overview/clients` → 500 `overview error: '<client_id>'`. RCA in `routes/overview.py`: un endpoint
+(PC) VITALE processato prima di un device infra dello stesso cliente creava `devices_by_client[cid]` nel blocco vitali,
+poi il device infra saltava l'init di `devices_detail_by_client[cid]` → KeyError. Fix: `detail_bucket.setdefault(cid, [])`.
+Riprodotto e verificato con `tests/test_overview_keyerror_iter147.py`.
+**VPN eliminata (policy sicurezza)**: rimossi `routes/wireguard.py`, `wireguard_embedded.py`, `WireGuardPage.js`,
+`wireguard_client.ps1` (connector), voce Impostazioni, route `/settings/wireguard`, transport WG in
+`web_console_live.py` (resta solo connector long-poll), hook sessione VPN in `WebConsoleTabs.js`/`ClientOverviewPage.js`
+(`openConsole`), campi `enable_wireguard/wireguard_host` in `system_admin.py` + `self_update.sh`, sezione WG in
+`deploy-backend-linux.sh`. Startup `server.py`: drop collection `wireguard_*` e cartella `data/wireguard`; gli script di
+deploy/self-update rimuovono le var `WG_*` dal .env e chiudono UDP 51820 su ufw. Endpoint `/api/admin/wireguard/*` → 404.
+
+
+## 2026-06 ✅ Analisi AI log iLO (GPT-5.4 via EMERGENT_LLM_KEY)
+`routes/ilo_ai.py`: `POST/GET /api/servers/ilo-ai-analysis/{ip}?client_id=`. Contesto = eventi IML/SEL (cache `ilo_events`
+o fetch diretto) + `ilo_status` live (temp/fan/PSU/dischi/DIMM/NIC) + alert attivi. Output JSON in italiano
+(risk_level, headline, diagnosis, patterns, actions con priorità/when, ignore, watch, confidence) salvato in `ilo_ai_analyses`.
+Trigger automatico da `store_ilo_events_cache` → `maybe_auto_analyze` (solo nuovi eventi crit/warn non riparati,
+debounce 6h/device) + Telegram se rischio high/critical. Frontend `components/IloAiAnalysis.js` nel pannello iLO
+(bottone Analisi AI/Rianalizza, badge rischio, azioni, pattern, storico). `.env`: EMERGENT_LLM_KEY. emergentintegrations in requirements.
+Test: tests/test_ilo_ai_iter146.py (5/5: manuale, GET, auto-trigger, no-trigger su riparati, 404/auth) + screenshot UI.
+
+
 ## 2026-06 ✅ KPI Strip Panoramica (spunto Prometheus/Nagios NNA 2026)
 9 tile in testa alla Panoramica (`frontend/src/components/KpiStrip.js` ← `DashboardPage.js`): disponibilità vitali,
 clienti con problemi, alert attivi (crit/high/med), alert aperti nel periodo (istogramma 24 bucket), MTTR (min → h se ≥120),

@@ -372,7 +372,9 @@ async def _compute_clients_overview() -> dict:
             detail_bucket = devices_detail_by_client
         if cid not in bucket:
             bucket[cid] = _empty_counts()
-            detail_bucket[cid] = []
+        # NB: il blocco "vitali" sotto può aver già creato devices_by_client[cid]
+        # per un endpoint vitale → il detail va sempre inizializzato a parte (KeyError in prod).
+        detail_bucket.setdefault(cid, [])
         bucket[cid]["total"] += 1
         if status == "online":
             bucket[cid]["online"] += 1

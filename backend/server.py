@@ -435,8 +435,6 @@ from routes.console_rmt_v2 import router as console_rmt_v2_router
 app.include_router(console_rmt_v2_router)
 from routes.security_allowlist import router as security_allowlist_router, IPAllowlistMiddleware
 app.include_router(security_allowlist_router)
-from routes.wireguard import router as wireguard_router
-app.include_router(wireguard_router)
 from routes.system_admin import router as system_admin_router
 app.include_router(system_admin_router)# IP Allowlist middleware: blocca admin endpoints da IP non autorizzati.
 # Posizionato dopo il routing setup in modo da intercettare ogni request.
@@ -453,6 +451,8 @@ from routes.shutdown_diagnosis import router as shutdown_diagnosis_router
 app.include_router(shutdown_diagnosis_router)
 from routes.kpi import router as kpi_router
 app.include_router(kpi_router)
+from routes.ilo_ai import router as ilo_ai_router
+app.include_router(ilo_ai_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -1001,6 +1001,21 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start status transitions scheduler: {e}")
 
+    # === VPN WireGuard rimossa (policy sicurezza): pulizia residui DB/filesystem ===
+    try:
+        import shutil
+        for _cn in await db.list_collection_names():
+            if "wireguard" in _cn.lower() or _cn.lower().startswith("wg_"):
+                await db.drop_collection(_cn)
+                logger.info(f"Dropped legacy VPN collection: {_cn}")
+        _wg_dir = Path(__file__).parent / "data" / "wireguard"
+        if _wg_dir.exists():
+            shutil.rmtree(_wg_dir, ignore_errors=True)
+            logger.info("Removed legacy WireGuard data dir")
+    except Exception as e:
+        logger.warning(f"VPN cleanup skipped: {e}")
+
+
     # === KPI snapshots (Panoramica): ogni 10 min, retention 45 gg ===
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1021,6 +1036,16 @@ async def startup_event():
         )
         kpi_scheduler.start()
         await db.kpi_snapshots.create_index("at")
+        # Indici per query KPI / diagnosi / iLO (evitano collection scan su alerts grandi)
+        await db.alerts.create_index([("status", 1), ("source_type", 1)])
+        await db.alerts.create_index("created_at")
+        await db.alerts.create_index("resolved_at", sparse=True)
+        await db.alerts.create_index([("client_id", 1), ("device_ip", 1), ("created_at", -1)])
+        await db.discovered_endpoints.create_index([("client_id", 1), ("switch_ip", 1), ("port", 1)])
+        await db.switch_ports.create_index([("client_id", 1), ("local_ip", 1), ("idx", 1), ("updated_at", -1)])
+        await db.ilo_events.create_index([("client_id", 1), ("device_ip", 1)])
+        await db.ilo_ai_analyses.create_index([("client_id", 1), ("device_ip", 1), ("created_at", -1)])
+        await db.ilo_status.create_index([("client_id", 1), ("device_ip", 1)])
         logger.info("KPI snapshot scheduler started (tick: 10min)")
     except Exception as e:
         logger.error(f"Failed to start KPI snapshot scheduler: {e}")
@@ -1221,27 +1246,6 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to start Hyper-V poll scheduler: {e}")
 
-    # ----- Embedded WireGuard runtime (POC, opt-in via env WG_EMBEDDED_ENABLED) -----
-    if os.environ.get("WG_EMBEDDED_ENABLED", "").lower() in ("1", "true", "yes"):
-        try:
-            from wireguard_embedded import wg_manager
-            await wg_manager.start()
-            st = wg_manager.status()
-            if st.get("running"):
-                logger.info(
-                    f"WG embedded runtime started: pid={st['pid']} iface={st['interface']} "
-                    f"port={st['listen_port']}"
-                )
-            else:
-                logger.warning(
-                    f"WG embedded runtime NOT started (host requirements unmet): "
-                    f"{st.get('last_error') or st['environment'].get('missing_prerequisites')}"
-                )
-        except Exception as e:
-            logger.error(f"WG embedded runtime startup error: {e}")
-    else:
-        logger.info("WG embedded runtime disabled (set WG_EMBEDDED_ENABLED=true to opt-in)")
-
     # === OSINT / Threat Intelligence schedulers ===
     try:
         await db.threat_intel.create_index([("source", 1), ("indicator", 1)], unique=True)
@@ -1392,13 +1396,6 @@ async def shutdown_db_client():
     try:
         if 'escalation_scheduler' in globals() and escalation_scheduler:
             await escalation_scheduler.stop()
-    except Exception:
-        pass
-    # Stop embedded WG runtime if running
-    try:
-        from wireguard_embedded import wg_manager
-        if wg_manager.process is not None:
-            await wg_manager.stop()
     except Exception:
         pass
     mongo_client.close()
