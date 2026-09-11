@@ -1,0 +1,27 @@
+{
+  "summary": "Iter152 — Full backend+frontend regression for (1) VM sotto host in the network topology map and (2) Evidence Fusion v2 auto-promotion status. BACKEND (4/4 pytest green in /app/backend/tests/test_iter152.py): (a) GET /api/network/topology/da3d... → vm_links=3, three edges {from:'10.10.41.10', type:'vm', label:'VM Hyper-V', source:'vm_parent', to:'mac-00155D0170{04,05,06}'}, NO edge from switch 10.10.41.220 to those VM mac nodes, VM nodes have is_vm=true, vm_host_ip='10.10.41.10', virtualization='Hyper-V'. (b) GET /api/fusion/shadow → promotion object present with all required keys (cases, agree, agree_pct, days, min_cases=10, min_agree_pct=90, min_days=3, auto_promote=true, criteria_met=false, enabled=false); observed cases=1, agree=1, agree_pct=100. (c) GET /api/fusion/config → {fusion_v2_enabled:false, fusion_v2_auto_promote:true, promoted_at:null}. PUT toggle auto_promote false → back to true; enabled stays false. (d) GET /api/devices/10.10.41.220/switch-ports?client_id=da3d... → port idx 1 attached_count=4 with SRV-DC01 (source mac_managed), VM-DC/VM-SQL (source hostname), 'Microsoft Hyper-V device' (source mac_oui). Seeds re-run right before tests: /app/backend/tests/seed_fusion_iter151.py and /app/backend/tests/seed_attached_iter152.py. FRONTEND (Italian, admin+2FA login OK): /certainty → fusion-page loads with 86BIT_Office selected by default; fusion-shadow panel contains fusion-promotion block with 'Auto-attivazione ON' and counters fusion-promo-cases='casi 1/10', fusion-promo-agree='accordo 100% (min 90%)', fusion-promo-days='giorni 0/3'; PC-MARIO shadow row shows v1 unreachable 80% + v2 'Spento volutamente 91%' + Fonti v2 'Datto, L2, Porta, Memoria, Orario'. /switch-ports/10.10.41.220?clientId=da3d... → switch-port-row-1 shows port-attached-1 with 'Sulla stessa porta anche 3 · VM Hyper-V' and lists Microsoft Hyper-V device / VM-DC / VM-SQL; clicking row opens switch-port-attached-detail-1 listing all 4 devices ('Dispositivi visti sulla porta · 4'). /network-status (view=Mappa, 86BIT_Office cluster) → three vm-badge-mac-00155D017004/005/006 nodes render with text 'VM Hyper-V host 10.10.41.10', SRV-DC01 shown as Hyper-V host with 3 attached VM nodes (VM-DC, VM-SQL, Microsoft Hyper-V…) via dashed violet 'vm' edges. Left fusion_v2_enabled=false, fusion_v2_auto_promote=true as required.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter152.py",
+    "/app/test_reports/pytest/iter152.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/topology.py _apply_vm_parents: correctly re-parents both managed VMs (hyperv_host_ip or virtual MAC OUI on same FDB port) and discovered_endpoint nodes with virtual MAC on same switch port as a managed server. The 'kept' filter (line 72) prunes ONLY switch->vm edges when a different host is chosen; if the switch itself would have been the host it would incorrectly keep both — not an issue in practice because switches are never in server_ips.",
+    "alert_engine.fusion_promotion_status: agree_pct is computed on ALL logs (even down-then-up UP-recovery rows) — as long as _write_fusion_shadow_log only writes real KO cases this is fine, but any future call from a non-KO branch would inflate the denominator.",
+    "alert_engine.maybe_promote_fusion_v2: writes fusion_v2_promoted_at + fusion_v2_promoted_reason, but does NOT update the in-memory routes/fusion._cache — the /api/fusion/certainty page can show stale 'enabled=false' for up to 60s after auto-promotion. Same caveat as iter151 (config cache invalidation).",
+    "routes/topology.get_switch_ports: attached[] correctly labels mac_oui devices with '<Vendor> device' — for Hyper-V it becomes 'Microsoft Hyper-V device' which matches the frontend expectation; still relies on a static VIRTUAL_OUI list (no fallback to IEEE OUI DB), which is acceptable given the small set of virt vendors.",
+    "Seeding remains fragile: PC-MARIO datto document is periodically overwritten by the datto poller; iter151 report already flags this. Re-running seed_fusion_iter151.py just before tests is the current workaround."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter152.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin info@86bit.it + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — verified",
+  "seed_data_creation": "Ran /app/backend/tests/seed_fusion_iter151.py and /app/backend/tests/seed_attached_iter152.py right before test execution (as instructed).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "VM-sotto-host lives at route /network-status → toggle 'Mappa' view → pick cluster '86BIT_Office'. VM badges have testid vm-badge-<node_id> where node_id for MAC-only endpoints is 'mac-<MAC_stripped_of_colons>'. Fusion promotion block is inside /certainty page under fusion-shadow → fusion-promotion with fusion-promo-cases/agree/days. Backend regression file /app/backend/tests/test_iter152.py covers all four review items and can be re-run any time (fusion_v2 stays disabled). fusion_v2 config left at {enabled:false, auto_promote:true} as required.",
+  "rca of the issue": "N/A — no bugs found."
+}

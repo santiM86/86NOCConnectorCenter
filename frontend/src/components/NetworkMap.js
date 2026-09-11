@@ -154,6 +154,14 @@ function DeviceNode({ data }) {
           <div className="text-[9px] font-mono text-[var(--text-muted)] mt-0.5">{data.ip}</div>
         )}
 
+        {/* VM sotto host */}
+        {data.isVm && (
+          <div className="text-[8px] mt-0.5 flex items-center justify-center gap-1" data-testid={`vm-badge-${data.nodeId}`}>
+            <span className="px-1 py-0 rounded bg-violet-500/25 text-violet-200 text-[7px] font-bold tracking-wider">VM {data.virtualization}</span>
+            <span className="font-mono text-[var(--text-muted)] opacity-80">host {data.vmHostIp}</span>
+          </div>
+        )}
+
         {/* MAC Address con vendor OUI (se presente) */}
         {data.mac && (
           <div className="text-[8px] font-mono text-[var(--text-muted)] mt-0.5 opacity-70 flex items-center justify-center gap-1" title={data.mac}>
@@ -194,6 +202,7 @@ const EDGE_COLORS = {
   server: "#10b981",
   mgmt: "#f59e0b",
   lldp: "#22d3ee",
+  vm: "#a78bfa",
   custom: "#8b5cf6",
 };
 
@@ -222,6 +231,9 @@ function topoToFlowNodes(topoNodes, hasCustomLayout) {
         vlan: n.vlan,
         hostname: n.hostname,
         subtitle: n.subtitle,
+        isVm: n.is_vm,
+        vmHostIp: n.vm_host_ip,
+        virtualization: n.virtualization,
         cascadeRank: n.cascade_rank,
         cascadeLevel: n.cascade_level,
       },
@@ -253,8 +265,8 @@ function topoToFlowEdges(topoEdges) {
     if (isCascade) color = e.verified ? "#6366f1" : "#a78bfa";
     if (anomaly) color = "#ef4444"; // rosso: uplink scomparso o cambiato porta
 
-    // Cascade non verificato (solo LLDP) = tratteggiato "probabile"
-    const dashed = (isCascade && !e.verified) || anomaly === "missing";
+    // Cascade non verificato (solo LLDP) = tratteggiato "probabile"; VM → host tratteggio fino
+    const dashed = (isCascade && !e.verified) || anomaly === "missing" || e.type === "vm";
     if (anomaly) strokeWidth = 4;
 
     // Label: show speed info when available

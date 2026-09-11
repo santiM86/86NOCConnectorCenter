@@ -72,6 +72,23 @@ function ShadowPanel({ clientId }) {
         <div><span className="text-[var(--text-muted)]">Conf. media v1 → v2</span><br /><b className="font-mono">{data.avg_conf_v1}% → <span className="text-cyan-300">{data.avg_conf_v2}%</span></b></div>
         <div><span className="text-[var(--text-muted)]">≥90% v1 → v2</span><br /><b className="font-mono">{data.v1_ge_90} → <span className="text-cyan-300">{data.v2_ge_90}</span></b></div>
       </div>
+      {data.promotion && (
+        <div className={`rounded border p-2 text-[11px] ${data.promotion.enabled ? "border-emerald-500/40 bg-emerald-500/5" : "border-indigo-500/30 bg-indigo-500/5"}`} data-testid="fusion-promotion">
+          {data.promotion.enabled ? (
+            <span className="text-emerald-300">Motore v2 attivo{data.promotion.promoted_at ? ` dal ${new Date(data.promotion.promoted_at).toLocaleString("it-IT")}` : ""}.</span>
+          ) : (
+            <>
+              <b className="text-indigo-200">Auto-attivazione {data.promotion.auto_promote ? "ON" : "OFF"}</b>
+              <span className="text-[var(--text-secondary)]"> — il v2 passa in produzione da solo quando i casi reali in shadow soddisfano i criteri:</span>
+              <div className="grid grid-cols-3 gap-2 mt-1 font-mono text-[10px]">
+                <span className={data.promotion.cases >= data.promotion.min_cases ? "text-emerald-300" : "text-amber-300"} data-testid="fusion-promo-cases">casi {data.promotion.cases}/{data.promotion.min_cases}</span>
+                <span className={data.promotion.agree_pct >= data.promotion.min_agree_pct ? "text-emerald-300" : "text-amber-300"} data-testid="fusion-promo-agree">accordo {data.promotion.agree_pct}% (min {data.promotion.min_agree_pct}%)</span>
+                <span className={data.promotion.days >= data.promotion.min_days ? "text-emerald-300" : "text-amber-300"} data-testid="fusion-promo-days">giorni {data.promotion.days}/{data.promotion.min_days}</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {data.rows.length > 0 && (
         <div className="overflow-x-auto"><table className="noc-table w-full text-[10px]" data-testid="fusion-shadow-table">
           <thead><tr><th>Device</th><th>v1</th><th>v2</th><th>Fonti v2</th><th>Ora</th></tr></thead>

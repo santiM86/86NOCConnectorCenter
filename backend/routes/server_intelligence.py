@@ -12,6 +12,7 @@ Endpoint base: /api/servers/
 """
 import asyncio
 import logging
+import re
 import socket
 import ssl
 import uuid
@@ -532,7 +533,7 @@ async def submit_hyperv_snapshot(payload: dict, request: Request):
     # gestito, marchiamo automaticamente quel device come VM Hyper-V (senza
     # richiedere all'admin di impostare manualmente il "Tipo Macchina").
     try:
-        attached = await _auto_attach_hyperv_vms(doc.get("client_id"), doc.get("vms") or [])
+        attached = await _auto_attach_hyperv_vms(doc.get("client_id"), doc.get("vms") or [], doc.get("hostname"))
         if attached:
             logger.info(f"hyperv auto-attach: {attached} device marcati come VM Hyper-V (client={doc.get('client_id')})")
     except Exception as _e:
@@ -545,7 +546,7 @@ def _hv_short(s) -> str:
     return str(s or "").strip().lower().split(".")[0]
 
 
-async def _auto_attach_hyperv_vms(client_id: str, vms: list) -> int:
+async def _auto_attach_hyperv_vms(client_id: str, vms: list, host_name: str | None = None) -> int:
     """Marca automaticamente come VM Hyper-V i managed_devices il cui
     hostname/nome coincide con una VM riportata dall'host Hyper-V.
 
@@ -576,8 +577,17 @@ async def _auto_attach_hyperv_vms(client_id: str, vms: list) -> int:
     cursor = db.managed_devices.find(
         {"client_id": client_id, "virtualization_user_locked": {"$ne": True}},
         {"_id": 0, "id": 1, "hostname": 1, "name": 1, "device_name": 1,
-         "hyperv_vm_name": 1, "virtualization": 1},
+         "hyperv_vm_name": 1, "virtualization": 1, "hyperv_host_ip": 1, "hyperv_host": 1},
     )
+    host_ip = None
+    if host_name:
+        hk = _hv_short(host_name)
+        hdoc = await db.managed_devices.find_one(
+            {"client_id": client_id, "$or": [{"hostname": {"$regex": f"^{re.escape(hk)}", "$options": "i"}},
+                                             {"name": {"$regex": f"^{re.escape(hk)}", "$options": "i"}},
+                                             {"device_name": {"$regex": f"^{re.escape(hk)}", "$options": "i"}}]},
+            {"_id": 0, "ip": 1, "ip_address": 1})
+        host_ip = (hdoc or {}).get("ip") or (hdoc or {}).get("ip_address")
     async for md in cursor:
         matched_vm = None
         for cand in (md.get("hyperv_vm_name"), md.get("hostname"),
@@ -588,15 +598,18 @@ async def _auto_attach_hyperv_vms(client_id: str, vms: list) -> int:
                 break
         if not matched_vm:
             continue
-        # Skip se gia' allineato
+        # Skip se gia' allineato (host incluso)
         if (md.get("virtualization") == "hyperv"
-                and md.get("hyperv_vm_name") == matched_vm):
+                and md.get("hyperv_vm_name") == matched_vm
+                and (not host_ip or md.get("hyperv_host_ip") == host_ip)):
             continue
         await db.managed_devices.update_one(
             {"id": md["id"]},
             {"$set": {
                 "virtualization": "hyperv",
                 "hyperv_vm_name": matched_vm,
+                "hyperv_host": host_name or md.get("hyperv_host"),
+                "hyperv_host_ip": host_ip or md.get("hyperv_host_ip"),
                 "virtualization_auto_matched": True,
                 "virtualization_set_by": "auto:hyperv-host",
                 "virtualization_set_at": now_iso,

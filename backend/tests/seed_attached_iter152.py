@@ -27,6 +27,9 @@ async def main():
             "last_seen_at": now, "last_seen_via": "snmp", "is_managed": mg}}, upsert=True)
     await db.managed_devices.update_one({"client_id": CID, "ip": "10.10.41.10"}, {"$set": {
         "client_id": CID, "ip": "10.10.41.10", "name": "SRV-DC01", "device_name": "SRV-DC01", "device_type": "server", "mac": "AA:BB:CC:00:00:01"}}, upsert=True)
+    await db.device_poll_status.update_one({"client_id": CID, "device_ip": "10.10.41.10"}, {"$set": {
+        "client_id": CID, "device_ip": "10.10.41.10", "device_name": "SRV-DC01", "device_type": "server", "reachable": True,
+        "last_reachable_at": now, "last_poll_at": now, "updated_at": now, "primary_mac": "AA:BB:CC:00:00:01"}}, upsert=True)
     print("seeded port 1 attached")
 
 

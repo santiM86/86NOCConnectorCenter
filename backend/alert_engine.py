@@ -61,6 +61,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "datto_blackout_ratio": 0.6,         # >=60% device Datto offline insieme -> Datto inaffidabile
     "site_down_ratio": 0.8,              # >=80% device del sito irraggiungibili -> SITO GIU'/corrente
     "fusion_v2_enabled": False,          # Evidence Fusion v2 guida gli alert (False = solo shadow)
+    "fusion_v2_auto_promote": True,      # attiva da solo il v2 quando lo shadow mostra accordo sui casi reali
+    "fusion_v2_promote_min_cases": 10,
+    "fusion_v2_promote_min_agree": 0.9,
+    "fusion_v2_promote_min_days": 3,
     # Rilevamento nuovi dispositivi da classificare
     "new_device_detection": True,
     "new_device_window_hours": 24,
@@ -974,6 +978,13 @@ async def _apply_fusion_v2(db, items: list, poll_by_ip: dict, enabled: bool, now
             continue
         agree = (v2["up"] == v["up"]) and (v2["alertable"] == v["alertable"])
         seen.append((md["client_id"], ip))
+        prev = await db.fusion_shadow.find_one({"client_id": md["client_id"], "device_ip": ip}, {"_id": 0, "v2": 1})
+        if not prev or (prev.get("v2") or {}).get("root_cause") != v2["root_cause"]:
+            # nuovo episodio (o cambio verdetto) → storico per la promozione automatica
+            await db.fusion_shadow_log.insert_one({
+                "client_id": md["client_id"], "device_ip": ip, "device_name": _best_device_name(md, ip), "ts": now.isoformat(),
+                "agree": agree, "v1_root_cause": v["root_cause"], "v1_confidence": v["confidence"],
+                "v2_root_cause": v2["root_cause"], "v2_confidence": v2["confidence"], "v2_conflict": v2["conflict"]})
         await db.fusion_shadow.update_one(
             {"client_id": md["client_id"], "device_ip": ip},
             {"$set": {"device_name": _best_device_name(md, ip), "family": fam, "ts": now.isoformat(), "agree": agree, "applied": enabled,
@@ -985,6 +996,46 @@ async def _apply_fusion_v2(db, items: list, poll_by_ip: dict, enabled: bool, now
                      "up": v2["up"], "alertable": v2["alertable"], "reasoning": v2["reasoning"], "evidence": v2["evidence"], "engine": "v2"}
     # pulizia: righe di device tornati UP (non più valutati) più vecchie di 1 giorno
     await db.fusion_shadow.delete_many({"ts": {"$lt": (now - timedelta(days=1)).isoformat()}})
+
+
+async def fusion_promotion_status(db, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Stato dei criteri di auto-attivazione del v2 (casi reali in shadow)."""
+    logs = await db.fusion_shadow_log.find({}, {"_id": 0, "ts": 1, "agree": 1}).sort("ts", 1).to_list(5000)
+    n = len(logs)
+    agree = sum(1 for x in logs if x.get("agree"))
+    first = _parse_dt(logs[0]["ts"]) if logs else None
+    days = (datetime.now(timezone.utc) - first).total_seconds() / 86400 if first else 0.0
+    min_cases = int(cfg.get("fusion_v2_promote_min_cases", 10))
+    min_agree = float(cfg.get("fusion_v2_promote_min_agree", 0.9))
+    min_days = float(cfg.get("fusion_v2_promote_min_days", 3))
+    agree_pct = (agree / n) if n else 0.0
+    return {"cases": n, "agree": agree, "agree_pct": round(agree_pct * 100), "days": round(days, 1),
+            "min_cases": min_cases, "min_agree_pct": round(min_agree * 100), "min_days": min_days,
+            "auto_promote": bool(cfg.get("fusion_v2_auto_promote", True)),
+            "criteria_met": n >= min_cases and agree_pct >= min_agree and days >= min_days,
+            "enabled": bool(cfg.get("fusion_v2_enabled")), "promoted_at": cfg.get("fusion_v2_promoted_at")}
+
+
+async def maybe_promote_fusion_v2(db, cfg: Dict[str, Any]) -> bool:
+    if cfg.get("fusion_v2_enabled") or not cfg.get("fusion_v2_auto_promote", True):
+        return False
+    st = await fusion_promotion_status(db, cfg)
+    if not st["criteria_met"]:
+        return False
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.alert_engine_config.update_one({"_id": "global"}, {"$set": {
+        "fusion_v2_enabled": True, "fusion_v2_promoted_at": now_iso,
+        "fusion_v2_promoted_reason": f"{st['cases']} casi reali, accordo {st['agree_pct']}%, {st['days']} giorni di shadow"}}, upsert=True)
+    logger.warning("[fusion] v2 PROMOSSO automaticamente: %s casi, accordo %s%%, %s giorni", st["cases"], st["agree_pct"], st["days"])
+    try:
+        from telegram_notifier import send_telegram_text
+        await send_telegram_text(db, ("🧠 <b>Evidence Fusion v2 attivato</b>\n"
+                                      f"Il motore v2 ora guida gli alert: {st['cases']} casi reali valutati in shadow, "
+                                      f"accordo col motore precedente {st['agree_pct']}%, {st['days']} giorni di osservazione.\n"
+                                      "Da ora gli alert riportano la % di certezza calcolata e le prove usate."))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("telegram promote notice: %s", e)
+    return True
 
 
 async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
@@ -1166,6 +1217,7 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     # Shadow sempre (fusion_shadow); sostituisce v1 solo se fusion_v2_enabled.
     try:
         await _apply_fusion_v2(db, items, poll_by_ip, bool(cfg_global.get("fusion_v2_enabled")), now)
+        await maybe_promote_fusion_v2(db, cfg_global)
     except Exception as e:  # noqa: BLE001
         logger.warning("fusion v2 pass failed: %s", e)
 

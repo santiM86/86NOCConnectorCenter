@@ -29,6 +29,7 @@ CACHE_S = 60
 
 class FusionConfig(BaseModel):
     fusion_v2_enabled: bool
+    fusion_v2_auto_promote: Optional[bool] = None
 
 
 async def _best_pd(ip: str, cid: str) -> Optional[dict]:
@@ -111,22 +112,28 @@ async def shadow(client_id: str = None, current_user: dict = Depends(get_current
     q = {"client_id": client_id} if client_id else {}
     rows = await db.fusion_shadow.find(q, {"_id": 0}).sort("ts", -1).to_list(500)
     agree = sum(1 for r in rows if r.get("agree"))
+    cfg = await ae.get_config(db)
+    promo = await ae.fusion_promotion_status(db, cfg)
     return {"total": len(rows), "agree": agree, "disagree": len(rows) - agree,
             "avg_conf_v1": round(sum(r["v1"]["confidence"] for r in rows) / len(rows)) if rows else 0,
             "avg_conf_v2": round(sum(r["v2"]["confidence"] for r in rows) / len(rows)) if rows else 0,
             "v2_ge_90": sum(1 for r in rows if r["v2"]["confidence"] >= 90),
-            "v1_ge_90": sum(1 for r in rows if r["v1"]["confidence"] >= 90), "rows": rows}
+            "v1_ge_90": sum(1 for r in rows if r["v1"]["confidence"] >= 90), "promotion": promo, "rows": rows}
 
 
 @router.get("/config")
 async def get_cfg(current_user: dict = Depends(get_current_user)):
     cfg = await ae.get_config(db)
-    return {"fusion_v2_enabled": bool(cfg.get("fusion_v2_enabled"))}
+    return {"fusion_v2_enabled": bool(cfg.get("fusion_v2_enabled")), "fusion_v2_auto_promote": bool(cfg.get("fusion_v2_auto_promote", True)),
+            "promoted_at": cfg.get("fusion_v2_promoted_at"), "promoted_reason": cfg.get("fusion_v2_promoted_reason")}
 
 
 @router.put("/config")
 async def put_cfg(body: FusionConfig, current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
-    cfg = await ae.save_config(db, {"fusion_v2_enabled": body.fusion_v2_enabled})
+    patch = {"fusion_v2_enabled": body.fusion_v2_enabled}
+    if body.fusion_v2_auto_promote is not None:
+        patch["fusion_v2_auto_promote"] = body.fusion_v2_auto_promote
+    cfg = await ae.save_config(db, patch)
     logger.warning("fusion v2 %s by %s", "ENABLED" if body.fusion_v2_enabled else "disabled", current_user.get("email"))
-    return {"fusion_v2_enabled": bool(cfg.get("fusion_v2_enabled"))}
+    return {"fusion_v2_enabled": bool(cfg.get("fusion_v2_enabled")), "fusion_v2_auto_promote": bool(cfg.get("fusion_v2_auto_promote", True))}
