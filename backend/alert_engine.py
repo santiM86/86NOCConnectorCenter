@@ -60,6 +60,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Source-health gating (fusione multi-fonte)
     "datto_blackout_ratio": 0.6,         # >=60% device Datto offline insieme -> Datto inaffidabile
     "site_down_ratio": 0.8,              # >=80% device del sito irraggiungibili -> SITO GIU'/corrente
+    "fusion_v2_enabled": False,          # Evidence Fusion v2 guida gli alert (False = solo shadow)
+    "fusion_v2_auto_promote": True,      # attiva da solo il v2 quando lo shadow mostra accordo sui casi reali
+    "fusion_v2_promote_min_cases": 10,
+    "fusion_v2_promote_min_agree": 0.9,
+    "fusion_v2_promote_min_days": 3,
     # Rilevamento nuovi dispositivi da classificare
     "new_device_detection": True,
     "new_device_window_hours": 24,
@@ -954,6 +959,85 @@ def _vital_direct_down(md: Dict[str, Any], pd: Optional[Dict[str, Any]], now: da
     return consec >= VITAL_FAST_FAILURES
 
 
+FUSION_REFINABLE = {"unreachable", "server_down", "unresponsive_l2_present", "icmp_filtered_l2", "monitoring_blind",
+                    "os_unresponsive_hyperv", "switch_unreachable", "switch_mgmt_down", "firewall_mgmt_down", "os_hung", "server_powered_off"}
+
+
+async def _apply_fusion_v2(db, items: list, poll_by_ip: dict, enabled: bool, now: datetime) -> None:
+    import evidence_fusion as ef
+    seen: list = []
+    for it in items:
+        md, fam, s, v = it
+        if v["up"] or v["root_cause"] not in FUSION_REFINABLE:
+            continue
+        ip = md.get("ip") or md.get("ip_address")
+        try:
+            v2 = await ef.fuse(db, md, poll_by_ip.get(ip), s, fam)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("fusion v2 %s: %s", ip, e)
+            continue
+        agree = (v2["up"] == v["up"]) and (v2["alertable"] == v["alertable"])
+        seen.append((md["client_id"], ip))
+        prev = await db.fusion_shadow.find_one({"client_id": md["client_id"], "device_ip": ip}, {"_id": 0, "v2": 1})
+        if not prev or (prev.get("v2") or {}).get("root_cause") != v2["root_cause"]:
+            # nuovo episodio (o cambio verdetto) → storico per la promozione automatica
+            await db.fusion_shadow_log.insert_one({
+                "client_id": md["client_id"], "device_ip": ip, "device_name": _best_device_name(md, ip), "ts": now.isoformat(),
+                "agree": agree, "v1_root_cause": v["root_cause"], "v1_confidence": v["confidence"],
+                "v2_root_cause": v2["root_cause"], "v2_confidence": v2["confidence"], "v2_conflict": v2["conflict"]})
+        await db.fusion_shadow.update_one(
+            {"client_id": md["client_id"], "device_ip": ip},
+            {"$set": {"device_name": _best_device_name(md, ip), "family": fam, "ts": now.isoformat(), "agree": agree, "applied": enabled,
+                      "v1": {k: v.get(k) for k in ("root_cause", "confidence", "severity", "up", "alertable", "reasoning")},
+                      "v2": {k: v2.get(k) for k in ("root_cause", "label", "confidence", "severity", "up", "alertable", "reasoning", "sources", "conflict", "missing")}}},
+            upsert=True)
+        if enabled:
+            it[3] = {**v, "root_cause": v2["root_cause"], "confidence": v2["confidence"], "severity": v2["severity"],
+                     "up": v2["up"], "alertable": v2["alertable"], "reasoning": v2["reasoning"], "evidence": v2["evidence"], "engine": "v2"}
+    # pulizia: righe di device tornati UP (non più valutati) più vecchie di 1 giorno
+    await db.fusion_shadow.delete_many({"ts": {"$lt": (now - timedelta(days=1)).isoformat()}})
+
+
+async def fusion_promotion_status(db, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Stato dei criteri di auto-attivazione del v2 (casi reali in shadow)."""
+    logs = await db.fusion_shadow_log.find({}, {"_id": 0, "ts": 1, "agree": 1}).sort("ts", 1).to_list(5000)
+    n = len(logs)
+    agree = sum(1 for x in logs if x.get("agree"))
+    first = _parse_dt(logs[0]["ts"]) if logs else None
+    days = (datetime.now(timezone.utc) - first).total_seconds() / 86400 if first else 0.0
+    min_cases = int(cfg.get("fusion_v2_promote_min_cases", 10))
+    min_agree = float(cfg.get("fusion_v2_promote_min_agree", 0.9))
+    min_days = float(cfg.get("fusion_v2_promote_min_days", 3))
+    agree_pct = (agree / n) if n else 0.0
+    return {"cases": n, "agree": agree, "agree_pct": round(agree_pct * 100), "days": round(days, 1),
+            "min_cases": min_cases, "min_agree_pct": round(min_agree * 100), "min_days": min_days,
+            "auto_promote": bool(cfg.get("fusion_v2_auto_promote", True)),
+            "criteria_met": n >= min_cases and agree_pct >= min_agree and days >= min_days,
+            "enabled": bool(cfg.get("fusion_v2_enabled")), "promoted_at": cfg.get("fusion_v2_promoted_at")}
+
+
+async def maybe_promote_fusion_v2(db, cfg: Dict[str, Any]) -> bool:
+    if cfg.get("fusion_v2_enabled") or not cfg.get("fusion_v2_auto_promote", True):
+        return False
+    st = await fusion_promotion_status(db, cfg)
+    if not st["criteria_met"]:
+        return False
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.alert_engine_config.update_one({"_id": "global"}, {"$set": {
+        "fusion_v2_enabled": True, "fusion_v2_promoted_at": now_iso,
+        "fusion_v2_promoted_reason": f"{st['cases']} casi reali, accordo {st['agree_pct']}%, {st['days']} giorni di shadow"}}, upsert=True)
+    logger.warning("[fusion] v2 PROMOSSO automaticamente: %s casi, accordo %s%%, %s giorni", st["cases"], st["agree_pct"], st["days"])
+    try:
+        from telegram_notifier import send_telegram_text
+        await send_telegram_text(db, ("🧠 <b>Evidence Fusion v2 attivato</b>\n"
+                                      f"Il motore v2 ora guida gli alert: {st['cases']} casi reali valutati in shadow, "
+                                      f"accordo col motore precedente {st['agree_pct']}%, {st['days']} giorni di osservazione.\n"
+                                      "Da ora gli alert riportano la % di certezza calcolata e le prove usate."))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("telegram promote notice: %s", e)
+    return True
+
+
 async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
     """Correlation-based watchdog: incrocia PING+DATTO+L2+WAN+iLO per dedurre
     la causa reale ed evitare falsi positivi. Con soppressione topologica
@@ -1129,6 +1213,14 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             return True
         return False
 
+    # Evidence Fusion v2: raffina i verdetti "device giù" singoli (non quelli topologici).
+    # Shadow sempre (fusion_shadow); sostituisce v1 solo se fusion_v2_enabled.
+    try:
+        await _apply_fusion_v2(db, items, poll_by_ip, bool(cfg_global.get("fusion_v2_enabled")), now)
+        await maybe_promote_fusion_v2(db, cfg_global)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fusion v2 pass failed: %s", e)
+
     # +N IMPATTI: per ogni alert "padre" (switch down / sito isolato) raccogli la
     # lista dei device figli soppressi, cosi' l'alert riporta l'impatto reale.
     impacts_by_anchor: dict = {}
@@ -1249,11 +1341,18 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             _impact_msg = f" — {n} dispositivi a valle impattati: {_names}"
 
         if state.get("level", 0) == 0:
+            _ev_msg = ""
+            if v.get("evidence"):
+                _top = sorted(v["evidence"], key=lambda e: -max(e.get("votes", {}).values() or [0]))[:4]
+                _ev_msg = "\nProve: " + " · ".join(e.get("title", "") for e in _top if e.get("title"))
             alert = _mk_alert(cid, cname, dev_name, ip, dev_type, sev, source_type, title,
-                              f"Cliente {cname}: {reasoning}{_impact_msg}")
+                              f"Cliente {cname}: {reasoning}{_impact_msg}{_ev_msg}")
             if _impacts:
                 alert["impacted_count"] = len(_impacts)
                 alert["impacted_devices"] = _impacts[:50]
+            if v.get("evidence"):
+                alert["evidence"] = v["evidence"][:20]
+                alert["engine"] = "v2"
             from alert_enrichment import enrich_alert
             await enrich_alert(db, alert)
             await insert_alert_if_emit(db, alert)

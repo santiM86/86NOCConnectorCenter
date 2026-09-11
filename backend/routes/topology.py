@@ -1,5 +1,6 @@
 """Network topology inference engine and routes."""
 import ipaddress
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -7,6 +8,79 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from database import db
 from deps import get_current_user
+
+logger = logging.getLogger("topology")
+
+VIRTUAL_OUI = {"00:15:5D": "Hyper-V", "00:50:56": "VMware", "00:0C:29": "VMware", "00:05:69": "VMware",
+               "52:54:00": "KVM", "08:00:27": "VirtualBox", "00:1C:42": "Parallels", "00:16:3E": "Xen"}
+
+
+def _virt_of(mac: str) -> str | None:
+    m = (mac or "").upper().replace("-", ":")
+    return VIRTUAL_OUI.get(m[:8]) if len(m) >= 8 else None
+
+
+async def _apply_vm_parents(client_id: str, nodes: list, edges: list) -> int:
+    """VM sotto host: sposta il padre delle VM dallo switch all'host fisico.
+    1) managed_devices.hyperv_host_ip (auto-aggancio dallo snapshot Hyper-V) → padre certo;
+    2) endpoint/device con MAC virtuale (Hyper-V/VMware/KVM…) sulla STESSA porta switch
+       di un server managed → padre = quel server (host)."""
+    mds = await db.managed_devices.find(
+        {"client_id": client_id}, {"_id": 0, "ip": 1, "ip_address": 1, "device_type": 1, "mac": 1, "mac_address": 1,
+                                   "virtualization": 1, "hyperv_host_ip": 1, "hyperv_vm_name": 1}).to_list(5000)
+    server_ips = {(m.get("ip") or m.get("ip_address")) for m in mds
+                  if (m.get("device_type") or "").lower() in ("server", "hypervisor", "esxi", "hyperv", "host") and (m.get("ip") or m.get("ip_address"))}
+    node_ids = {n.get("id") for n in nodes}
+    node_by_id = {n.get("id"): n for n in nodes}
+    # porta → server managed presenti su quella porta (FDB)
+    eps = await db.discovered_endpoints.find({"client_id": client_id, "switch_ip": {"$nin": [None, ""]}, "port": {"$ne": None}},
+                                             {"_id": 0, "ip": 1, "mac": 1, "switch_ip": 1, "port": 1}).to_list(20000)
+    server_on_port: dict = {}
+    for e in eps:
+        if e.get("ip") in server_ips:
+            server_on_port.setdefault((e["switch_ip"], str(e["port"])), e["ip"])
+    ep_port_by_ip = {e["ip"]: (e["switch_ip"], str(e["port"])) for e in eps if e.get("ip")}
+    ep_port_by_mac = {(e.get("mac") or "").upper(): (e["switch_ip"], str(e["port"])) for e in eps if e.get("mac")}
+
+    parent_of: dict = {}   # node_id → (host_ip, label)
+    for m in mds:
+        ip = m.get("ip") or m.get("ip_address")
+        if not ip or ip not in node_ids or ip in server_ips:
+            continue
+        host = m.get("hyperv_host_ip")
+        if host and host in node_ids and host != ip:
+            parent_of[ip] = (host, "VM Hyper-V")
+            continue
+        virt = _virt_of(m.get("mac") or m.get("mac_address") or "") or ("Hyper-V" if m.get("virtualization") == "hyperv" else None)
+        if virt:
+            key = ep_port_by_ip.get(ip) or ep_port_by_mac.get((m.get("mac") or m.get("mac_address") or "").upper())
+            host = server_on_port.get(key) if key else None
+            if host and host in node_ids and host != ip:
+                parent_of[ip] = (host, f"VM {virt}")
+    for n in nodes:
+        if n.get("role") != "discovered_endpoint":
+            continue
+        virt = _virt_of(n.get("mac") or "")
+        if not virt:
+            continue
+        host = server_on_port.get((n.get("switch_ip"), str(n.get("switch_port"))))
+        if host and host in node_ids:
+            parent_of[n["id"]] = (host, f"VM {virt}")
+
+    if not parent_of:
+        return 0
+    kept = [e for e in edges if not (e.get("to") in parent_of and e.get("from") != parent_of[e["to"]][0])]
+    for nid, (host, label) in parent_of.items():
+        if not any(e.get("to") == nid and e.get("from") == host for e in kept):
+            kept.append({"from": host, "to": nid, "type": "vm", "label": label, "source": "vm_parent"})
+        n = node_by_id.get(nid)
+        if n:
+            n["vm_host_ip"] = host
+            n["is_vm"] = True
+            n["virtualization"] = label.replace("VM ", "")
+            n["layer"] = max(int(n.get("layer") or 4), 5)
+    edges[:] = kept
+    return len(parent_of)
 
 router = APIRouter(prefix="/api", tags=["topology"])
 
@@ -452,6 +526,37 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
         except Exception:
             pass
 
+        # Tutti i dispositivi visti su questa porta (es. host Hyper-V + le sue VM, trunk)
+        attached: list = []
+        if oper == 1:
+            _cand = endpoints_by_idx.get(p.get("idx") or 0) or []
+            if not _cand:
+                _pn = _port_number_from_name(p.get("name") or "")
+                _cand = (endpoints_by_port_num.get(_pn) or []) if _pn else []
+            _seen_macs: set = set()
+            for e in _cand:
+                _mac = (e.get("mac") or "").upper()
+                if not _mac or _mac in _seen_macs:
+                    continue
+                _seen_macs.add(_mac)
+                _ip = e.get("ip") or e.get("manual_binding_ip") or ""
+                _md = md_by_ip.get(_ip, {}) if _ip else {}
+                _ven = e.get("vendor") or lookup_oui(_mac)
+                if e.get("datto_name"):
+                    _nm, _src = e["datto_name"], "datto_rmm"
+                elif e.get("manual_binding_name"):
+                    _nm, _src = e["manual_binding_name"], "mac_manual"
+                elif _md.get("device_name") or _md.get("name"):
+                    _nm, _src = (_md.get("device_name") or _md.get("name")), "mac_managed"
+                elif e.get("hostname"):
+                    _nm, _src = e["hostname"], "hostname"
+                else:
+                    _nm, _src = (f"{_ven} device" if _ven else "Sconosciuto"), ("mac_oui" if _ven else "mac_unknown")
+                attached.append({"mac": _mac, "ip": _ip, "name": _nm, "source": _src, "vendor": _ven or "",
+                                 "device_type": _md.get("device_type") or "", "is_managed": bool(_md) or bool(e.get("is_managed")),
+                                 "last_seen_at": e.get("last_seen_at")})
+            attached.sort(key=lambda a: (not a["is_managed"], a["source"] not in ("datto_rmm", "mac_manual"), a["name"].lower()))
+
         out.append({
             "idx": p.get("idx"),
             "name": p.get("name"),
@@ -474,6 +579,8 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
             "poe_class": int(p.get("poe_class") or 0),
             "port_type": port_type,
             "neighbor": neighbor_obj,
+            "attached": attached[:24],
+            "attached_count": len(attached),
         })
 
     # Port_number summary for UI badge
@@ -1837,6 +1944,10 @@ async def get_network_topology(client_id: str, current_user: dict = Depends(get_
     topology["health"] = health
     topology["client_id"] = client_id
     topology["client_name"] = client_name
+    try:
+        topology["vm_links"] = await _apply_vm_parents(client_id, topology["nodes"], topology["edges"])
+    except Exception as _ve:  # noqa: BLE001
+        logger.warning("vm parents failed: %s", _ve)
     topology["has_custom_layout"] = False
     topology["lldp_count"] = len(lldp_neighbors)
     topology["mac_connections_count"] = len(mac_connections)

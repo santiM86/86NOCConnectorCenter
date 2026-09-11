@@ -1,0 +1,35 @@
+{
+  "summary": "Iter151 — Evidence Fusion v2 (Certezza diagnosi) end-to-end regression. BACKEND (6/6 pytest green in /app/backend/tests/test_fusion_iter151.py): (1) GET /api/fusion/device/10.10.41.50?client_id=da3d... → root_cause='intentional_off', label='Spento volutamente', confidence=91, conflict=false, sources=[datto,l2,port,port_memory,schedule]; 6 evidence entries (connector offline, l2, datto matched with down_min, port link down, port memory habitual, schedule usual); coverage.sources_count=6, max_confidence=97. (2) GET /api/fusion/certainty/da3d... → total=37 devices, PC-MARIO row reachable=false verdict=intentional_off conf=91 max=97; 11 other devices with max_confidence=65 and missing keys among port/schedule/datto/port_memory/ilo. Cache: 2nd call 0.17s. (3) POST /api/alert-engine/run-now then GET /api/fusion/shadow → total=1, PC-MARIO row v1.root_cause='unreachable' (conf 80), v2.label='Spento volutamente' (conf 91), agree=true, applied=false. (4) GET/PUT /api/fusion/config toggle works; unauth PUT → 403. Left fusion_v2_enabled=false. (5) evidence_fusion._score sanity: single-source → conf ≤65 (cap kicks in); conflict scenario (second/top ≥0.7) → conflict=true, conf ≤60. FRONTEND (Italian): admin+2FA login OK → /certainty. All required testids present: fusion-page, fusion-client-select, fusion-kpi-(ready|avg|down|missing), fusion-shadow, fusion-shadow-table (contains PC-MARIO row), fusion-v2-toggle initially unchecked with label 'Motore v2 in shadow (alert su v1)', fusion-table, fusion-only-gaps checked by default. Row fusion-row-10.10.41.50 shows Max 97% + 'Spento volutamente 91% · completo'; click opens fusion-detail-10.10.41.50 with fusion-evidence-10.10.41.50 listing 6 evidence items (Connettore/Tabella MAC/Datto RMM/Porta switch/Memoria porta/Orario abituale). Row 10.10.41.220 (CHASW-B) opens detail with 'Per arrivare al 90%' actions (associa Datto, monitora SNMP switch, storico spegnimenti). Uncheck fusion-only-gaps → 37 rows shown. Toggle fusion-v2-toggle triggers window.confirm(accept) → activated then re-toggled OFF. Sidebar link /certainty defined in Layout.js line 129 (admin only). NOTE ON SEEDING: datto_devices doc for PC-MARIO gets overwritten by a periodic datto sync — re-run tests/seed_fusion_iter151.py immediately before testing to guarantee datto evidence is present (without it PC-MARIO confidence drops to 86, below the ≥88 target). Task-provided seed script was run right before the passing test run.",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "/api/fusion/device/{ip}", "issue": "datto_devices doc inserted by seed_fusion_iter151.py is periodically wiped by the datto sync job, so datto evidence disappears after 1-2 min and PC-MARIO confidence drops from 91 → 86 (below the 88 threshold advertised in the review). Not a fusion bug, but the seed is not durable enough for slow CI runs."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fusion_iter151.py",
+    "/app/test_reports/pytest/iter151.xml"
+  ],
+  "action_items": [
+    "Optional: make the fusion seed durable — either pause the datto poller during tests, or upsert a datto_client_links entry that pins the test datto docs, so datto evidence for PC-MARIO doesn't vanish between runs."
+  ],
+  "critical_code_review_comments": [
+    "evidence_fusion.py: sound design — softmax over hypothesis weights + independent-source cap (1→65, 2→82, 3→92, 4+→97) + conflict cap 60. Non-discriminating sources (ping when connector live, calendar) correctly excluded from the source-count cap via `srcs - {'ping','calendar'}`.",
+    "evidence_fusion.fuse: when connector_live is False the ping evidence is skipped (correct — local probes untrustworthy) but Datto/iLO/Nebula/UPS are still consumed, which is the right behavior since those are external sources.",
+    "routes/fusion.py cache: 60s in-process dict keyed by client_id. No LRU / no cache-invalidation on config change — acceptable for admin page but note that flipping fusion_v2_enabled does not clear the cache (may confuse admins for up to 60s). Consider clearing `_cache` in put_cfg.",
+    "routes/fusion.py: GET /api/fusion/config has no require_admin — any authenticated user can read the toggle (probably intentional but worth confirming).",
+    "shutdown_diagnosis._schedule_signal formats the day/date as 'Fri 11/09 23:17' with the ISO 'now' from the seed — locale is English, could be Italian for consistency (minor cosmetic)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_fusion_iter151.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin info@86bit.it + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — verified",
+  "seed_data_creation": "Ran /app/backend/tests/seed_fusion_iter151.py (as instructed). Must be re-run right before test execution because datto sync overwrites the seeded datto_devices doc.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Certezza diagnosi lives at /certainty (admin only). Key testids: fusion-page, fusion-client-select, fusion-kpi-ready|avg|down|missing, fusion-shadow, fusion-shadow-table, fusion-v2-toggle (+ -label), fusion-table, fusion-only-gaps, fusion-row-<ip>, fusion-detail-<ip>, fusion-evidence-<ip>, fusion-confidence-<ip>, fusion-max-<ip>. To reproduce PC-MARIO 91% verdict, re-run seed_fusion_iter151.py IMMEDIATELY before hitting the endpoint (datto poller wipes the datto doc). fusion_v2_enabled is left FALSE. Regression file: /app/backend/tests/test_fusion_iter151.py (pyotp + requests + evidence_fusion unit).",
+  "rca of the issue": "Initial run failed with confidence=86 because between the seed step and the API call the periodic datto poller had cleared the seeded datto_devices doc (uid=datto-pc-mario). Without the datto evidence only 4 concordi sources vote intentional_off (score 3.6 → softmax raw 86); with datto 5 sources push raw ≥91. Repro: run seed → wait 1-2 min → GET fusion/device — sources goes from 5 to 4, conf 91→86. Mitigation: re-run seed script immediately before assertions (adopted in tests) or pin datto_client_links.last_sync_at + add a synthetic datto_devices doc that the poller preserves."
+}
