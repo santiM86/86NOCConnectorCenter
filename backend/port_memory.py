@@ -165,34 +165,42 @@ async def _refresh_devices(db, client_id: str, local_ip: str, up_ports: list, no
     if not up_ports:
         return
     cutoff = (now - timedelta(minutes=DEVICE_REFRESH_MIN)).isoformat()
-    stale = {m["idx"] async for m in db.port_memory.find(
+    stale_docs = {m["idx"]: m async for m in db.port_memory.find(
         {"client_id": client_id, "local_ip": local_ip,
          "$or": [{"device_refreshed_at": {"$exists": False}}, {"device_refreshed_at": {"$lt": cutoff}}]},
-        {"_id": 0, "idx": 1})}
+        {"_id": 0, "idx": 1, "last_device": 1, "first_seen": 1, "name": 1})}
+    stale = set(stale_docs)
     if not stale:
         return
     counts: dict = {}
     macs: dict = {}
     async for e in db.discovered_endpoints.find(
             {"client_id": client_id, "switch_ip": local_ip, "port": {"$in": list(stale)}},
-            {"_id": 0, "port": 1, "mac": 1, "ip": 1}):
+            {"_id": 0, "port": 1, "mac": 1, "ip": 1, "hostname": 1, "datto_name": 1}):
         try:
             pi = int(e.get("port"))
         except Exception:
             continue
         counts[pi] = counts.get(pi, 0) + 1
         if e.get("mac") and pi not in macs:
-            macs[pi] = {"mac": str(e.get("mac")).upper(), "ip": e.get("ip") or ""}
+            macs[pi] = {"mac": str(e.get("mac")).upper(), "ip": e.get("ip") or "", "hostname": e.get("hostname") or e.get("datto_name") or ""}
     for pi in stale:
         setv = {"device_refreshed_at": now.isoformat()}
         d = macs.get(pi)
         if d and counts.get(pi, 0) <= 3:  # >3 MAC = uplink/trunk: non ha "un" device
-            name = ""
+            name = d.get("hostname") or ""
             if d["ip"]:
                 md = await db.managed_devices.find_one(
                     {"client_id": client_id, "$or": [{"ip": d["ip"]}, {"ip_address": d["ip"]}]}, {"_id": 0, "name": 1, "hostname": 1})
-                name = (md or {}).get("name") or (md or {}).get("hostname") or ""
+                name = (md or {}).get("name") or (md or {}).get("hostname") or name
             setv["last_device"] = {"mac": d["mac"], "ip": d["ip"], "name": name, "seen_at": now.isoformat()}
+            old = (stale_docs.get(pi) or {}).get("last_device") or {}
+            first = _parse((stale_docs.get(pi) or {}).get("first_seen"))
+            known = first is not None and (now - first).total_seconds() >= LEARNING_DAYS * 86400
+            if old.get("mac") and old["mac"] != d["mac"] and known:
+                setv["prev_device"] = old
+                setv["device_changed_at"] = now.isoformat()
+                await _emit_device_change(db, client_id, local_ip, pi, (stale_docs.get(pi) or {}).get("name") or f"port{pi}", old, setv["last_device"])
         elif counts.get(pi, 0) > 3:
             setv["mac_count"] = counts[pi]
         await db.port_memory.update_one({"client_id": client_id, "local_ip": local_ip, "idx": pi}, {"$set": setv})
@@ -202,6 +210,15 @@ def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optiona
              holiday: Optional[str] = None) -> dict:
     """→ {profile, verdict, label, up_ratio, days, reason, last_device, usual_speed_mbps, usual_poe_w}"""
     at = at or _now()
+    out = _classify(mem, oper_up, poe_w, at, holiday)
+    ch = _parse((mem or {}).get("device_changed_at"))
+    if ch and (at - ch) <= timedelta(days=7):
+        out["device_changed_at"] = ch.isoformat()
+        out["prev_device"] = mem.get("prev_device")
+    return out
+
+
+def _classify(mem: Optional[dict], oper_up: bool, poe_w: float, at: datetime, holiday: Optional[str]) -> dict:
     if not mem:
         return {"profile": "learning", "verdict": "up" if oper_up else "learning", "label": VERDICT_LABELS["up" if oper_up else "learning"],
                 "up_ratio": None, "days": 0, "reason": "Nessuno storico per questa porta."}
@@ -263,6 +280,43 @@ def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optiona
                 "reason": f"A quest'ora ({when}) la porta è di solito giù ({int((1 - slot_ratio) * 100)}% dei casi): dispositivo spento dal cliente."}
     return {**base, "verdict": "anomalous", "label": VERDICT_LABELS["anomalous"], "slot_up_ratio": round(slot_ratio, 2),
             "reason": f"A quest'ora ({when}) la porta è di solito attiva ({int(slot_ratio * 100)}% dei casi): down fuori dallo schema abituale."}
+
+
+async def _emit_device_change(db, client_id: str, local_ip: str, idx: int, pname: str, old: dict, new: dict) -> None:
+    """Alert 'dispositivo cambiato sulla porta': il MAC abituale è stato sostituito da un altro."""
+    try:
+        from alert_engine import _mk_alert
+        from alert_filter import insert_alert_if_emit
+        sw = await db.managed_devices.find_one({"client_id": client_id, "$or": [{"ip": local_ip}, {"ip_address": local_ip}]},
+                                               {"_id": 0, "name": 1, "device_name": 1, "hostname": 1})
+        sw_name = (sw or {}).get("name") or (sw or {}).get("device_name") or (sw or {}).get("hostname") or local_ip
+        cl = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+        o = old.get("name") or old.get("ip") or old.get("mac")
+        n = new.get("name") or new.get("ip") or new.get("mac")
+        alert = _mk_alert(client_id, (cl or {}).get("name") or client_id, sw_name, local_ip, "switch", "medium", "port_device_change",
+                          f"Dispositivo cambiato su {sw_name} · {pname}",
+                          f"Sulla porta {pname} di {sw_name} il dispositivo abituale {o} ({old.get('mac')}) è stato sostituito da {n} ({new.get('mac')}). "
+                          "Verifica che sia un cambio autorizzato (nuovo PC, spostamento cavo) e non un dispositivo estraneo.")
+        alert["dedup_key"] = f"{client_id}:{local_ip}:port_device_change:{idx}:{new.get('mac')}"
+        alert["raw_data"] = {"idx": idx, "port_name": pname, "prev_device": old, "new_device": new}
+        await insert_alert_if_emit(db, alert)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"port_memory device change alert {local_ip}:{idx}: {e}")
+
+
+async def memory_summary(db, client_id: str, local_ip: str) -> dict:
+    """{ports, since_days, samples, learning} per mostrare all'utente che la memoria sta registrando."""
+    docs = await db.port_memory.find({"client_id": client_id, "local_ip": local_ip},
+                                     {"_id": 0, "first_seen": 1, "samples": 1, "updated_at": 1, "device_changed_at": 1}).to_list(2000)
+    if not docs:
+        return {"ports": 0, "since_days": 0, "samples": 0, "learning": True, "last_update": None, "changed_7d": 0}
+    firsts = [_parse(d.get("first_seen")) for d in docs if _parse(d.get("first_seen"))]
+    since = (_now() - min(firsts)).total_seconds() / 86400 if firsts else 0
+    upd = max((d.get("updated_at") or "" for d in docs), default=None)
+    cutoff = (_now() - timedelta(days=7)).isoformat()
+    return {"ports": len(docs), "since_days": round(since, 1), "samples": max(int(d.get("samples") or 0) for d in docs),
+            "learning": since < LEARNING_DAYS, "last_update": upd or None,
+            "changed_7d": sum(1 for d in docs if (d.get("device_changed_at") or "") >= cutoff)}
 
 
 async def classify_port(db, client_id: str, local_ip: str, idx: int, oper_up: bool, poe_w: float = 0.0) -> dict:

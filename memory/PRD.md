@@ -9727,3 +9727,10 @@ Health null è normale HPE (usa i sottosistemi).
 - NetworkMap: EDGE_COLORS.vm, badge "VM Hyper-V · host <ip>" (vm-badge-<nodeId>).
 - alert_engine: `fusion_shadow_log` (un record per nuovo episodio/verdetto), `fusion_promotion_status`, `maybe_promote_fusion_v2` (chiamata ad ogni vital watchdog): con fusion_v2_auto_promote (default True) attiva da solo fusion_v2_enabled quando casi ≥ fusion_v2_promote_min_cases (10), accordo ≥ 90%, ≥ 3 giorni di shadow → Telegram "Evidence Fusion v2 attivato" + promoted_at/reason in config. /api/fusion/shadow espone `promotion`; /api/fusion/config accetta fusion_v2_auto_promote. UI: blocco "Auto-attivazione ON — casi x/10 · accordo % · giorni x/3" in Certezza diagnosi.
 - Test: iteration_152 PASS. Seeds: tests/seed_attached_iter152.py.
+
+## 2026-09-12 — Controllo cambio dispositivo su porta + robustezza
+- port_memory._refresh_devices: se il MAC abituale di una porta "conosciuta" (≥7gg) viene sostituito da un altro → `prev_device`, `device_changed_at` e ALERT medium `port_device_change` (dedup per porta+nuovo MAC, raw_data prev/new) "Dispositivo cambiato su <switch> · <porta>". Nome device: managed > hostname/datto_name endpoint. classify() espone device_changed_at/prev_device (7gg). `memory_summary()` → GET switch-ports.port_memory {ports, since_days, samples, learning, last_update, changed_7d}.
+- SwitchPortsPage: header "Memoria porte: N porte, X gg (in apprendimento) · N dispositivi cambiati (7gg)" (switch-ports-memory-status); badge arancione CAMBIATO in tabella (port-device-changed-<idx>) e riga dettaglio "prima … → ora …".
+- temperature/overview: calcolo per-device in `_temperature_row` con try/except + log (un device rotto non azzera più la pagina; campo `errors`).
+- Certezza diagnosi: 404 → messaggio "backend in produzione non aggiornato: ridistribuisci".
+- NB: i "Not Found" visti in produzione (Certezza, Spiega AI, ecc.) = backend prod non ancora ridistribuito con le nuove route /api/fusion, /api/devices/.../ai-*.

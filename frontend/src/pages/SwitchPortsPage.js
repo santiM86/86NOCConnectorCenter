@@ -204,6 +204,12 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
               {Object.entries(p.habit.schedule).map(([d, h]) => <span key={d}><b className="text-[var(--text-secondary)]">{d}</b> {h}</span>)}
             </span>
           )}
+  {p.habit?.prev_device && (
+            <span className="w-full text-[10px] text-orange-200" data-testid={`switch-port-changed-detail-${p.idx}`}>
+              Dispositivo cambiato il {new Date(p.habit.device_changed_at).toLocaleString("it-IT")}: prima <b>{p.habit.prev_device.name || p.habit.prev_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.prev_device.mac}</span>
+              {p.habit.last_device && <> → ora <b>{p.habit.last_device.name || p.habit.last_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.last_device.mac}</span></>}
+            </span>
+          )}
           {p.habit.reason && <span className="w-full text-[var(--text-secondary)] italic">{p.habit.reason}</span>}
         </div>
       )}
@@ -835,6 +841,13 @@ export default function SwitchPortsPage() {
             {(t.poe_active > 0) && <span className="text-amber-300 flex items-center gap-0.5"><Lightning size={10} weight="fill" /> {t.poe_active} PoE</span>}
             {(t.with_neighbor > 0) && <span className="text-cyan-300">{t.with_neighbor} con neighbor</span>}
             {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
+            {data.port_memory && (
+              <span className={`flex items-center gap-1 ${data.port_memory.ports ? "text-indigo-300" : "text-amber-300"}`} data-testid="switch-ports-memory-status"
+                title={data.port_memory.last_update ? `Ultimo aggiornamento memoria: ${new Date(data.port_memory.last_update).toLocaleString("it-IT")}` : "La memoria si popola ad ogni poll SNMP delle porte"}>
+                · Memoria porte: {data.port_memory.ports ? `${data.port_memory.ports} porte, ${data.port_memory.since_days} gg${data.port_memory.learning ? " (in apprendimento)" : ""}` : "nessun dato ancora"}
+                {data.port_memory.changed_7d > 0 && <span className="text-orange-300 font-semibold">· {data.port_memory.changed_7d} dispositivi cambiati (7gg)</span>}
+              </span>
+            )}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => setShowAudit(s => !s)} className="h-7 gap-1 text-[11px] border-indigo-500/40 text-indigo-300" data-testid="switch-ports-ai-audit-toggle">✦ Audit AI</Button>
@@ -1129,6 +1142,12 @@ export default function SwitchPortsPage() {
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
                       )}
                       {!isUp && p.admin !== 2 && p.habit && <HabitBadge habit={p.habit} idx={p.idx} />}
+                      {p.habit?.device_changed_at && (
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-200 border border-orange-500/40 cursor-help" data-testid={`port-device-changed-${p.idx}`}
+                          title={`Dispositivo cambiato il ${new Date(p.habit.device_changed_at).toLocaleString("it-IT")} — prima: ${p.habit.prev_device?.name || p.habit.prev_device?.ip || p.habit.prev_device?.mac || "?"} (${p.habit.prev_device?.mac || ""})`}>
+                          CAMBIATO
+                        </span>
+                      )}
                       {p.loop_suspect && (
                         <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-0.5" title={(p.loop_reasons || []).join(" · ")} data-testid={`switch-port-row-loop-${p.idx}`}>
                           <Warning size={9} weight="fill" /> LOOP

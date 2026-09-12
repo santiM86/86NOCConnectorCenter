@@ -124,7 +124,9 @@ export default function DiagnosisCertaintyPage() {
     if (!cid) return;
     setLoading(true);
     axios.get(`${API}/fusion/certainty/${cid}`, { timeout: 120000 }).then(r => setData(r.data))
-      .catch(e => toast.error(e.response?.data?.detail || "Errore caricamento")).finally(() => setLoading(false));
+      .catch(e => toast.error(e.response?.status === 404
+        ? "Il backend in produzione non è ancora aggiornato a questa versione: ridistribuisci (Deploy) e riprova."
+        : (e.response?.data?.detail || "Errore caricamento"))).finally(() => setLoading(false));
   }, [cid]);
   useEffect(load, [load]);
 
