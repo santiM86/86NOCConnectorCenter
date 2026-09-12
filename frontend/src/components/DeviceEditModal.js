@@ -37,6 +37,9 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
   const [silenceReason, setSilenceReason] = useState(device?.alerts_silenced_reason || "");
   // Alert opzionale "VM spenta inaspettatamente" (solo VM Hyper-V)
   const [vmAlertOnOff, setVmAlertOnOff] = useState(!!device?.hyperv_alert_on_off);
+  // Aggancio MAC → IP (device DHCP seguiti automaticamente al cambio IP)
+  const [followMac, setFollowMac] = useState(device?.follow_mac !== false);
+  const deviceMac = device?.mac || device?.mac_address || "";
   // Tipo macchina (fisico / VM) — impostabile dall'admin
   const [virtualization, setVirtualization] = useState(device?.virtualization || "");
   const [hypervVmName, setHypervVmName] = useState(device?.hyperv_vm_name || "");
@@ -64,6 +67,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setAlertsSilenced(!!device?.alerts_silenced);
     setSilenceReason(device?.alerts_silenced_reason || "");
     setVmAlertOnOff(!!device?.hyperv_alert_on_off);
+    setFollowMac(device?.follow_mac !== false);
     // AUTOFILL "tipo macchina": se il device NON ha ancora una classificazione
     // manuale ma l'agent l'ha gia' riconosciuto come VM Hyper-V (hyperv_state
     // presente dallo snapshot dell'host), precompiliamo i campi cosi' l'utente
@@ -84,7 +88,7 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     setDiskCrit(device?.disk_temp_crit_c ?? "");
     setInletWarn(device?.inlet_temp_warn_c ?? "");
     setInletCrit(device?.inlet_temp_crit_c ?? "");
-  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name, device?.temp_warn_c, device?.temp_crit_c, device?.disk_temp_warn_c, device?.disk_temp_crit_c, device?.inlet_temp_warn_c, device?.inlet_temp_crit_c]);
+  }, [device?.id, device?.alerts_silenced, device?.alerts_silenced_reason, device?.follow_mac, device?.monitor_type, device?.snmp_version, device?.snmp_community, device?.hyperv_alert_on_off, device?.virtualization, device?.hyperv_vm_name, device?.hyperv_host_hint, device?.hyperv_state, device?.hyperv_host, device?.name, device?.temp_warn_c, device?.temp_crit_c, device?.disk_temp_warn_c, device?.disk_temp_crit_c, device?.inlet_temp_warn_c, device?.inlet_temp_crit_c]);
 
   // Cambio "tipo macchina" con AUTOFILL: scegliendo Hyper-V precompila il nome
   // VM (col nome device) e l'host (se rilevato) quando i campi sono vuoti.
@@ -239,6 +243,18 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
         );
       } catch (e) {
         errors.push(`Alert VM spenta: ${e.response?.data?.detail || e.message}`);
+      }
+    }
+
+    // 4b) Aggancio MAC (segui il device DHCP al cambio IP)
+    if (followMac !== (device?.follow_mac !== false)) {
+      try {
+        await axios.post(
+          `${API}/devices/by-ip/${encodeURIComponent(device?.ip_address || device?.ip)}/follow-mac`,
+          { enabled: followMac, client_id: clientId }
+        );
+      } catch (e) {
+        errors.push(`Aggancio MAC: ${e.response?.data?.detail || e.message}`);
       }
     }
 
@@ -555,6 +571,36 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
                 />
               </div>
             )}
+          </div>
+
+          {/* Aggancio MAC → IP: device DHCP seguiti automaticamente al cambio IP */}
+          <div className={`rounded p-2.5 border transition-colors ${followMac && deviceMac ? "bg-cyan-500/10 border-cyan-500/40" : "bg-[var(--bg-card)] border-[var(--bg-border)]"}`} data-testid="follow-mac-box">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={followMac}
+                onChange={(e) => setFollowMac(e.target.checked)}
+                className="mt-0.5 cursor-pointer"
+                data-testid="follow-mac-toggle"
+              />
+              <span className="flex-1">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300">
+                  <Lightning size={13} weight="fill" />
+                  Segui il MAC (IP dinamico / DHCP)
+                </span>
+                <span className="block text-[9px] text-[var(--text-muted)] mt-0.5 leading-relaxed">
+                  {deviceMac
+                    ? <>Agganciato al MAC <code className="text-[var(--text-primary)]" data-testid="follow-mac-value">{deviceMac.toUpperCase()}</code>: se il dispositivo cambia IP (lease DHCP), ARGUS aggiorna da solo l'IP monitorato, credenziali, porte e storico.</>
+                    : <>MAC non ancora noto: verrà agganciato automaticamente al prossimo scan della rete.</>}
+                  {device?.ip_previous && (
+                    <span className="block mt-0.5 text-amber-300" data-testid="follow-mac-history">
+                      Ultimo cambio: {device.ip_previous} → {device.ip_address || device.ip}
+                      {device?.ip_changed_at ? ` (${new Date(device.ip_changed_at).toLocaleString("it-IT")})` : ""}
+                    </span>
+                  )}
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* Tipo macchina (fisico / VM) — impostabile dall'admin */}

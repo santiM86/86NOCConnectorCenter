@@ -67,7 +67,8 @@ async def record_metrics(client_id: str, device_ip: str, dev: dict) -> None:
     _add("memory", vm.get("fgSysMemUsage"))
     _add("sessions", vm.get("fgSysSesCount"))
     # HPE Comware / Cisco / MikroTik / Zyxel (scalar or table max)
-    for k in ["h3cEntityExtCpuUsage", "cpuUtil", "cpuUsage", "cpuUtilization", "cpmCPUTotal5min", "zyxelCpuCurrent", "zyxelCpu5min"]:
+    for k in ["h3cEntityExtCpuUsage", "cpuUtil", "cpuUsage", "cpuUtilization", "cpmCPUTotal5min", "zyxelCpuCurrent", "zyxelCpu5min",
+              "tpSysCpuUsage", "tpSysMonitorCpu1Minute"]:
         v = vm.get(k)
         if isinstance(v, dict):
             nums = [x for x in v.values() if isinstance(x, (int, float))]
@@ -75,6 +76,15 @@ async def record_metrics(client_id: str, device_ip: str, dev: dict) -> None:
                 _add("cpu", max(nums))
         elif v is not None:
             _add("cpu", v)
+    # TP-Link (EAP / JetStream) memoria
+    for k in ["tpSysMemoryUsage", "tpSysMonitorMemUtilization"]:
+        v = vm.get(k)
+        if isinstance(v, dict):
+            nums = [x for x in v.values() if isinstance(x, (int, float))]
+            if nums:
+                _add("memory", max(nums))
+        elif v is not None:
+            _add("memory", v)
 
     if points:
         try:

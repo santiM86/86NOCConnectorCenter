@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend testing of 'Segui il MAC' toggle in DeviceEditModal and Omada SNMP box on /settings/omada. All requested flows verified successfully.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientOverviewPage.js is ~5573 lines — should be split into smaller modules (Dashboard sections, tabs) to improve maintainability.",
+    "Console shows recurring 403 errors on client overview (unrelated to tested features) — likely a polling endpoint returning 403 when connector is offline; wrap in silent handler or gate by connector status."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP secret NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (works)",
+  "seed_data_creation": "None. Toggle follow_mac ripristinato a true a fine test (stato originale).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The 'grouped-edit-device-<ip>' testid is present ONLY inside the 'Dispositivi Vitali' tab (tab-devices) — not in Panoramica (there the pencil is only an inline-rename). Device 10.10.41.50 (PC-MARIO, MAC AA:BB:CC:00:00:03) is present. Verified: (1) modal opens, follow-mac-box visible, follow-mac-toggle checked by default, follow-mac-value shows MAC; (2) toggling OFF and pressing Salva sends POST /api/devices/by-ip/10.10.41.50/follow-mac with {enabled:false, client_id:...} responding 200; state persisted on reopen; (3) restore ON also 200. On /settings/omada: omada-snmp-box visible at top (bbox y=64) with SNMP steps text, button omada-snmp-goto-scanner navigates to /lan-scanner. No JS console errors related to the tested features (only unrelated 403s from unrelated polling).",
+  "rca of the issue": "N/A — no issue found."
+}

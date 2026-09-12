@@ -1309,6 +1309,26 @@ async def set_device_vm_alert(
     }
 
 
+@router.post("/devices/by-ip/{device_ip}/follow-mac")
+async def set_device_follow_mac(device_ip: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Toggle "Segui il MAC": se ON (default) il device DHCP viene seguito automaticamente al cambio IP."""
+    if "enabled" not in (payload or {}):
+        raise HTTPException(status_code=400, detail="enabled (bool) e' obbligatorio")
+    enabled = bool(payload.get("enabled"))
+    q = _ip_match(device_ip)
+    if payload.get("client_id"):
+        q = {**q, "client_id": payload["client_id"]}
+    md = await db.managed_devices.find_one(q, {"_id": 0, "id": 1, "mac": 1, "mac_address": 1, "name": 1})
+    if not md:
+        raise HTTPException(status_code=404, detail=f"Device {device_ip} non trovato in managed_devices")
+    if enabled and not (md.get("mac") or md.get("mac_address")):
+        raise HTTPException(status_code=409, detail="Il dispositivo non ha ancora un MAC noto: verrà agganciato al prossimo scan della rete.")
+    await db.managed_devices.update_many(q, {"$set": {"follow_mac": enabled, "follow_mac_set_by": current_user.get("email"),
+                                                     "follow_mac_set_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True, "device_ip": device_ip, "follow_mac": enabled, "mac": md.get("mac") or md.get("mac_address")}
+
+
+
 @router.post("/devices/by-ip/{device_ip}/temp-thresholds")
 async def set_device_temp_thresholds(
     device_ip: str,

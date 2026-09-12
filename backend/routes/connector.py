@@ -2214,6 +2214,8 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             ("cpuUtil", "CPU"),              # HP ProCurve
             ("cpuUsage", "CPU"),             # QNAP
             ("cpuUtilization", "CPU"),       # UniFi generic
+            ("tpSysCpuUsage", "CPU"),        # TP-Link Omada EAP
+            ("tpSysMonitorCpu1Minute", "CPU"),   # TP-Link JetStream switch (TPLINK-SYSMONITOR-MIB)
             ("mtxrHlProcessorTemperature", "CPU Temp"),  # MikroTik
         ]:
             val = vendor_metrics.get(metric_key)
@@ -2256,6 +2258,27 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                             })
                 except (ValueError, TypeError):
                     pass
+
+        # --- TP-Link (EAP / JetStream): memoria via MIB privata
+        for metric_key in ("tpSysMemoryUsage", "tpSysMonitorMemUtilization"):
+            val = vendor_metrics.get(metric_key)
+            if isinstance(val, dict):
+                vals = [float(v) for v in val.values() if isinstance(v, (int, float))]
+                val = max(vals) if vals else None
+            if val is None:
+                continue
+            try:
+                v = float(val)
+            except (ValueError, TypeError):
+                continue
+            if v >= mem_crit:
+                alerts_to_create.append({"severity": "critical", "title": f"RAM {int(v)}% (critico): {device_name}",
+                                         "message": f"{device_name} ({device_ip}) RAM {v}% — soglia critica {mem_crit}%",
+                                         "source_type": f"vendor_{metric_key}_high"})
+            elif v >= mem_warn:
+                alerts_to_create.append({"severity": "high", "title": f"RAM {int(v)}%: {device_name}",
+                                         "message": f"{device_name} ({device_ip}) RAM {v}% — warning {mem_warn}%",
+                                         "source_type": f"vendor_{metric_key}_high"})
 
         # --- Fan + power supply state
         #   HPE Comware (HH3C-LswDEVM): stesso normalizzatore del motore hardware_alerts
@@ -4435,6 +4458,14 @@ async def connector_network_discovery(request: Request):
     if discovered_endpoints:
         await db.discovered_endpoints.insert_many(discovered_endpoints)
 
+    # Aggancio MAC: i device gestiti in DHCP che cambiano IP vengono seguiti (niente alert "roam" per questi)
+    followed_macs: set = set()
+    try:
+        from mac_follow import apply_mac_follow
+        followed_macs = {c["mac"].upper() for c in await apply_mac_follow(client_id, discovered_endpoints, source="connector")}
+    except Exception as _e_mf:
+        logger.warning(f"mac_follow skip client={client_id}: {_e_mf}")
+
     # v3.7.1: Re-apply Datto RMM matching immediately after replacing discovered_endpoints.
     # Senza questo, il `datto_name` scritto dall'ultimo sync Datto viene perso ad ogni
     # polling del connector (~60s), dando l'illusione che il matching "scompaia".
@@ -4542,7 +4573,7 @@ async def connector_network_discovery(request: Request):
     # Case B: same MAC, different IP (DHCP reassignment or device moved, lower severity)
     for mac, new_ip in curr_mac_ip.items():
         old_ip = prev_mac_ip.get(mac)
-        if old_ip and old_ip != new_ip:
+        if old_ip and old_ip != new_ip and mac not in followed_macs:
             # Only alert for managed/known devices to avoid spam from dynamic clients
             if old_ip in managed_ips or new_ip in managed_ips:
                 identity_alerts.append({

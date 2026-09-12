@@ -1,6 +1,30 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ TP-Link Omada opzione C (SNMP diretto) + Aggancio MAC → IP (DHCP follow)
+**Contesto**: l'utente è su Omada Cloud Essentials (niente Open API) → scelta C = SNMP via Agent.
+- `device_profiles/__init__.py` SEED_VERSION 9: nuovi `tplink_omada_switch` (JetStream SGxxxx/SXxxxx/T1600-T3700:
+  MIB standard porte/FDB/LLDP/PoE + TPLINK-SYSMONITOR-MIB `tpSysMonitorCpu1Minute`/`tpSysMonitorMemUtilization`) e
+  `tplink_omada_gateway` (ER605/ER7206/ER8411: solo MIB-II). Pattern sysDescr SPECIFICI (no "router"/"switch"
+  generici → evita falsi match su device senza profilo); l'AP `tplink_omada_ap` resta fallback generico tp-link/omada.
+  Community suggerita `argus-ro` (scelta utente).
+- Soglie: `connector.py` loop CPU aggiunge `tpSysCpuUsage`/`tpSysMonitorCpu1Minute`; nuovo blocco RAM TP-Link
+  (`vendor_<key>_high`); `metric_history.py` ingest cpu/memory TP-Link.
+- UI `OmadaSettingsPage.js`: box verde `omada-snmp-box` in alto (passi Console Omada → Impostazioni → Servizi → SNMP,
+  community argus-ro, cosa si ottiene/non si ottiene via SNMP) + pulsante → /lan-scanner. Open API lasciata sotto.
+- **Aggancio MAC** `backend/mac_follow.py::apply_mac_follow(client_id, endpoints, source)`: chiamata dopo ogni discovery
+  (`agent_ws._bridge_discovery` e `connector.py` lan-scan legacy). Se il MAC di un managed_device (follow_mac≠False,
+  non LAA) è visto su UN solo IP diverso e quell'IP non è di un altro device → aggiorna ip/ip_address, `ip_previous`,
+  `ip_changed_at`, `ip_history[-20]`, ri-chiava devices/device_credentials/device_poll_status/device_status_state/
+  ilo_status/switch_ports/port_memory/mac_connections, alert medium `mac_follow_ip_update`, `push_config_to_client`.
+  L'alert legacy "cambiato IP" (security_mac_ip_roam) è saltato per i MAC seguiti. Endpoint
+  `POST /api/devices/by-ip/{ip}/follow-mac {enabled, client_id}` (409 se MAC ignoto). `DeviceResponse` +
+  `/api/devices` espongono `follow_mac` (default true), `ip_previous`, `ip_changed_at`. UI: box
+  `follow-mac-box`/`follow-mac-toggle` in `DeviceEditModal.js` (step 4b persist) con ultimo cambio IP.
+- Test: `tests/test_mac_follow_iter154.py` 6/6 (fingerprint + follow/rekey/alert/idempotenza/conflitto/opt-out/ambiguo),
+  iteration_154 frontend 100%. ⚠️ PROD dopo Save to GitHub + redeploy. Omada Open API resta disponibile per futuro upgrade.
+
+
 ## 2026-06 ✅ Memoria porte switch (abitudini → down abituale vs anomalo)
 `backend/port_memory.py`: doc `port_memory` per porta (client_id, local_ip, idx) con istogramma ora-della-settimana
 (`how_up[168]`/`how_total[168]`), samples, `usual_speed_mbps`, PoE abituale, `last_device` (FDB, refresh 15 min, ≤3 MAC),

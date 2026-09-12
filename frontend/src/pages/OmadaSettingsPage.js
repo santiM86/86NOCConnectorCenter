@@ -4,7 +4,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, Plug, RefreshCw, Link2, Unlink, Info, Plus, Trash2, Pencil } from "lucide-react";
+import { ArrowLeft, Plug, RefreshCw, Link2, Unlink, Info, Plus, Trash2, Pencil, Radio, ScanSearch } from "lucide-react";
 import { API } from "@/App";
 
 const TYPE_LBL = { firewall: "Gateway", switch: "Switch", access_point: "Access Point", other: "Altro" };
@@ -106,6 +106,23 @@ export default function OmadaSettingsPage() {
           {ctrls.length > 0 && <Button size="sm" variant="outline" onClick={() => sync(null)} disabled={busy === "sync"} className="h-7 text-xs" data-testid="omada-sync-all"><RefreshCw size={12} className={`mr-1 ${busy === "sync" ? "animate-spin" : ""}`} /> Sincronizza tutti</Button>}
           <Button size="sm" onClick={() => setEditing("new")} className="h-7 text-xs bg-cyan-600 hover:bg-cyan-700 text-white" data-testid="omada-add-ctrl"><Plus size={12} className="mr-1" /> Aggiungi organizzazione</Button>
         </div>
+      </div>
+
+      <div className="noc-panel p-3 text-[11px] space-y-2 border-emerald-500/40 bg-emerald-500/5" data-testid="omada-snmp-box">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Radio size={14} className="text-emerald-300" />
+          <p className="font-semibold text-emerald-200">Piano <b>Omada Cloud Essentials</b> (senza Open API)? Usa il monitoraggio <b>SNMP diretto</b> tramite l'Agent già installato dal cliente.</p>
+          <Button size="sm" variant="outline" onClick={() => navigate("/lan-scanner")} className="ml-auto h-7 text-xs border-emerald-500/40" data-testid="omada-snmp-goto-scanner">
+            <ScanSearch size={12} className="mr-1" /> Apri Scanner LAN
+          </Button>
+        </div>
+        <ol className="list-decimal ml-4 space-y-1 text-[var(--text-secondary)]">
+          <li>Console Omada → sito del cliente → <b>Impostazioni → Servizi → SNMP</b>: attiva <b>SNMP v2c</b>, imposta la community di sola lettura <code className="text-emerald-200">argus-ro</code> (evita <code>public</code>), Posizione/Contatto a piacere → Salva. Vale per <b>tutti</b> i device adottati nel sito (gateway ER, switch JetStream, EAP).</li>
+          <li>Se i device sono <b>standalone</b> (non adottati): abilita SNMP dalla loro pagina web locale (Sistema → SNMP).</li>
+          <li>In ARGUS: <b>Scanner LAN</b> del cliente → i TP-Link vengono riconosciuti da soli (profili <i>TP-Link Omada Gateway</i>, <i>JetStream Switch</i>, <i>EAP Access Point</i>) → Importa con community <code>argus-ro</code>.</li>
+        </ol>
+        <p className="text-[var(--text-muted)]">Cosa ottieni via SNMP: raggiungibilità/uptime, interfacce WAN/LAN, porte switch (link, velocità, PoE, MAC → memoria porte e topologia), CPU/RAM sugli switch che le espongono (non su SG2008 e simili) e sugli EAP, client Wi-Fi per AP. Non disponibili via SNMP: CPU/sessioni del gateway ER e configurazione — per quelle serve l'Open API (Cloud Standard o controller software/OC200) da configurare qui sotto.</p>
+        <p className="text-[var(--text-muted)]">I device sono agganciati anche al <b>MAC</b>: se il DHCP cambia l'IP, ARGUS lo segue da solo.</p>
       </div>
 
       {showGuide && (
