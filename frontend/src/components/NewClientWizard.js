@@ -209,7 +209,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       if (zyxelSel) {
         try {
           if (zyxelSel.vendor === "omada") {
-            await axios.put(`${API}/clients/${client.id}/omada/link`, { site_id: zyxelSel.site_id });
+            await axios.put(`${API}/clients/${client.id}/omada/link`, { site_id: zyxelSel.site_id, controller_id: zyxelSel.org_id });
             okParts.push("link Omada");
           } else {
             await axios.put(`${API}/clients/${client.id}/zyxel/link`, { org_id: zyxelSel.org_id, site_ids: zyxelSel.site_id ? [zyxelSel.site_id] : null });
