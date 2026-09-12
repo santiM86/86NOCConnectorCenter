@@ -168,7 +168,7 @@ async def _refresh_devices(db, client_id: str, local_ip: str, up_ports: list, no
     stale_docs = {m["idx"]: m async for m in db.port_memory.find(
         {"client_id": client_id, "local_ip": local_ip,
          "$or": [{"device_refreshed_at": {"$exists": False}}, {"device_refreshed_at": {"$lt": cutoff}}]},
-        {"_id": 0, "idx": 1, "last_device": 1, "first_seen": 1, "name": 1})}
+        {"_id": 0, "idx": 1, "last_device": 1, "first_seen": 1, "name": 1, "authorized_devices": 1})}
     stale = set(stale_docs)
     if not stale:
         return
@@ -197,7 +197,8 @@ async def _refresh_devices(db, client_id: str, local_ip: str, up_ports: list, no
             old = (stale_docs.get(pi) or {}).get("last_device") or {}
             first = _parse((stale_docs.get(pi) or {}).get("first_seen"))
             known = first is not None and (now - first).total_seconds() >= LEARNING_DAYS * 86400
-            if old.get("mac") and old["mac"] != d["mac"] and known:
+            authorized = {a.get("mac") for a in ((stale_docs.get(pi) or {}).get("authorized_devices") or [])}
+            if old.get("mac") and old["mac"] != d["mac"] and known and d["mac"] not in authorized:
                 setv["prev_device"] = old
                 setv["device_changed_at"] = now.isoformat()
                 await _emit_device_change(db, client_id, local_ip, pi, (stale_docs.get(pi) or {}).get("name") or f"port{pi}", old, setv["last_device"])
@@ -215,6 +216,8 @@ def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optiona
     if ch and (at - ch) <= timedelta(days=7):
         out["device_changed_at"] = ch.isoformat()
         out["prev_device"] = mem.get("prev_device")
+    if (mem or {}).get("authorized_devices"):
+        out["authorized_devices"] = mem["authorized_devices"]
     return out
 
 

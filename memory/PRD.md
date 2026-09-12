@@ -9734,3 +9734,7 @@ Health null è normale HPE (usa i sottosistemi).
 - temperature/overview: calcolo per-device in `_temperature_row` con try/except + log (un device rotto non azzera più la pagina; campo `errors`).
 - Certezza diagnosi: 404 → messaggio "backend in produzione non aggiornato: ridistribuisci".
 - NB: i "Not Found" visti in produzione (Certezza, Spiega AI, ecc.) = backend prod non ancora ridistribuito con le nuove route /api/fusion, /api/devices/.../ai-*.
+
+## 2026-09-12 — Autorizza cambio dispositivo su porta
+- routes/port_memory_api.py: POST /api/devices/{switch_ip}/switch-ports/{idx}/authorize-device?client_id= (admin, body {note?}) → aggiunge nuovo+vecchio device a `port_memory.authorized_devices` (max 20), rimuove prev_device/device_changed_at, chiude alert `port_device_change` della porta (resolved, resolution_reason manual, nota). `_refresh_devices` non rialerta se il MAC nuovo è tra gli autorizzati. classify() espone authorized_devices.
+- UI: bottone "✓ Autorizza cambio" nella riga "Dispositivo cambiato" del dettaglio porta (port-authorize-device-<idx>) → toast, reload, riga "Dispositivi autorizzati: …" (switch-port-authorized-<idx>). Fix: reload() usava `selected` stale → selectedRef.

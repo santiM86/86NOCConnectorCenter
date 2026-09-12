@@ -8,7 +8,7 @@
  * - Filtri: tutte / up / down / admin-down / con neighbor / PoE attivo
  * - Responsive nativo (mobile + desktop)
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
@@ -153,7 +153,18 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
+function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload }) {
+  const [authBusy, setAuthBusy] = useState(false);
+  const authorizeDevice = async () => {
+    setAuthBusy(true);
+    try {
+      const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/${p.idx}/authorize-device`, {}, { params: clientId ? { client_id: clientId } : {} });
+      toast.success(`Cambio autorizzato: memoria aggiornata${r.data.alerts_closed ? `, ${r.data.alerts_closed} alert chiusi` : ""}`);
+      onReload?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Autorizzazione fallita");
+    } finally { setAuthBusy(false); }
+  };
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -208,6 +219,15 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
             <span className="w-full text-[10px] text-orange-200" data-testid={`switch-port-changed-detail-${p.idx}`}>
               Dispositivo cambiato il {new Date(p.habit.device_changed_at).toLocaleString("it-IT")}: prima <b>{p.habit.prev_device.name || p.habit.prev_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.prev_device.mac}</span>
               {p.habit.last_device && <> → ora <b>{p.habit.last_device.name || p.habit.last_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.last_device.mac}</span></>}
+              <button onClick={authorizeDevice} disabled={authBusy} data-testid={`port-authorize-device-${p.idx}`}
+                className="ml-2 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-60 transition-colors">
+                {authBusy ? "…" : "✓ Autorizza cambio"}
+              </button>
+            </span>
+          )}
+          {!p.habit?.prev_device && (p.habit?.authorized_devices || []).length > 0 && (
+            <span className="w-full text-[9px] text-emerald-300/80" data-testid={`switch-port-authorized-${p.idx}`}>
+              Dispositivi autorizzati: {p.habit.authorized_devices.map(a => a.name || a.ip || a.mac).join(", ")}
             </span>
           )}
           {p.habit.reason && <span className="w-full text-[var(--text-secondary)] italic">{p.habit.reason}</span>}
@@ -525,6 +545,8 @@ export default function SwitchPortsPage() {
   // v3.8.35: filtro per ruolo (WAN/LAN/DMZ/MGMT/other) - usato sui firewall/router.
   const [roleFilter, setRoleFilter] = useState(null);  // null = tutti i ruoli
   const [selected, setSelected] = useState(null);
+  const selectedRef = useRef(null);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [cableView, setCableView] = useState(null);
   // Ordinamento tabella (header cliccabili)
   const [sortBy, setSortBy] = useState("idx");     // idx|name|status|speed|rx|tx|poe|neighbor
@@ -624,8 +646,8 @@ export default function SwitchPortsPage() {
       setData(r.data);
       setNeedClientPick(false);
       // Aggiorna selected con dati freschi
-      if (selected) {
-        const fresh = (r.data?.ports || []).find(x => x.idx === selected.idx);
+      if (selectedRef.current) {
+        const fresh = (r.data?.ports || []).find(x => x.idx === selectedRef.current.idx);
         if (fresh) setSelected(fresh);
       }
     } catch (e) {
@@ -1052,7 +1074,7 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} clientId={clientId || data.client_id} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} clientId={clientId || data.client_id} onReload={reload} />}
 
       {/* Modale Vista Cavo */}
       {cableView && (
