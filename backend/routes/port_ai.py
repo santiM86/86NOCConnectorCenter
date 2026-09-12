@@ -36,7 +36,8 @@ Schema:
  "actions": [{"priority": 1, "action": "...", "why": "...", "when": "subito|entro oggi|prossima visita|nessuna"}],
  "suggest_reclassify": null | "habitual" | "anomalous",
  "reclassify_reason": "perché la statistica andrebbe corretta, se applicabile",
- "confidence": 0-100
+ "confidence": 0-100,
+ "kb_refs": ["id voci base di conoscenza usate"]
 }"""
 
 AUDIT_PROMPT = """Sei un network engineer senior di un NOC di un MSP italiano. Ricevi il quadro completo delle porte di uno switch con
@@ -53,12 +54,18 @@ Schema:
                "ports": [1,2], "title": "...", "detail": "...", "action": "..."}],
  "disable_candidates": [numeri porta mai usate da 30+ giorni],
  "label_missing": [numeri porta attive senza descrizione utile],
- "confidence": 0-100
+ "confidence": 0-100,
+ "kb_refs": ["id voci base di conoscenza usate"]
 }"""
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _kb_instr() -> str:
+    import ai_knowledge as kb
+    return kb.kb_instructions()
 
 
 def _parse_json(text: str) -> dict:
@@ -120,8 +127,14 @@ async def _port_context(client_id: str, ip: str, idx: int) -> dict:
          "$or": [{"message": {"$regex": re.escape(pname)}}, {"title": {"$regex": re.escape(pname)}}, {"dedup_key": {"$regex": f":{idx}$"}}]},
         {"_id": 0, "title": 1, "severity": 1, "created_at": 1, "source_type": 1}).limit(10)] if pname else []
     loc = _now() + timedelta(hours=2 if 3 < _now().month < 11 else 1)
-    return {"switch": await _switch(client_id, ip), "port": port, "flaps_7d": await _flaps(client_id, ip, idx),
+    import ai_knowledge as kb
+    sw = await _switch(client_id, ip)
+    kb_text = " ".join(str(x) for x in [sw.get("vendor"), sw.get("model"), port.get("habit"), port.get("oper"), port.get("speed_mbps"),
+                                          port.get("poe_w_now"), datto, [a.get("title") for a in alerts], "flap" if len(await _flaps(client_id, ip, idx)) >= 3 else ""])
+    return {"switch": sw, "port": port, "flaps_7d": await _flaps(client_id, ip, idx),
             "datto_rmm_of_last_device": datto, "active_alerts_on_port": alerts,
+            "knowledge_base": await kb.search_kb(db, kb_text, sw.get("vendor")),
+            "case_memory": await kb.case_memory(db, client_id, ip, pname or None),
             "now": {"local": loc.strftime("%A %d/%m/%Y %H:%M"), "holiday": hol, "weekend": loc.weekday() >= 5}}
 
 
@@ -145,7 +158,13 @@ async def _switch_context(client_id: str, ip: str) -> dict:
     for f in flaps:
         per_port[f["idx"]] = per_port.get(f["idx"], 0) + 1
     loc = _now() + timedelta(hours=2 if 3 < _now().month < 11 else 1)
-    return {"switch": await _switch(client_id, ip), "ports": ports, "flap_count_7d_by_port": per_port,
+    import ai_knowledge as kb
+    sw = await _switch(client_id, ip)
+    kb_text = " ".join(str(x) for x in [sw.get("vendor"), sw.get("model"), "unused inutilizzata sicurezza flap poe 100 mbps sconosciuto cambiato notte fuori orario",
+                                          [p["habit"].get("verdict") for p in ports]])
+    return {"switch": sw, "ports": ports, "flap_count_7d_by_port": per_port,
+            "knowledge_base": await kb.search_kb(db, kb_text, sw.get("vendor"), limit=8),
+            "case_memory": await kb.case_memory(db, client_id, ip, None, limit=12),
             "totals": {"ports": len(ports), "up": sum(1 for p in ports if p["oper"] == "up"),
                        "unused_30d": [p["idx"] for p in ports if p["habit"].get("verdict") == "unused" and (p["habit"].get("days") or 0) >= 30]},
             "now": {"local": loc.strftime("%A %d/%m/%Y %H:%M"), "holiday": hol}}
@@ -158,7 +177,7 @@ async def _run(kind: str, client_id: str, ip: str, idx: Optional[int], user: Opt
     from emergentintegrations.llm.chat import LlmChat, UserMessage
     ctx = await (_port_context(client_id, ip, idx) if kind == "explain" else _switch_context(client_id, ip))
     chat = LlmChat(api_key=api_key, session_id=f"port-ai-{kind}-{client_id}-{ip}-{uuid.uuid4().hex[:8]}",
-                   system_message=EXPLAIN_PROMPT if kind == "explain" else AUDIT_PROMPT).with_model(*MODEL)
+                   system_message=(EXPLAIN_PROMPT if kind == "explain" else AUDIT_PROMPT) + _kb_instr()).with_model(*MODEL)
     t0 = _now()
     try:
         raw = await chat.send_message(UserMessage(text=f"Analizza e rispondi con il JSON richiesto.\n\nDATI (JSON):\n{json.dumps(ctx, ensure_ascii=False, default=str)}"))

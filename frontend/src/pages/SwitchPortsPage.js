@@ -464,6 +464,31 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
 
 // ----- Page -----
 
+function LearningDaysEditor({ value, onSaved }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState(value || 7);
+  const save = async () => {
+    try {
+      await axios.put(`${API}/ai/port-memory/settings`, { learning_days: Number(v) });
+      toast.success(`Apprendimento memoria porte: ${v} giorni (vale per tutti gli switch)`);
+      setEdit(false); onSaved?.();
+    } catch (e) { toast.error(e.response?.data?.detail?.[0]?.msg || e.response?.data?.detail || "Salvataggio fallito"); }
+  };
+  if (!edit) return (
+    <button onClick={() => { setV(value || 7); setEdit(true); }} className="ml-1 text-indigo-300 hover:underline" title="Giorni di apprendimento prima che una porta venga classificata (globale)" data-testid="port-memory-learning-days">
+      · apprendimento {value || 7} gg ✎
+    </button>
+  );
+  return (
+    <span className="ml-1 inline-flex items-center gap-1" data-testid="port-memory-learning-days-editor">
+      <input type="number" min={1} max={60} value={v} onChange={e => setV(e.target.value)} className="w-12 h-5 px-1 text-[10px] rounded border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]" data-testid="port-memory-learning-days-input" />
+      <span>gg</span>
+      <button onClick={save} className="px-1.5 h-5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-200 text-[9px]" data-testid="port-memory-learning-days-save">Salva</button>
+      <button onClick={() => setEdit(false)} className="text-[var(--text-muted)]">✕</button>
+    </span>
+  );
+}
+
 const SRC_BADGE = {
   datto_rmm: ["DATTO", "bg-fuchsia-500/20 text-fuchsia-300"], mac_manual: ["B", "bg-violet-500/20 text-violet-300"],
   mac_managed: ["M", "bg-cyan-500/20 text-cyan-300"], hostname: ["H", "bg-emerald-500/20 text-emerald-300"],
@@ -868,6 +893,7 @@ export default function SwitchPortsPage() {
                 title={data.port_memory.last_update ? `Ultimo aggiornamento memoria: ${new Date(data.port_memory.last_update).toLocaleString("it-IT")}` : "La memoria si popola ad ogni poll SNMP delle porte"}>
                 · Memoria porte: {data.port_memory.ports ? `${data.port_memory.ports} porte, ${data.port_memory.since_days} gg${data.port_memory.learning ? " (in apprendimento)" : ""}` : "nessun dato ancora"}
                 {data.port_memory.changed_7d > 0 && <span className="text-orange-300 font-semibold">· {data.port_memory.changed_7d} dispositivi cambiati (7gg)</span>}
+                <LearningDaysEditor value={data.port_memory.learning_days} onSaved={reload} />
               </span>
             )}
           </p>

@@ -3,6 +3,7 @@ import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
 import { Sparkle, CircleNotch } from "@phosphor-icons/react";
+import AiFeedback from "@/components/AiFeedback";
 
 const VERDICT = {
   spento_dal_cliente: { label: "SPENTO DAL CLIENTE", cls: "text-emerald-300 bg-emerald-500/15 border-emerald-500/40" },
@@ -74,6 +75,7 @@ export default function PortAiExplain({ deviceIp, idx, clientId }) {
             </p>
           )}
           {res.confidence != null && <p className="text-[9px] text-[var(--text-muted)]">Confidenza {res.confidence}% · {latest.model}</p>}
+          <AiFeedback analysisKind="port_explain" analysisId={latest.id} clientId={latest.client_id || clientId} deviceIp={deviceIp} portName={latest.port_name} portIdx={idx} aiVerdict={res.verdict} kbRefs={res.kb_refs || []} />
         </div>
       )}
     </div>

@@ -317,10 +317,12 @@ async def coverage(db, md: dict, ctx_datto_matched: bool, family: str) -> dict:
     if port and port.get("has_port_data"):
         have.append("port")
         mem = await db.port_memory.find_one({"client_id": cid, "local_ip": port["switch_ip"], "idx": port["port"]}, {"_id": 0, "first_seen": 1, "samples": 1})
-        if mem and (_age_min(mem.get("first_seen")) or 0) >= 7 * 1440 and int(mem.get("samples") or 0) >= 50:
+        import port_memory as _pm
+        ld = await _pm.refresh_learning_days(db)
+        if mem and (_age_min(mem.get("first_seen")) or 0) >= ld * 1440 and int(mem.get("samples") or 0) >= 50:
             have.append("port_memory")
         else:
-            left = 7 - ((_age_min((mem or {}).get("first_seen")) or 0) / 1440)
+            left = ld - ((_age_min((mem or {}).get("first_seen")) or 0) / 1440)
             missing.append({"key": "port_memory", "action": f"Memoria porta in apprendimento ({max(0, left):.0f} gg rimanenti)", "gain": "spegnimenti abituali"})
     elif port:
         missing.append({"key": "port", "action": f"Abilita SNMP ifTable sullo switch {port.get('switch_name')}", "gain": "stato porta"})

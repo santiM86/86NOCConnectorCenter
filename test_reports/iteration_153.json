@@ -1,0 +1,30 @@
+{
+  "summary": "Iter153 — Full backend+frontend regression for the new AI knowledge base + case memory + configurable port-memory learning days. BACKEND (13/13 pytest green in /app/backend/tests/test_iter153.py, incl. exactly ONE real POST /ai-explain that took ~90s): (a) GET /api/ai/knowledge → builtin_count=25, user_count int, items list; (b) POST /api/ai/knowledge with the requested HPE P408i entry → returns id 'user-<hex>'; (c) GET /api/ai/knowledge/search?text=P408i%20controller%20failure → the created user entry present with source='user'; (d) PUT /api/ai/knowledge/{id} → {ok:true}; DELETE returns ok; second DELETE → 404. (e) POST /api/ai/feedback with the requested port_explain KO note → 200 with id; GET /api/ai/feedback → stats.total≥1 and accuracy_pct computed; GET /api/ai/cases?client_id=da3d…&device_ip=10.10.41.220&port_name=Gi1/0/1 → items contain kind='ai_feedback' with the 'era il cavo, sostituito' note. (f) GET /api/ai/port-memory/settings → {learning_days:7}; PUT 45 → 45 AND GET /api/devices/10.10.41.220/switch-ports?client_id=da3d… returns port_memory.learning_days=45 with port idx 3 & 10 habit.verdict='learning'; PUT 7 back → port idx 3 habit.verdict='habitual'; PUT 0 → 422 (pydantic ge=1). (g) GET /ai-explain latest present; the single POST /ai-explain response contains result.kb_refs (list) and a non-empty result.explanation — kb_refs schema wired end-to-end. FRONTEND (admin+2FA OK): /ai-knowledge shows ai-knowledge-page, kb-counts='25 voci vendor integrate · 0 vostre', kb-list has 25 items; search 'PoE' filters to 3 entries; add form fills kb-title/vendor/tags/content, kb-submit → toast + new item 'user-a60861fe' with 'vostra' badge and kb-delete-<id> working (confirm dialog accepted, item disappears). Tab 'kb-tab-fb' → kb-feedback-table shows the feedback row created earlier (1 row). /switch-ports/10.10.41.220?clientId=da3d… header 'port-memory-learning-days' shows 'apprendimento 7 gg ✎'; clicking opens port-memory-learning-days-editor, setting 10 → save toasts + label shows '10 gg', restoring to 7 works. Clicking switch-port-row-1 opens detail; block 'ai-feedback-port_explain-1' has 'Verdetto corretto? Sì/No'; clicking KO reveals ai-feedback-note-port_explain-1, typing 'test nota' + ai-feedback-send-port_explain-1 → ai-feedback-done-port_explain-1 shows '✓ Correzione salvata in memoria casi'. Learning_days left at 7 as required. No leftover TEST_ KB entries (backend test deletes, frontend test deletes its own). No bugs found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter153.py",
+    "/app/test_reports/pytest/iter153.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/ai_knowledge_api.py list_kb: q filter uses kb._score with obs=None and threshold 2.0 — this exactly matches the search_kb behavior, but score depends only on token overlap in title/tags/content and there is no vendor filter on the /knowledge endpoint (only on /knowledge/search). Fine for MVP, worth documenting.",
+    "routes/ai_knowledge_api.py delete_kb: allows admin to delete any user id but does NOT prevent deletion of ids matching builtin (builtin ids never live in db.ai_knowledge, so a delete of a builtin id simply returns 404 — safe by design).",
+    "routes/ai_knowledge_api.py update_kb: overwrites entire document including 'enabled' from body default True. If admin PUTs without 'enabled' explicitly, current schema default (True) will silently re-enable a previously disabled entry. Minor: consider PATCH semantics or make enabled required.",
+    "routes/ai_knowledge_api.py get_pm_settings / put_pm_settings: force-invalidates _LD_CACHE by setting at=None on every call, which is correct but slightly wasteful on read; not a bug.",
+    "PortMemorySettings validator ge=1,le=60 correctly returns 422 on 0, matching review expectation.",
+    "AiKnowledgePage.js: kb-list li key uses e.id — builtin ids and user ids never collide (builtin uses 'kb-…' prefix, user uses 'user-…'). Add form disables submit when title<3 or content<10 — matches backend Field constraints.",
+    "AiFeedback.js: send button disabled when note.trim().length<3, but backend max_length=1500 has no min validation — the FE guard is client-side only; not a bug.",
+    "SwitchPortsPage LearningDaysEditor: uses PUT /api/ai/port-memory/settings then calls onSaved(reload); good pattern — the /switch-ports response also embeds port_memory.learning_days so no stale cache in UI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter153.py"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100%"},
+  "test_credentials": "admin info@86bit.it + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 — verified",
+  "seed_data_creation": "None created. Backend test creates and deletes its own KB entry ('Test KB P408i controller failure'); frontend test creates and deletes 'TEST UI KB entry frontend'. One ai_feedback row remains in db.ai_feedback from the backend test (id=uuid, note 'era il cavo, sostituito') — required for the cases test and for the frontend feedback tab assertion.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "learning_days left at 7 in db.alert_engine_config.global.port_memory_learning_days as required. One ai_feedback doc exists (port_explain KO 'era il cavo, sostituito' on 10.10.41.220 Gi1/0/1 idx 1) — used by /api/ai/cases and /api/ai/feedback. Backend regression /app/backend/tests/test_iter153.py can be re-run any time (~2.5 min, includes ONE POST /ai-explain LLM call ~90s). To skip the LLM POST run with -k 'not port_explain_post_once'. AiKnowledgePage lives at route /ai-knowledge (sidebar Amministrazione → 'Base conoscenza AI'). ai-feedback block appears inside the port detail (row click) with testid pattern ai-feedback-<kind>-<idx>.",
+  "rca of the issue": "N/A — no bugs found. All 13 backend tests pass and every frontend testid from the review request behaves as specified."
+}

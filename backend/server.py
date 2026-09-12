@@ -380,6 +380,8 @@ from routes.fusion import router as fusion_router
 app.include_router(fusion_router)
 from routes.port_memory_api import router as port_memory_api_router
 app.include_router(port_memory_api_router)
+from routes.ai_knowledge_api import router as ai_knowledge_router
+app.include_router(ai_knowledge_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router

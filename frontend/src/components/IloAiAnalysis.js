@@ -3,6 +3,7 @@ import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
 import { Sparkle, CircleNotch, CaretDown, CaretUp, Clock } from "@phosphor-icons/react";
+import AiFeedback from "@/components/AiFeedback";
 
 const RISK = {
   ok: { label: "OK", cls: "text-emerald-300 bg-emerald-500/15 border-emerald-500/40" },
@@ -99,6 +100,7 @@ export default function IloAiAnalysis({ ip, clientId }) {
                 <List title="Da monitorare" items={res.watch} testid={`ilo-ai-watch-${ip}`} render={w => <span className="text-[var(--text-secondary)]">• {w}</span>} />
                 <List title="Rumore da ignorare" items={res.ignore} testid={`ilo-ai-ignore-${ip}`} render={w => <span className="text-[var(--text-muted)] line-through decoration-slate-500/60">{w}</span>} />
               </div>
+              <AiFeedback analysisKind="ilo" analysisId={latest.id} clientId={clientId} deviceIp={ip} aiVerdict={latest.risk_level} kbRefs={res.kb_refs || []} />
               {history.length > 1 && (
                 <div>
                   <button onClick={() => setShowHist(s => !s)} className="text-[10px] text-indigo-300 hover:underline" data-testid={`ilo-ai-history-toggle-${ip}`}>

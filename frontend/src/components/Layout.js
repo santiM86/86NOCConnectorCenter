@@ -127,6 +127,7 @@ const navConfig = [
       { path: "/thresholds", icon: Sliders, label: "Soglie Alert", roles: ["admin"] },
       { path: "/temperature", icon: Thermometer, label: "Temperature", roles: ["admin"] },
       { path: "/certainty", icon: Crosshair, label: "Certezza diagnosi", roles: ["admin"] },
+      { path: "/ai-knowledge", icon: Brain, label: "Base conoscenza AI", roles: ["admin"] },
       { path: "/device-profiles", icon: Cpu, label: "Device Profiles", roles: ["admin", "operator"] },
       { path: "/settings", icon: Gear, label: "Impostazioni", roles: ["admin", "operator"] },
       { path: "/tv", icon: Monitor, label: "TV Dashboard", roles: ["admin", "operator", "viewer"], external: true },

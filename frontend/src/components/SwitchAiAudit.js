@@ -3,6 +3,7 @@ import axios from "axios";
 import { API } from "@/App";
 import { toast } from "sonner";
 import { Sparkle, CircleNotch, X } from "@phosphor-icons/react";
+import AiFeedback from "@/components/AiFeedback";
 
 const SEV = {
   high: "text-red-300 bg-red-500/15 border-red-500/40", medium: "text-amber-300 bg-amber-500/15 border-amber-500/40",
@@ -83,6 +84,7 @@ export default function SwitchAiAudit({ deviceIp, clientId, onSelectPort, onClos
             {(res.label_missing || []).length > 0 && <div><span className="text-[var(--text-muted)] uppercase tracking-wider text-[9px]">Porte attive senza etichetta</span><br /><Ports list={res.label_missing} testid="switch-ai-audit-labels" /></div>}
           </div>
           {res.confidence != null && <p className="text-[9px] text-[var(--text-muted)]">Confidenza {res.confidence}% · {latest.model}</p>}
+          <AiFeedback analysisKind="port_audit" analysisId={latest.id} clientId={latest.client_id || clientId} deviceIp={deviceIp} aiVerdict={`score ${res.score}`} kbRefs={res.kb_refs || []} />
         </div>
       )}
     </div>

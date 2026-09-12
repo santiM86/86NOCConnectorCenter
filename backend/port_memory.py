@@ -14,7 +14,24 @@ from typing import Optional
 
 logger = logging.getLogger("port_memory")
 
-LEARNING_DAYS = 7          # sotto questa anzianità → "learning" (regola attuale, nessun filtro)
+LEARNING_DAYS = 7          # default; configurabile (alert_engine_config.port_memory_learning_days) via refresh_learning_days()
+_LD_CACHE = {"at": None}
+
+
+async def refresh_learning_days(db) -> int:
+    """Legge la configurazione (cache 60s) e aggiorna LEARNING_DAYS."""
+    global LEARNING_DAYS
+    now = _now()
+    if _LD_CACHE["at"] and (now - _LD_CACHE["at"]).total_seconds() < 60:
+        return LEARNING_DAYS
+    cfg = await db.alert_engine_config.find_one({"_id": "global"}, {"port_memory_learning_days": 1})
+    try:
+        v = int((cfg or {}).get("port_memory_learning_days") or 7)
+        LEARNING_DAYS = min(max(v, 1), 60)
+    except (TypeError, ValueError):
+        LEARNING_DAYS = 7
+    _LD_CACHE["at"] = now
+    return LEARNING_DAYS
 ALWAYS_ON_RATIO = 0.95
 SPORADIC_RATIO = 0.12   # <~20h/settimana → uso occasionale (un PC 8-18 lun-ven è ~30%)
 DEVICE_REFRESH_MIN = 15
@@ -118,6 +135,7 @@ def schedule_summary(mem: Optional[dict]) -> dict:
 async def record_ports(db, client_id: str, local_ip: str, ports: list) -> int:
     """Chiamata da store_switch_ports dopo ogni poll: aggiorna gli istogrammi per porta."""
     now = _now()
+    await refresh_learning_days(db)
     now_iso = now.isoformat()
     b = _how(now)
     holiday = is_italian_holiday(now)  # festivo: non insegna abitudini (giornata non rappresentativa)
@@ -309,20 +327,22 @@ async def _emit_device_change(db, client_id: str, local_ip: str, idx: int, pname
 
 async def memory_summary(db, client_id: str, local_ip: str) -> dict:
     """{ports, since_days, samples, learning} per mostrare all'utente che la memoria sta registrando."""
+    await refresh_learning_days(db)
     docs = await db.port_memory.find({"client_id": client_id, "local_ip": local_ip},
                                      {"_id": 0, "first_seen": 1, "samples": 1, "updated_at": 1, "device_changed_at": 1}).to_list(2000)
     if not docs:
-        return {"ports": 0, "since_days": 0, "samples": 0, "learning": True, "last_update": None, "changed_7d": 0}
+        return {"ports": 0, "since_days": 0, "samples": 0, "learning": True, "last_update": None, "changed_7d": 0, "learning_days": LEARNING_DAYS}
     firsts = [_parse(d.get("first_seen")) for d in docs if _parse(d.get("first_seen"))]
     since = (_now() - min(firsts)).total_seconds() / 86400 if firsts else 0
     upd = max((d.get("updated_at") or "" for d in docs), default=None)
     cutoff = (_now() - timedelta(days=7)).isoformat()
     return {"ports": len(docs), "since_days": round(since, 1), "samples": max(int(d.get("samples") or 0) for d in docs),
-            "learning": since < LEARNING_DAYS, "last_update": upd or None,
+            "learning": since < LEARNING_DAYS, "last_update": upd or None, "learning_days": LEARNING_DAYS,
             "changed_7d": sum(1 for d in docs if (d.get("device_changed_at") or "") >= cutoff)}
 
 
 async def classify_port(db, client_id: str, local_ip: str, idx: int, oper_up: bool, poe_w: float = 0.0) -> dict:
+    await refresh_learning_days(db)
     mem = await db.port_memory.find_one({"client_id": client_id, "local_ip": local_ip, "idx": int(idx)}, {"_id": 0})
     return classify(mem, oper_up, poe_w, holiday=is_italian_holiday())
 
@@ -330,6 +350,7 @@ async def classify_port(db, client_id: str, local_ip: str, idx: int, oper_up: bo
 async def memory_for_switch(db, client_id: str, local_ip: str) -> dict:
     """{idx: classify(...)} usando l'ultimo stato noto salvato nel doc stesso."""
     out = {}
+    await refresh_learning_days(db)
     hol = is_italian_holiday()
     async for m in db.port_memory.find({"client_id": client_id, "local_ip": local_ip}, {"_id": 0}):
         out[m["idx"]] = classify(m, bool(m.get("last_oper_up")), float(m.get("last_poe_w") or 0), holiday=hol)
