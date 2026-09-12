@@ -22,7 +22,7 @@ from typing import Any
 
 # ruff: noqa: E501 — long strings are intentional in OID tables
 
-SEED_VERSION = 8  # v2026-08: aggiunto profilo Hyper-V VM (Windows guest via SNMP HOST-RESOURCES)
+SEED_VERSION = 9  # v2026-06: profili TP-Link Omada switch (JetStream) + gateway (ER) per fallback SNMP
 
 # Common standard OIDs (usable as fallback for any SNMP device)
 COMMON_OIDS = {
@@ -543,7 +543,7 @@ PROFILES: list[dict[str, Any]] = [
             "sysobjectid_prefixes": ["1.3.6.1.4.1.11863."],
             "sysdescr_patterns": [r"tp-?link", r"omada", r"\beap\d", r"oc200", r"oc300"],
         },
-        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "public", "timeout_seconds": 5, "retries": 2},
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "argus-ro", "timeout_seconds": 5, "retries": 2},
         "web_console": {
             "port": 8043, "scheme": "https", "path": "/", "alt_ports": [443, 80, 8088],
             "notes": "Omada Controller (OC200/OC300/software) HTTPS 8043. AP standalone: HTTP 80 / HTTPS 443. Adoption/management: TCP 29810-29814.",
@@ -564,6 +564,87 @@ PROFILES: list[dict[str, Any]] = [
         },
         "polling_interval_seconds": 60,
         "capabilities": ["snmp_basic", "cpu_memory", "client_count", "interface_status", "omada_controller_ready"],
+    },
+
+    # ---------------- TP-Link Omada / JetStream (Switch) ----------------
+    # Pattern sysDescr SPECIFICI (jetstream, SGxxxx, T1600/T2600…): a parità di OID
+    # (11863) vince sull'AP (che resta il fallback generico "tp-link/omada").
+    {
+        "key": "tplink_omada_switch",
+        "vendor": "TP-Link",
+        "family": "switch",
+        "label": "TP-Link Omada / JetStream (Switch)",
+        "description": "Switch TP-Link JetStream / Omada (SG2xxx Smart, SG3xxx L2+, SX3xxx 10G, T1600G/T2600G, SG2008P…). Enterprise OID .1.3.6.1.4.1.11863. Porte/velocità/LLDP/FDB via MIB standard (BRIDGE-MIB, LLDP-MIB) → memoria porte e topologia complete. CPU/RAM via TPLINK-SYSMONITOR-MIB (tabelle per unità; NON disponibili su alcuni modelli entry come SG2008). PoE via POWER-ETHERNET-MIB (RFC 3621). Con Omada Cloud Essentials: SNMP va abilitato dal controller (Impostazioni → Servizi → SNMP) e vale per tutti i device del sito. Web Console locale HTTP 80/HTTPS 443 (se lo switch non è adottato) — se adottato la gestione è solo dal controller Omada.",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.11863."],
+            "sysdescr_patterns": [r"jetstream", r"\b(tl-)?s[gx]\d{4}", r"\bt[12]600g?\b", r"\bt3700g?\b", r"tp-?link.*switch", r"omada.*switch"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "argus-ro", "timeout_seconds": 5, "retries": 2},
+        "web_console": {
+            "port": 443, "scheme": "https", "path": "/", "alt_ports": [80, 8043],
+            "notes": "Switch standalone: HTTP 80 / HTTPS 443. Se adottato da Omada: gestione dal controller (cloud o OC200 HTTPS 8043).",
+        },
+        "oids": {
+            **COMMON_OIDS,
+            "ifName":            "1.3.6.1.2.1.31.1.1.1.1",
+            "ifHighSpeed":       "1.3.6.1.2.1.31.1.1.1.15",
+            "ifAdminStatus":     "1.3.6.1.2.1.2.2.1.7",
+            "dot1dBaseBridgeAddress": "1.3.6.1.2.1.17.1.1.0",
+            "dot1dTpFdbPort":    "1.3.6.1.2.1.17.4.3.1.2",
+            "dot1qTpFdbPort":    "1.3.6.1.2.1.17.7.1.2.2.1.2",
+            "lldpRemSysName":    "1.0.8802.1.1.2.1.4.1.1.9",
+            "lldpRemPortId":     "1.0.8802.1.1.2.1.4.1.1.7",
+            # POWER-ETHERNET-MIB (RFC 3621)
+            "pethPsePortAdminEnable": "1.3.6.1.2.1.105.1.1.1.3",
+            "pethPsePortDetectionStatus": "1.3.6.1.2.1.105.1.1.1.6",
+            "pethMainPseConsumptionPower": "1.3.6.1.2.1.105.1.3.1.1.4",
+            # TPLINK-SYSMONITOR-MIB (tabelle indicizzate per unità/stack)
+            "tpSysMonitorCpu5Seconds":  "1.3.6.1.4.1.11863.6.4.1.1.1.1.2",
+            "tpSysMonitorCpu1Minute":   "1.3.6.1.4.1.11863.6.4.1.1.1.1.3",
+            "tpSysMonitorCpu5Minutes":  "1.3.6.1.4.1.11863.6.4.1.1.1.1.4",
+            "tpSysMonitorMemUtilization": "1.3.6.1.4.1.11863.6.4.1.2.1.1.2",
+        },
+        "thresholds": {
+            "cpu_warn_pct": 75, "cpu_crit_pct": 90,
+            "mem_warn_pct": 80, "mem_crit_pct": 92,
+            "temp_warn_c": 68, "temp_crit_c": 82,
+            "uplink_down_crit": True,
+            "latency_warn_ms": 50, "packet_loss_warn_pct": 1,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "cpu_memory", "interface_status", "interface_traffic", "mac_table", "lldp", "poe", "omada_controller_ready"],
+    },
+
+    # ---------------- TP-Link Omada (Gateway / Router ER) ----------------
+    {
+        "key": "tplink_omada_gateway",
+        "vendor": "TP-Link",
+        "family": "firewall",
+        "label": "TP-Link Omada Gateway (ER605/ER7206/ER8411…)",
+        "description": "Router/gateway TP-Link Omada serie ER (ER605, ER7206, ER7212PC, ER8411, ER707-M2). Enterprise OID .1.3.6.1.4.1.11863. Espone SOLO MIB-II standard: raggiungibilità, uptime, stato/traffico interfacce WAN/LAN (ifTable). CPU/RAM/sessioni NON disponibili via SNMP (solo dal controller Omada). SNMP va abilitato dal controller Omada (Impostazioni → Servizi → SNMP). Web Console HTTPS 443 / HTTP 80 (solo standalone).",
+        "fingerprint": {
+            "sysobjectid_prefixes": ["1.3.6.1.4.1.11863."],
+            "sysdescr_patterns": [r"\b(tl-)?er\d{3,4}", r"omada\s+(gateway|router)", r"safestream"],
+        },
+        "snmp": {"port": 161, "version": "v2c", "community_suggestion": "argus-ro", "timeout_seconds": 5, "retries": 2},
+        "web_console": {
+            "port": 443, "scheme": "https", "path": "/", "alt_ports": [80, 8043],
+            "notes": "Gateway standalone: HTTPS 443 / HTTP 80. Se adottato da Omada: gestione dal controller (cloud o OC200 HTTPS 8043).",
+        },
+        "oids": {
+            **COMMON_OIDS,
+            "ifName":        "1.3.6.1.2.1.31.1.1.1.1",
+            "ifAdminStatus": "1.3.6.1.2.1.2.2.1.7",
+            "ifHighSpeed":   "1.3.6.1.2.1.31.1.1.1.15",
+            "ifInErrors":    "1.3.6.1.2.1.2.2.1.14",
+            "ifOutErrors":   "1.3.6.1.2.1.2.2.1.20",
+        },
+        "thresholds": {
+            "uplink_down_crit": True,
+            "latency_warn_ms": 50, "packet_loss_warn_pct": 1,
+        },
+        "polling_interval_seconds": 60,
+        "capabilities": ["snmp_basic", "interface_status", "interface_traffic", "omada_controller_ready"],
     },
 
     # ---------------- Aruba Instant On (Access Point) ----------------

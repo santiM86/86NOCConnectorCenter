@@ -84,6 +84,7 @@ const ThresholdsPage = lazyRetry(() => import("@/pages/ThresholdsPage"));
 const TemperatureManagementPage = lazyRetry(() => import("@/pages/TemperatureManagementPage"));
 const DiagnosisCertaintyPage = lazyRetry(() => import("@/pages/DiagnosisCertaintyPage"));
 const AiKnowledgePage = lazyRetry(() => import("@/pages/AiKnowledgePage"));
+const OmadaSettingsPage = lazyRetry(() => import("@/pages/OmadaSettingsPage"));
 const BandwidthPage = lazyRetry(() => import("@/pages/BandwidthPage"));
 const BackupPage = lazyRetry(() => import("@/pages/BackupPage"));
 const ClientPortalPage = lazyRetry(() => import("@/pages/ClientPortalPage"));
@@ -287,6 +288,7 @@ function App() {
               <Route path="settings/hornetsecurity" element={<HornetsecuritySettingsPage />} />
               <Route path="settings/datto" element={<DattoRmmSettingsPage />} />
               <Route path="settings/zyxel" element={<ZyxelNebulaSettingsPage />} />
+              <Route path="settings/omada" element={<OmadaSettingsPage />} />
               <Route path="tools/path-trace" element={<NetworkPathDiagnosisPage />} />
               <Route path="settings/alert-engine" element={<AlertEngineSettingsPage />} />
               <Route path="settings/fingerbank" element={<FingerbankSettingsPage />} />

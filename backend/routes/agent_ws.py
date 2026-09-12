@@ -552,6 +552,24 @@ async def _bridge_discovery(conn: _Connection, batch: List[Dict[str, Any]]) -> N
     for op in ops:
         await db.discovered_endpoints.update_one(op["filter"], op["update"], upsert=True)
 
+    # Aggancio MAC: device gestiti in DHCP che cambiano IP vengono seguiti automaticamente.
+    try:
+        from mac_follow import apply_mac_follow
+        await apply_mac_follow(conn.client_id, batch, source="agent_v4")
+    except Exception as _e_mf:
+        logger.warning("mac_follow skip client=%s err=%s", conn.client_id, _e_mf)
+
+    # v4.18.x DIAGNOSTIC
+    _bridge_stat_tick(conn.agent_id, "discovery_batch", extra={"batch_size": len(ops)})
+    try:
+        await db.managed_agents.update_one(
+            {"agent_id": conn.agent_id},
+            {"$set": {"last_discovery_received_at": now_iso,
+                      "last_discovery_batch_size": len(ops)}},
+        )
+    except Exception:
+        pass
+
     # v4.14.x AUTO-ENRICHMENT: dopo aver popolato discovered_endpoints, scatena
     # in background l'enrichment dei managed_devices del cliente con MAC +
     # OUI + Fingerbank usando i dati appena ricevuti dal connector. Cosi'

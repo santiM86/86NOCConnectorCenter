@@ -1814,7 +1814,12 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               )}
               <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: sc }}></div>
               <span className={`font-medium truncate ${nameIsIP ? "text-[var(--text-muted)] italic" : "text-[var(--text-primary)]"}`} title={d.notes || ""}>{name}</span>
-              {!nameIsIP && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {!nameIsIP && d.status !== "pending_ip" && <span className="font-mono text-[var(--text-muted)]">{d.ip_address}</span>}
+              {d.status === "pending_ip" && (
+                <span className="font-mono text-[9px] text-amber-300" title="IP non ancora noto: agganciato al MAC, verrà rilevato dal prossimo scan della rete" data-testid={`pending-ip-mac-${(d.mac || "").replace(/:/g, "")}`}>
+                  MAC {(d.mac || "").toUpperCase()}
+                </span>
+              )}
               {/* v2026-06-23: badge "Visto via" mostra la fonte di liveness
                   quando il device È online grazie a evidence diversa dal
                   ping (es. ARP broadcast scanner, FDB switch, sysName SNMP).
@@ -1863,7 +1868,7 @@ function DeviceGroup({ label, icon: Icon, devices, color, onInfoClick, renderAct
               )}
               {d.vendor && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)] truncate max-w-[120px]" title={d.vendor}>{d.vendor}</span>}
               {d.snmp_community && <span className="text-[8px] px-1 rounded bg-[var(--bg-card)] text-[var(--text-muted)]">{d.snmp_version || "snmp"}: {d.snmp_community}</span>}
-              <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: sc }}>{d.status === "off" ? "spento" : d.status}</span>
+              <span className="ml-auto font-bold text-[8px] uppercase" style={{ color: d.status === "pending_ip" ? "#FFCC00" : sc }}>{d.status === "off" ? "spento" : d.status === "pending_ip" ? "in attesa IP" : d.status}</span>
               {d.source === "connector" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-master" && <span className="text-[7px] px-1 rounded bg-indigo-500/10 text-indigo-400">M</span>}
               {d.source === "connector-scanner" && <span className="text-[7px] px-1 rounded bg-sky-500/10 text-sky-400">S</span>}
@@ -2327,7 +2332,7 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   };
 
   const emptyForm = {
-    name: "", ip: "", device_type: "generic", monitor_type: "snmp",
+    name: "", ip: "", mac: "", device_type: "generic", monitor_type: "snmp",
     snmp_version: "v2c", community: "public", http_port: "80",
     snmpv3_username: "", snmpv3_auth_protocol: "SHA", snmpv3_auth_password: "",
     snmpv3_priv_protocol: "AES", snmpv3_priv_password: "",
@@ -2336,8 +2341,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
   const [form, setForm] = useState(emptyForm);
 
   const handleSave = async () => {
-    if (!form.ip || !form.name) {
-      toast.error("Nome e IP sono obbligatori");
+    if ((!form.ip && !form.mac) || !form.name) {
+      toast.error("Nome e almeno uno tra IP e MAC sono obbligatori");
       return;
     }
     setSaving(true);
@@ -2346,7 +2351,8 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
       const isHttp = form.monitor_type === "http" || form.monitor_type === "snmp+http";
       const payload = {
         name: form.name,
-        ip: form.ip,
+        ip: form.ip || null,
+        mac: form.mac || null,
         device_type: form.device_type,
         monitor_type: form.monitor_type,
         http_port: isHttp ? parseInt(form.http_port || 80) : 80,
@@ -2361,8 +2367,10 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
         payload.snmpv3_priv_password = form.snmpv3_priv_password;
         payload.snmpv3_security_level = form.snmpv3_security_level;
       }
-      await axios.post(`${API}/connector/${clientId}/managed-devices`, payload);
-      toast.success(`Dispositivo ${form.name} aggiunto. Il connector lo rileverà entro pochi cicli.`);
+      const { data: res } = await axios.post(`${API}/connector/${clientId}/managed-devices`, payload);
+      if (res?.ip_pending) toast.success(`${form.name} agganciato al MAC ${form.mac.toUpperCase()}: l'IP verrà rilevato al prossimo scan della rete e il monitoraggio partirà da solo.`);
+      else if (res?.ip_resolved_from_mac) toast.success(`${form.name} agganciato al MAC: IP ${res.device?.ip} rilevato subito dall'ultimo scan. Monitoraggio attivo.`);
+      else toast.success(`Dispositivo ${form.name} aggiunto. Il connector lo rileverà entro pochi cicli.`);
       setForm(emptyForm);
       setShowAdd(false);
       onRefresh?.();
@@ -3177,7 +3185,11 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                       {macroLabel(d)}
                     </span>
                   </td>
-                  <td className="font-mono text-[var(--text-muted)] text-xs">{d.ip_address}</td>
+                  <td className="font-mono text-[var(--text-muted)] text-xs">
+                    {d.status === "pending_ip"
+                      ? <span className="text-amber-300" title="IP non ancora noto: agganciato al MAC, verrà rilevato dal prossimo scan" data-testid={`pending-ip-mac-${(d.mac || "").replace(/:/g, "")}`}>MAC {(d.mac || "").toUpperCase()}</span>
+                      : d.ip_address}
+                  </td>
                   <td>
                     <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${methodBadge.bg} ${methodBadge.color}`}>
                       {methodBadge.label}
@@ -3190,9 +3202,9 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                     {(monitorType === "snmp" || monitorType === "snmp+http") && d.snmp_version !== "v3" ? (d.snmp_community || "—") : "—"}
                   </td>
                   <td>
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: sc }}>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: d.status === "pending_ip" ? "#FFCC00" : sc }}>
                       {d.status === "online" || d.status === "active" ? <WifiHigh size={12} /> : <WifiSlash size={12} />}
-                      {d.status === "off" ? "SPENTO" : d.status?.toUpperCase()}
+                      {d.status === "off" ? "SPENTO" : d.status === "pending_ip" ? "IN ATTESA IP" : d.status?.toUpperCase()}
                     </span>
                     {d.status === "off" && (
                       <div className="text-[9px] mt-0.5 text-slate-400" title={`VM spenta a livello hypervisor${d.hyperv_host ? ` (host ${d.hyperv_host})` : ""} — nessun alert di down`}>
@@ -3445,9 +3457,14 @@ function DevicesTab({ devices, clientId, onRefresh, onOptimisticUpdate }) {
                 <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Switch Core 01" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs" data-testid="device-name-input" />
               </div>
               <div>
-                <Label className="text-[var(--text-muted)] text-[10px]">IP Address *</Label>
-                <Input value={form.ip} onChange={e => setForm({ ...form, ip: e.target.value })} placeholder="192.168.1.10" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="device-ip-input" />
+                <Label className="text-[var(--text-muted)] text-[10px]">IP Address {form.mac ? "(opzionale)" : "*"}</Label>
+                <Input value={form.ip} onChange={e => setForm({ ...form, ip: e.target.value })} placeholder={form.mac ? "auto dal MAC" : "192.168.1.10"} className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="device-ip-input" />
               </div>
+            </div>
+            <div>
+              <Label className="text-[var(--text-muted)] text-[10px]">MAC Address {form.ip ? "(opzionale — aggancio DHCP)" : "*  (in alternativa all'IP)"}</Label>
+              <Input value={form.mac} onChange={e => setForm({ ...form, mac: e.target.value })} placeholder="AA:BB:CC:DD:EE:FF" className="bg-[var(--bg-panel)] border-[var(--bg-border)] text-[var(--text-primary)] h-8 text-xs font-mono" data-testid="device-mac-input" />
+              <p className="text-[9px] text-[var(--text-muted)] mt-0.5">Con il MAC il dispositivo resta monitorato anche se il DHCP gli cambia IP: ARGUS lo ritrova da solo. Puoi inserire solo il MAC — l'IP viene rilevato dal primo scan della rete.</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

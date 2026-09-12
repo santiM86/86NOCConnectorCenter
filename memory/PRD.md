@@ -1,6 +1,39 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ TP-Link Omada opzione C (SNMP diretto) + Aggancio MAC → IP (DHCP follow)
+**Contesto**: l'utente è su Omada Cloud Essentials (niente Open API) → scelta C = SNMP via Agent.
+- `device_profiles/__init__.py` SEED_VERSION 9: nuovi `tplink_omada_switch` (JetStream SGxxxx/SXxxxx/T1600-T3700:
+  MIB standard porte/FDB/LLDP/PoE + TPLINK-SYSMONITOR-MIB `tpSysMonitorCpu1Minute`/`tpSysMonitorMemUtilization`) e
+  `tplink_omada_gateway` (ER605/ER7206/ER8411: solo MIB-II). Pattern sysDescr SPECIFICI (no "router"/"switch"
+  generici → evita falsi match su device senza profilo); l'AP `tplink_omada_ap` resta fallback generico tp-link/omada.
+  Community suggerita `argus-ro` (scelta utente).
+- Soglie: `connector.py` loop CPU aggiunge `tpSysCpuUsage`/`tpSysMonitorCpu1Minute`; nuovo blocco RAM TP-Link
+  (`vendor_<key>_high`); `metric_history.py` ingest cpu/memory TP-Link.
+- UI `OmadaSettingsPage.js`: box verde `omada-snmp-box` in alto (passi Console Omada → Impostazioni → Servizi → SNMP,
+  community argus-ro, cosa si ottiene/non si ottiene via SNMP) + pulsante → /lan-scanner. Open API lasciata sotto.
+- **Aggancio MAC** `backend/mac_follow.py::apply_mac_follow(client_id, endpoints, source)`: chiamata dopo ogni discovery
+  (`agent_ws._bridge_discovery` e `connector.py` lan-scan legacy). Se il MAC di un managed_device (follow_mac≠False,
+  non LAA) è visto su UN solo IP diverso e quell'IP non è di un altro device → aggiorna ip/ip_address, `ip_previous`,
+  `ip_changed_at`, `ip_history[-20]`, ri-chiava devices/device_credentials/device_poll_status/device_status_state/
+  ilo_status/switch_ports/port_memory/mac_connections, alert medium `mac_follow_ip_update`, `push_config_to_client`.
+  L'alert legacy "cambiato IP" (security_mac_ip_roam) è saltato per i MAC seguiti. Endpoint
+  `POST /api/devices/by-ip/{ip}/follow-mac {enabled, client_id}` (409 se MAC ignoto). `DeviceResponse` +
+  `/api/devices` espongono `follow_mac` (default true), `ip_previous`, `ip_changed_at`. UI: box
+  `follow-mac-box`/`follow-mac-toggle` in `DeviceEditModal.js` (step 4b persist) con ultimo cambio IP.
+- Test: `tests/test_mac_follow_iter154.py` 6/6 (fingerprint + follow/rekey/alert/idempotenza/conflitto/opt-out/ambiguo),
+  iteration_154 frontend 100%. ⚠️ PROD dopo Save to GitHub + redeploy. Omada Open API resta disponibile per futuro upgrade.
+- **Aggiunta device SOLO via MAC** (richiesta successiva): `ManagedDevice.ip` opzionale + `mac`. `POST /connector/{cid}/managed-devices`
+  richiede ip o mac (422), dedup per MAC (409), MAC normalizzato; senza IP prova `mac_follow.resolve_ip_from_discovery`
+  (ultimo `discovered_endpoints` <48h non conteso) → altrimenti doc con `ip:None, ip_pending:True, follow_mac:True`.
+  `apply_mac_follow` gestisce i pending: al primo discovery assegna l'IP (no rekey), alert low "IP rilevato", toglie da
+  `deleted_devices`, push config agent. `GET /api/devices` espone i pending con `status:"pending_ip"`, `ip_address:""`,
+  `mac` (poller config e loop status li ignorano già perché ip None). UI `ClientOverviewPage` dialog Aggiungi: campo
+  `device-mac-input` (IP opzionale se c'è MAC), toast differenziati (`ip_pending`/`ip_resolved_from_mac`); vista raggruppata
+  e tabella mostrano "MAC xx · IN ATTESA IP" (testid `pending-ip-mac-<mac>`). Test 8/8 + curl (add/dup/422/list) + screenshot.
+  ⚠️ MAC LAA (bit locale 0x02, es. AA:.., DE:..) esclusi dal follow: sono random/privacy — usare MAC reali nei test.
+
+
 ## 2026-06 ✅ Memoria porte switch (abitudini → down abituale vs anomalo)
 `backend/port_memory.py`: doc `port_memory` per porta (client_id, local_ip, idx) con istogramma ora-della-settimana
 (`how_up[168]`/`how_total[168]`), samples, `usual_speed_mbps`, PoE abituale, `last_device` (FDB, refresh 15 min, ≤3 MAC),
@@ -9749,3 +9782,15 @@ Health null è normale HPE (usa i sottosistemi).
 - zyxel_nebula.py: GET /api/zyxel/discover-gateways (admin): scansione in BACKGROUND di tutte le org Nebula (sites/devices, online-status, interface-settings) → gateway con sito, modello, MAC, stato, public_ip WAN, lan_ip, wan_interfaces, client già collegato. Cache 5 min in memoria; risposta immediata con `refreshing=true` (prima risposta: firewall già in zyxel_devices); org senza Pro Pack (403) saltate con warning.
 - NewClientWizard step 4: lista "Trovati in Zyxel Nebula" con ricerca e polling ogni 4s finché refreshing; click → precompila etichetta "Firewall <modello> · <sito>", tipo firewall, IP WAN (se privato → warning doppio NAT e campo lasciato all'IP rilevato dall'agent). "Aggiungi e continua" → target WAN + PUT zyxel/link (org+sito) + firewall LAN come managed device vitale (POST connector/{cid}/managed-devices + devices/by-ip/{ip}/vital).
 - Step 5: tab Master / Scanner con comando PowerShell per ciascun ruolo (-Role master|scanner) e spiegazione.
+
+## 2026-09-12 — TP-Link Omada Open API (sola lettura) — IN ATTESA CREDENZIALI UTENTE
+- routes/omada.py: creds cifrate (omada_settings id=global: base_url, omadac_id, client_id, client_secret_enc), token client_credentials in memoria (refresh su 401/-4411x), GET /openapi/v1/{omadacId}/… con "Authorization: AccessToken=…", paginazione. Endpoints: GET/PUT /api/omada/settings, POST /api/omada/test, POST /api/omada/sync, GET /api/omada/sites, GET /api/omada/devices, GET /api/omada/discover-gateways (wizard), PUT/DELETE/GET /api/clients/{cid}/omada/link. Sync ogni 5 min (job nello scheduler Zyxel): siti → omada_sites_cache, device → omada_devices (gateway/switch/AP, online/offline, ip, public_ip, clients), porte switch → store_switch_ports (source omada) → memoria porte/alert.
+- UI: pages/OmadaSettingsPage.js (/settings/omada, da Impostazioni "TP-Link Omada") con guida integrata su dove trovare Omada ID/Client ID/Secret/Interface Access Address, test, sync, tabella siti→cliente (select), dispositivi. Wizard Nuovo Cliente: lista unificata NEBULA/OMADA, link Omada al "Continua".
+- Test: mock controller tests/mock_omada_server.py (token, 2 siti, 4 device, 5 porte) → flusso completo OK (porte in switch_ports con PoE, memoria porte 4 porte). Dati mock rimossi. L'utente deve creare l'app Open API (Client Credentials, Viewer) e inserire le credenziali nella pagina.
+- Nota URL: l'utente ha indicato https://euw1-omada-cloud.tplinkcloud.com/ (console); l'API usa l'"Interface Access Address" mostrato nella pagina Open API (tipicamente https://euw1-omada-northbound.tplinkcloud.com).
+
+## 2026-09-12 — Omada MULTI-CONTROLLER (l'utente ha 4 organizzazioni Omada Cloud, piano Essentials: La Mediterranea, Gualdi_HomeDalmine, 86Bit, Galvan)
+- Su Omada Cloud ogni organizzazione = controller separato (omadacId + app Open API propria). routes/omada.py rifatto multi-controller: omada_settings = un doc per controller {id: ctrl-xxxx, name, base_url, omadac_id, client_id, client_secret_enc}; token cache per controller; collezioni con controller_id. Endpoints: GET /api/omada/settings {controllers[]}, POST /api/omada/controllers, PUT/DELETE /api/omada/controllers/{id}, POST /api/omada/controllers/{id}/test (errore → 400 con detail, non 502: il proxy sostituisce i 502 con HTML), POST /api/omada/sync?ctrl_id=, link con controller_id.
+- UI OmadaSettingsPage: "Aggiungi organizzazione" (form), tabella controller (Test/Sync/modifica/elimina, stato/errore), Siti→Clienti con colonna organizzazione, dispositivi. Guida adattata a Omada Cloud (entrare nell'organizzazione → Global View → Impostazioni → Integrazione piattaforma → Open API).
+- Testato con mock (tests/mock_omada_server.py): add/test/sync/link/discover + credenziali errate → "Omada -44106: Invalid client". Mock rimosso. IN ATTESA: l'utente crea le app Open API nelle 4 organizzazioni (prima Galvan) e le inserisce.
+- Dubbio aperto: disponibilità Open API su Omada Cloud-Based Controller piano Essentials — se manca la voce, chiedere screenshot.

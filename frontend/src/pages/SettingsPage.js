@@ -235,6 +235,20 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
               <div>
+                <p className="text-[var(--text-primary)] text-xs font-medium">TP-Link Omada (Open API)</p>
+                <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
+                  Gateway, switch (porte/PoE → memoria porte) e access point dei siti Omada: stato, modello, IP e client collegati via Open API in sola lettura.
+                </p>
+              </div>
+              <Button size="sm" variant="outline"
+                onClick={() => navigate("/settings/omada")}
+                className="rounded-md text-xs h-7 border-[var(--bg-border)] hover:bg-[var(--bg-hover)]"
+                data-testid="manage-omada-btn">
+                Gestisci
+              </Button>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-[var(--bg-border)]">
+              <div>
                 <p className="text-[var(--text-primary)] text-xs font-medium">Diagnosi Percorso (traceroute / MTR)</p>
                 <p className="text-[var(--text-muted)] text-[10px] mt-0.5">
                   Esegui traceroute/MTR da un agent-sonda (es. nella tua sede) verso l'IP pubblico di un cliente: loss% e latenza per hop, per localizzare guasti carrier vs ultimo miglio.

@@ -138,6 +138,10 @@ class DeviceResponse(BaseModel):
     # accesa risulta Off/Saved/Paused (spegnimento inatteso). Default False =
     # comportamento attuale (VM spenta = nessun alert, zero falsi positivi).
     hyperv_alert_on_off: Optional[bool] = False
+    # v2026-06: aggancio MAC → IP (device DHCP seguiti automaticamente al cambio IP)
+    follow_mac: Optional[bool] = True
+    ip_previous: Optional[str] = None
+    ip_changed_at: Optional[str] = None
     # v2026-06: override soglie temperatura per SINGOLO dispositivo (°C). None =
     # nessun override (usa soglia profilo o default per tipo). Hanno la massima
     # priorità nella risoluzione delle soglie temperatura.
@@ -317,7 +321,8 @@ class PollingReport(BaseModel):
     devices: list[DeviceStatusReport]
 
 class ManagedDevice(BaseModel):
-    ip: str
+    ip: Optional[str] = None       # opzionale se e' dato il MAC (device DHCP: IP risolto dal discovery)
+    mac: Optional[str] = None      # aggancio MAC → IP (follow DHCP)
     community: str = "public"
     name: str
     monitor_type: str = "snmp"

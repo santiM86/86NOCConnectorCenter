@@ -393,6 +393,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
         d["hyperv_state"] = _mhv_state or d.get("hyperv_state") or ""
         d["hyperv_host"] = _mhv_host or d.get("hyperv_host") or ""
         d["hyperv_alert_on_off"] = bool(md.get("hyperv_alert_on_off", d.get("hyperv_alert_on_off", False)))
+        d["follow_mac"] = md.get("follow_mac") is not False
+        d["ip_previous"] = md.get("ip_previous")
+        d["ip_changed_at"] = md.get("ip_changed_at")
         # v2026-06: override soglie temperatura per dispositivo (managed_devices)
         _tw = md.get("temp_warn_c", d.get("temp_warn_c"))
         _tc = md.get("temp_crit_c", d.get("temp_crit_c"))
@@ -575,6 +578,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
                 "hyperv_state": _hv_state or "",
                 "hyperv_host": _hv_host or "",
                 "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
+                "follow_mac": md.get("follow_mac") is not False,
+                "ip_previous": md.get("ip_previous"),
+                "ip_changed_at": md.get("ip_changed_at"),
                 "temp_warn_c": md.get("temp_warn_c") if isinstance(md.get("temp_warn_c"), (int, float)) else None,
                 "temp_crit_c": md.get("temp_crit_c") if isinstance(md.get("temp_crit_c"), (int, float)) else None,
                 "disk_temp_warn_c": md.get("disk_temp_warn_c") if isinstance(md.get("disk_temp_warn_c"), (int, float)) else None,
@@ -788,6 +794,9 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
             "hyperv_state": hv_state or "",
             "hyperv_host": hv_host or "",
             "hyperv_alert_on_off": bool(md.get("hyperv_alert_on_off")),
+            "follow_mac": md.get("follow_mac") is not False,
+            "ip_previous": md.get("ip_previous"),
+            "ip_changed_at": md.get("ip_changed_at"),
             "virtualization": md.get("virtualization") or "",
             "hyperv_vm_name": md.get("hyperv_vm_name") or "",
             "hyperv_host_hint": md.get("hyperv_host_hint") or "",
@@ -801,6 +810,21 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     device_ids = [d["id"] for d in devices if not d["id"].startswith("poll_")]
     creds = await db.device_credentials.find({"device_id": {"$in": device_ids}}, {"_id": 0, "device_id": 1}).to_list(1000)
     cred_device_ids = {c["device_id"] for c in creds}
+
+    # Device agganciati SOLO via MAC (DHCP) in attesa che il discovery risolva l'IP
+    for md in managed_devices_raw:
+        if md.get("ip") or md.get("ip_address") or not (md.get("mac") or md.get("mac_address")):
+            continue
+        devices.append({
+            "id": md.get("id") or f"md_mac_{(md.get('mac') or '').replace(':', '')}",
+            "client_id": md.get("client_id", ""), "name": md.get("name") or (md.get("mac") or "").upper(),
+            "device_type": md.get("device_type") or "generic", "ip_address": "", "hostname": md.get("hostname", ""),
+            "location": md.get("location", ""), "status": "pending_ip", "status_reason": "waiting_mac_discovery",
+            "redfish_enabled": False, "source": md.get("source") or "manual", "monitor_type": md.get("monitor_type", ""),
+            "snmp_community": md.get("community") or md.get("snmp_community", ""), "snmp_version": md.get("snmp_version", ""),
+            "http_port": md.get("http_port"), "mac": md.get("mac") or md.get("mac_address") or "", "follow_mac": True,
+            "is_vital": md.get("is_vital"), "notes": md.get("notes"), "created_at": md.get("created_at"),
+        })
 
     # === LIVENESS OVERRIDE — SINGLE SOURCE OF TRUTH (fix discrepanza pagine) ===
     # Applichiamo la stessa logica di overview.py PRIMA di serializzare, sui DICT.

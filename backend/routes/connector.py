@@ -2214,6 +2214,8 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
             ("cpuUtil", "CPU"),              # HP ProCurve
             ("cpuUsage", "CPU"),             # QNAP
             ("cpuUtilization", "CPU"),       # UniFi generic
+            ("tpSysCpuUsage", "CPU"),        # TP-Link Omada EAP
+            ("tpSysMonitorCpu1Minute", "CPU"),   # TP-Link JetStream switch (TPLINK-SYSMONITOR-MIB)
             ("mtxrHlProcessorTemperature", "CPU Temp"),  # MikroTik
         ]:
             val = vendor_metrics.get(metric_key)
@@ -2256,6 +2258,27 @@ async def _check_device_thresholds(client_id: str, dev: dict, prev_status: Optio
                             })
                 except (ValueError, TypeError):
                     pass
+
+        # --- TP-Link (EAP / JetStream): memoria via MIB privata
+        for metric_key in ("tpSysMemoryUsage", "tpSysMonitorMemUtilization"):
+            val = vendor_metrics.get(metric_key)
+            if isinstance(val, dict):
+                vals = [float(v) for v in val.values() if isinstance(v, (int, float))]
+                val = max(vals) if vals else None
+            if val is None:
+                continue
+            try:
+                v = float(val)
+            except (ValueError, TypeError):
+                continue
+            if v >= mem_crit:
+                alerts_to_create.append({"severity": "critical", "title": f"RAM {int(v)}% (critico): {device_name}",
+                                         "message": f"{device_name} ({device_ip}) RAM {v}% — soglia critica {mem_crit}%",
+                                         "source_type": f"vendor_{metric_key}_high"})
+            elif v >= mem_warn:
+                alerts_to_create.append({"severity": "high", "title": f"RAM {int(v)}%: {device_name}",
+                                         "message": f"{device_name} ({device_ip}) RAM {v}% — warning {mem_warn}%",
+                                         "source_type": f"vendor_{metric_key}_high"})
 
         # --- Fan + power supply state
         #   HPE Comware (HH3C-LswDEVM): stesso normalizzatore del motore hardware_alerts
@@ -3042,12 +3065,26 @@ async def get_managed_devices(client_id: str, request: Request):
 
 @router.post("/connector/{client_id}/managed-devices")
 async def add_managed_device(client_id: str, device: ManagedDevice, current_user: dict = Depends(get_current_user)):
-    existing = await db.managed_devices.find_one({"client_id": client_id, "ip": device.ip})
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Dispositivo {device.ip} gia' presente per questo cliente")
+    from mac_follow import norm_mac, resolve_ip_from_discovery
+    ip = (device.ip or "").strip() or None
+    mac = norm_mac(device.mac) if device.mac else ""
+    if device.mac and not mac:
+        raise HTTPException(status_code=422, detail="MAC non valido: usa il formato AA:BB:CC:DD:EE:FF")
+    if not ip and not mac:
+        raise HTTPException(status_code=422, detail="Inserisci l'IP oppure il MAC del dispositivo")
+    if mac:
+        dup = await db.managed_devices.find_one({"client_id": client_id, "$or": [{"mac": mac}, {"mac": mac.upper()}, {"mac_address": mac.upper()}]}, {"_id": 0, "ip": 1, "name": 1})
+        if dup:
+            raise HTTPException(status_code=409, detail=f"MAC {mac.upper()} gia' agganciato a {dup.get('name') or dup.get('ip')}")
+        if not ip:
+            ip = await resolve_ip_from_discovery(client_id, mac)
+    if ip:
+        existing = await db.managed_devices.find_one({"client_id": client_id, "ip": ip})
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Dispositivo {ip} gia' presente per questo cliente")
     doc = {
         "id": str(uuid.uuid4()), "client_id": client_id,
-        "ip": device.ip, "community": device.community,
+        "ip": ip, "community": device.community,
         "name": device.name, "monitor_type": device.monitor_type,
         "device_type": device.device_type,
         "http_port": device.http_port,
@@ -3063,10 +3100,21 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
     }
+    if mac:
+        doc.update({"mac": mac, "follow_mac": True, "source": "manual", "ip_pending": ip is None})
+        if ip:
+            doc["ip_address"] = ip
     await db.managed_devices.insert_one(doc)
     # Remove from blacklist if it was previously deleted
-    await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": device.ip})
-    return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"}}
+    if ip:
+        await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": ip})
+        try:
+            from routes.agent_ws import push_config_to_client
+            await push_config_to_client(client_id)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"},
+            "ip_resolved_from_mac": bool(mac and ip and not (device.ip or "").strip()), "ip_pending": ip is None}
 
 
 @router.post("/connector/{client_id}/cleanup-stale-devices")
@@ -4435,6 +4483,14 @@ async def connector_network_discovery(request: Request):
     if discovered_endpoints:
         await db.discovered_endpoints.insert_many(discovered_endpoints)
 
+    # Aggancio MAC: i device gestiti in DHCP che cambiano IP vengono seguiti (niente alert "roam" per questi)
+    followed_macs: set = set()
+    try:
+        from mac_follow import apply_mac_follow
+        followed_macs = {c["mac"].upper() for c in await apply_mac_follow(client_id, discovered_endpoints, source="connector")}
+    except Exception as _e_mf:
+        logger.warning(f"mac_follow skip client={client_id}: {_e_mf}")
+
     # v3.7.1: Re-apply Datto RMM matching immediately after replacing discovered_endpoints.
     # Senza questo, il `datto_name` scritto dall'ultimo sync Datto viene perso ad ogni
     # polling del connector (~60s), dando l'illusione che il matching "scompaia".
@@ -4542,7 +4598,7 @@ async def connector_network_discovery(request: Request):
     # Case B: same MAC, different IP (DHCP reassignment or device moved, lower severity)
     for mac, new_ip in curr_mac_ip.items():
         old_ip = prev_mac_ip.get(mac)
-        if old_ip and old_ip != new_ip:
+        if old_ip and old_ip != new_ip and mac not in followed_macs:
             # Only alert for managed/known devices to avoid spam from dynamic clients
             if old_ip in managed_ips or new_ip in managed_ips:
                 identity_alerts.append({
