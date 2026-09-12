@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Check, Copy, ArrowRight, SkipForward } from "@phosphor-icons/react";
+import { Check, Copy, ArrowRight, SkipForward, CircleNotch as Loader2 } from "@phosphor-icons/react";
 
 const STEPS = ["Cliente", "Datto RMM", "Backup", "Monitor WAN", "Agent", "Riepilogo"];
 
@@ -36,6 +36,10 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
   const [selVmCustomers, setSelVmCustomers] = useState(new Set());
   // Step 4 WAN
   const [wan, setWan] = useState({ label: "Firewall", device_type: "firewall", public_ip: "" });
+  const [zyxelGw, setZyxelGw] = useState({ items: [], refreshing: false, loaded: false, error: null });
+  const [zyxelSel, setZyxelSel] = useState(null);
+  const [zyxelQ, setZyxelQ] = useState("");
+  const [agentRole, setAgentRole] = useState("master");
   // Riepilogo: cosa è stato agganciato
   const [done, setDone] = useState({ datto: null, preset: null, hornet: 0, wan: null });
 
@@ -48,6 +52,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       setTenants([]); setSelTenants(new Set());
       setVmCustomers([]); setSelVmCustomers(new Set());
       setWan({ label: "Firewall", device_type: "firewall", public_ip: "" });
+      setZyxelSel(null); setZyxelQ(""); setAgentRole("master");
       setDone({ datto: null, preset: null, hornet: 0, wan: null });
     }
   }, [open]);
@@ -69,6 +74,16 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       axios.get(`${API}/external-monitor/detected-public-ip/${client.id}`)
         .then(r => { if (r.data?.public_ip) setWan(w => ({ ...w, public_ip: r.data.public_ip })); })
         .catch(() => {});
+    }
+    if (step === 4 && !zyxelGw.loaded) {
+      let stop = false;
+      const poll = () => axios.get(`${API}/zyxel/discover-gateways`).then(r => {
+        if (stop) return;
+        setZyxelGw({ items: r.data?.gateways || [], refreshing: !!r.data?.refreshing, loaded: true, error: r.data?.error || null });
+        if (r.data?.refreshing) setTimeout(poll, 4000);
+      }).catch(e => { if (!stop) setZyxelGw({ items: [], refreshing: false, loaded: true, error: e.response?.data?.detail || "Zyxel Nebula non disponibile" }); });
+      poll();
+      return () => { stop = true; };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, client]);
@@ -164,28 +179,60 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     } finally { setSaving(false); }
   };
 
+  const isPrivateIp = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip || "");
+
+  const pickZyxel = (g) => {
+    if (zyxelSel?.dev_id === g.dev_id) { setZyxelSel(null); return; }
+    setZyxelSel(g);
+    const pub = g.public_ip && !isPrivateIp(g.public_ip) ? g.public_ip : "";
+    setWan(w => ({ label: `Firewall ${g.model || "Zyxel"} · ${g.site_name || g.name}`, device_type: "firewall", public_ip: pub || w.public_ip || "" }));
+    if (g.public_ip && isPrivateIp(g.public_ip)) toast.warning(`WAN del firewall con IP privato (${g.public_ip}): doppio NAT, inserisci l'IP pubblico dell'operatore`);
+  };
+
   const addWan = async () => {
-    if (!wan.public_ip.trim()) { setStep(5); return; }
+    const ip = wan.public_ip.trim();
+    if (!ip && !zyxelSel) { setStep(5); return; }
     setSaving(true);
+    const okParts = [];
     try {
-      await axios.post(`${API}/external-monitor/targets`, {
-        client_id: client.id, label: wan.label || "Firewall",
-        device_type: wan.device_type, public_ip: wan.public_ip.trim(),
-        check_ports: [443],
-      });
-      toast.success("Target WAN aggiunto");
-      setDone(d => ({ ...d, wan: wan.public_ip.trim() }));
+      if (ip) {
+        await axios.post(`${API}/external-monitor/targets`, {
+          client_id: client.id, label: wan.label || "Firewall",
+          device_type: wan.device_type, public_ip: ip, check_ports: [443],
+        });
+        okParts.push("target WAN");
+      }
+      if (zyxelSel) {
+        try {
+          await axios.put(`${API}/clients/${client.id}/zyxel/link`, { org_id: zyxelSel.org_id, site_ids: zyxelSel.site_id ? [zyxelSel.site_id] : null });
+          okParts.push("link Nebula");
+        } catch (e) { toast.error(`Link Nebula fallito: ${e.response?.data?.detail || e.message}`); }
+        if (zyxelSel.lan_ip) {
+          try {
+            await axios.post(`${API}/connector/${client.id}/managed-devices`, {
+              ip: zyxelSel.lan_ip, name: zyxelSel.name && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(zyxelSel.name) ? zyxelSel.name : `Firewall ${zyxelSel.model || "Zyxel"}`,
+              community: "public", monitor_type: "ping", device_type: "firewall",
+            });
+            await axios.post(`${API}/devices/by-ip/${encodeURIComponent(zyxelSel.lan_ip)}/vital`, { is_vital: true, client_id: client.id, reason: "firewall Nebula (wizard)" }).catch(() => {});
+            okParts.push(`firewall LAN ${zyxelSel.lan_ip} (vitale)`);
+          } catch (e) { if (e.response?.status !== 409) toast.error(`Firewall LAN non aggiunto: ${e.response?.data?.detail || e.message}`); }
+        }
+      }
+      if (okParts.length) toast.success(`Configurato: ${okParts.join(", ")}`);
+      setDone(d => ({ ...d, wan: ip || (zyxelSel ? `Nebula ${zyxelSel.site_name || zyxelSel.name}` : null) }));
       setStep(5);
     } catch (e) {
       toast.error(`Aggiunta WAN fallita: ${e.response?.data?.detail || e.message}`);
     } finally { setSaving(false); }
   };
 
-  const installCmd = client ? (() => {
+  const buildInstallCmd = (role) => {
+    if (!client) return "";
     const wsBase = (window.location.origin || "https://argus.86bit.it").replace(/^http/, "ws");
     const raw = "https://raw.githubusercontent.com/santiM86/86NOCConnectorCenter/main/noc-agent/build/install-noc-agent.ps1";
-    return `powershell -ExecutionPolicy Bypass -Command "iwr -useb ${raw} -OutFile $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1 -Token '${client.api_key}' -ClientId '${client.id}' -BackendUrl '${wsBase}/api/agent/ws' -Role master"`;
-  })() : "";
+    return `powershell -ExecutionPolicy Bypass -Command "iwr -useb ${raw} -OutFile $env:TEMP\\i.ps1; & $env:TEMP\\i.ps1 -Token '${client.api_key}' -ClientId '${client.id}' -BackendUrl '${wsBase}/api/agent/ws' -Role ${role}"`;
+  };
+  const installCmd = buildInstallCmd(agentRole);
 
   const copy = (txt, label) => { navigator.clipboard.writeText(txt); toast.success(`${label} copiato`); };
 
@@ -298,6 +345,36 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
 
           {step === 4 && (
             <div className="space-y-3" data-testid="wizard-step-wan">
+              <div className="rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)]" data-testid="wizard-zyxel-list">
+                <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--bg-border)]">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300">Trovati in Zyxel Nebula</span>
+                  {zyxelGw.refreshing && <span className="text-[9px] text-[var(--text-muted)] flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> scansione org in corso…</span>}
+                  {!zyxelGw.refreshing && zyxelGw.loaded && <span className="text-[9px] text-[var(--text-muted)]">{zyxelGw.items.length} firewall</span>}
+                  <input value={zyxelQ} onChange={e => setZyxelQ(e.target.value)} placeholder="cerca sito / modello / IP" className="ml-auto h-6 px-2 w-44 text-[10px] rounded border border-[var(--bg-border)] bg-[var(--bg-panel)] text-[var(--text-primary)]" data-testid="wizard-zyxel-search" />
+                </div>
+                {zyxelGw.error && <p className="px-2 py-1.5 text-[10px] text-amber-300">{zyxelGw.error}</p>}
+                <ul className="max-h-40 overflow-y-auto divide-y divide-[var(--bg-border)]">
+                  {zyxelGw.items
+                    .filter(g => !zyxelQ || `${g.site_name} ${g.org_name} ${g.model} ${g.name} ${g.public_ip} ${g.lan_ip}`.toLowerCase().includes(zyxelQ.toLowerCase()))
+                    .map(g => {
+                      const sel = zyxelSel?.dev_id === g.dev_id;
+                      return (
+                        <li key={g.dev_id} onClick={() => pickZyxel(g)} data-testid={`wizard-zyxel-gw-${g.dev_id}`}
+                          className={`px-2 py-1.5 text-[11px] cursor-pointer flex items-center gap-2 ${sel ? "bg-indigo-500/15" : "hover:bg-[var(--bg-hover)]"} ${g.linked_client_id ? "opacity-60" : ""}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${g.online_status === "ONLINE" ? "bg-emerald-400" : "bg-red-400"}`} />
+                          <span className="font-semibold text-[var(--text-primary)] truncate">{g.site_name || g.name}</span>
+                          <span className="text-[9px] text-[var(--text-muted)]">{g.model}</span>
+                          <span className="font-mono text-[10px] text-cyan-200 ml-auto">{g.public_ip || "—"}{g.public_ip && isPrivateIp(g.public_ip) ? " ⚠ privato" : ""}</span>
+                          {g.lan_ip && <span className="font-mono text-[9px] text-[var(--text-muted)]">LAN {g.lan_ip}</span>}
+                          {g.linked_client_id && <span className="text-[8px] px-1 rounded bg-neutral-500/20 text-neutral-300" title={`Già collegato a ${g.linked_client_name}`}>{g.linked_client_name}</span>}
+                          {sel && <Check size={12} className="text-indigo-300" />}
+                        </li>
+                      );
+                    })}
+                  {zyxelGw.loaded && !zyxelGw.refreshing && zyxelGw.items.length === 0 && !zyxelGw.error && <li className="px-2 py-2 text-[10px] text-[var(--text-muted)]">Nessun firewall trovato in Nebula.</li>}
+                </ul>
+                {zyxelSel && <p className="px-2 py-1 text-[9px] text-emerald-300 border-t border-[var(--bg-border)]" data-testid="wizard-zyxel-selected">Selezionato: al "Continua" collego il cliente a Nebula (org {zyxelSel.org_name}, sito {zyxelSel.site_name}){zyxelSel.lan_ip ? `, aggiungo il firewall ${zyxelSel.lan_ip} come dispositivo vitale` : ""} e creo il target WAN.</p>}
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <Field label="Etichetta"><Input value={wan.label} onChange={e => setWan(w => ({ ...w, label: e.target.value }))} placeholder="Firewall Zyxel" className={inputCls} data-testid="wizard-wan-label" /></Field>
                 <Field label="Tipo">
@@ -323,13 +400,23 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
                   <Button type="button" variant="outline" className="h-8 px-2" onClick={() => copy(client.api_key, "API Key")}><Copy size={13} /></Button>
                 </div>
               </Field>
-              <Field label="Comando di installazione agent (PowerShell admin)">
+              <div className="flex gap-1 text-[11px]" data-testid="wizard-agent-role-tabs">
+                {[["master", "Master (server principale)"], ["scanner", "Scanner (sede / VLAN aggiuntiva)"]].map(([r, l]) => (
+                  <button key={r} type="button" onClick={() => setAgentRole(r)} data-testid={`wizard-agent-role-${r}`}
+                    className={`px-2.5 h-7 rounded-md border ${agentRole === r ? "bg-indigo-600 text-white border-indigo-500" : "border-[var(--bg-border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>{l}</button>
+                ))}
+              </div>
+              <Field label={`Comando di installazione agent ${agentRole.toUpperCase()} (PowerShell admin)`}>
                 <div className="flex items-start gap-2">
                   <textarea readOnly value={installCmd} className="w-full h-24 bg-[var(--bg-card)] border border-[var(--bg-border)] rounded-md text-[10px] font-mono p-2 text-[var(--text-secondary)]" data-testid="wizard-agent-cmd" />
-                  <Button type="button" variant="outline" className="h-8 px-2" onClick={() => copy(installCmd, "Comando")}><Copy size={13} /></Button>
+                  <Button type="button" variant="outline" className="h-8 px-2" onClick={() => copy(installCmd, `Comando ${agentRole}`)} data-testid="wizard-agent-copy"><Copy size={13} /></Button>
                 </div>
               </Field>
-              <p className="text-[10px] text-[var(--text-muted)]">Esegui sul server del cliente come amministratore per installare l'agent.</p>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                {agentRole === "master"
+                  ? "Master: uno per cliente, sul server principale. Fa ping/SNMP/discovery e coordina gli scanner."
+                  : "Scanner: uno per ogni sede o VLAN non raggiungibile dal master. Stesso token cliente, si registra da solo sotto il master."}
+              </p>
             </div>
           )}
 
