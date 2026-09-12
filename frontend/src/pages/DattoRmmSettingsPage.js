@@ -83,6 +83,44 @@ export default function DattoRmmSettingsPage() {
     }
   };
 
+  // v2026-06-29: Match Debug — diagnostica specifica per il caso
+  // "N device persisted ma 0 match con discovered_endpoints".
+  // Chiama /api/admin/datto/match-debug/{client_id} e mostra in alert
+  // la causa esatta (A/B/C/D/E) con sample MAC/IP per debug visivo.
+  const matchDebugClient = async (clientId, clientName) => {
+    try {
+      const r = await axios.get(`${API}/api/admin/datto/match-debug/${clientId}`, { headers });
+      const d = r.data;
+      const sampleDatto = (d.sample_datto_with_mac || []).map(x =>
+        `  • ${x.name}  MAC=${x.mac || "(no MAC)"} IP=${x.ip || "—"}`
+      ).join("\n");
+      const sampleEps = (d.sample_eps_with_mac || []).map(x =>
+        `  • MAC=${x.mac} IP=${x.ip || "—"} sw=${x.switch_ip || "?"}:${x.port || "?"}`
+      ).join("\n");
+      const sampleNoMac = (d.sample_datto_no_mac || []).slice(0, 5).join(", ");
+
+      const msg =
+        `🔎 Match Debug — ${clientName}\n\n` +
+        `${d.diagnosis}\n\n` +
+        `📊 Numeri:\n` +
+        `  Datto persisted    : ${d.datto_devices_persisted}\n` +
+        `  Datto con MAC      : ${d.datto_devices_with_mac}\n` +
+        `  Datto senza MAC    : ${d.datto_devices_without_mac}\n` +
+        `  Datto con IP       : ${d.datto_devices_with_ip}\n` +
+        `  Discovered eps     : ${d.discovered_endpoints_total}\n` +
+        `  Eps con MAC        : ${d.discovered_endpoints_with_mac}\n` +
+        `  Eps con IP         : ${d.discovered_endpoints_with_ip}\n` +
+        `  Intersezione MAC   : ${d.intersection_mac}\n` +
+        `  Intersezione IP    : ${d.intersection_ip}\n` +
+        (sampleDatto ? `\n📦 Sample Datto:\n${sampleDatto}\n` : "") +
+        (sampleEps ? `\n🔌 Sample Endpoints:\n${sampleEps}\n` : "") +
+        (sampleNoMac ? `\n⚠️ Datto senza MAC (audit endpoint vuoto): ${sampleNoMac}\n` : "");
+      window.alert(msg);
+    } catch (e) {
+      toast.error(`Match Debug fallito: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const reload = useCallback(async () => {
     try {
       const [c, s, cl, sched] = await Promise.all([
@@ -255,6 +293,9 @@ export default function DattoRmmSettingsPage() {
               className="mt-1 h-9 text-xs font-mono"
               data-testid="datto-user-id-input"
             />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-tight">
+              ObjectId Mongo del portal (24 hex). <span className="text-red-400">NON</span> l&apos;email.
+            </p>
           </div>
           <div className="md:col-span-2">
             <Label className="text-[10px] uppercase tracking-wider">Base URL (opzionale)</Label>
@@ -266,6 +307,10 @@ export default function DattoRmmSettingsPage() {
               className="mt-1 h-9 text-xs font-mono"
               data-testid="datto-base-url-input"
             />
+            <p className="text-[10px] text-[var(--text-muted)] mt-1 leading-tight">
+              Solo l&apos;endpoint, <span className="text-red-400">SENZA</span> <code className="text-amber-400">?api_key=...&amp;userId=...</code> — i parametri li aggiunge il backend automaticamente.
+              Endpoint corretto: <code className="text-cyan-400">/api/v1/reports/datto/getDattoDevices</code> (lista devices), non <code>getDattoSites</code>.
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 pt-3 mt-3 border-t border-[var(--bg-border)]">
@@ -360,6 +405,14 @@ export default function DattoRmmSettingsPage() {
                               title="Forza re-sync per questo cliente"
                             >
                               Re-sync
+                            </button>
+                            <button
+                              data-testid={`datto-match-debug-client-${i}`}
+                              onClick={() => matchDebugClient(l.client_id, l.client_name)}
+                              className="px-1.5 py-0.5 rounded border border-fuchsia-500/40 text-fuchsia-300 hover:bg-fuchsia-500/10 text-[9px]"
+                              title="Analisi: perché 0 match con discovered_endpoints?"
+                            >
+                              Match
                             </button>
                           </>
                         )}

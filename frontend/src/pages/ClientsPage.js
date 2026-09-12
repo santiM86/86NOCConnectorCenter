@@ -7,7 +7,7 @@ import { NewClientWizard } from "@/components/NewClientWizard";
 import {
   Plus, Trash, Buildings, EnvelopeSimple, Key, Copy, ArrowsClockwise,
   Globe, CaretRight, HardDrives, PlugsConnected, Bell, ShieldCheck,
-  WifiHigh, WifiSlash, DownloadSimple, Desktop,
+  WifiHigh, WifiSlash, DownloadSimple, Desktop, Cloud
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -141,6 +141,47 @@ export default function ClientsPage() {
         .catch(() => { const t=document.createElement("textarea"); t.value=text; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t); toast.success(`${label} copiato`); });
     } catch {
       const t=document.createElement("textarea"); t.value=text; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t); toast.success(`${label} copiato`);
+    }
+  };
+
+  // v2026-06-29: Sync Datto sites → managed_clients. Prima fa dry-run per
+  // mostrare anteprima (chiede conferma), poi se confermato applica.
+  // Non distruttivo: aggiorna solo i campi datto_* sui clienti esistenti.
+  const [dattoSyncing, setDattoSyncing] = useState(false);
+  const handleSyncDatto = async () => {
+    if (dattoSyncing) return;
+    setDattoSyncing(true);
+    try {
+      const dr = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=true`);
+      const s = dr.data?.summary || {};
+      const confirmMsg =
+        `Sync Datto (anteprima):\n\n` +
+        `  • Da creare : ${s.to_create || 0}\n` +
+        `  • Da aggiornare : ${s.to_update || 0}\n` +
+        `  • Invariati : ${s.no_change || 0}\n` +
+        `  • Filtrati (sistema/vuoti) : ${s.filtered || 0}\n\n` +
+        `Procedere con l'applicazione?`;
+      if (!window.confirm(confirmMsg)) {
+        toast.info("Sync Datto annullata");
+        return;
+      }
+      const ap = await axios.post(`${API}/portal86-datto/sync-to-clients?dry_run=false`);
+      const r = ap.data?.summary || {};
+      toast.success(
+        `Sync Datto OK — creati ${r.to_create || 0}, aggiornati ${r.to_update || 0}, invariati ${r.no_change || 0}`
+      );
+      fetchClients();
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      if (String(msg).includes("non configurato")) {
+        toast.error("Sync Datto: configurazione mancante. Apri Impostazioni → Integrazioni Portal 86bit.");
+      } else if (String(msg).includes("vault_mismatch")) {
+        toast.error("Sync Datto: chiave vault ruotata. Re-salva la API key in Impostazioni.");
+      } else {
+        toast.error(`Sync Datto fallita: ${msg}`);
+      }
+    } finally {
+      setDattoSyncing(false);
     }
   };
 

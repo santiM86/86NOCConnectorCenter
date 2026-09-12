@@ -39,6 +39,17 @@ class ClientResponse(BaseModel):
     contact_email: str
     api_key: Optional[str] = ""
     created_at: str
+    # Campi Datto (opzionali; popolati da /api/portal86-datto/sync-to-clients)
+    datto_site_id: Optional[int] = None
+    datto_site_uid: Optional[str] = None
+    datto_account_uid: Optional[str] = None
+    datto_portal_url: Optional[str] = None
+    datto_devices_total: Optional[int] = None
+    datto_devices_online: Optional[int] = None
+    datto_devices_offline: Optional[int] = None
+    datto_last_sync_at: Optional[str] = None
+    autotask_company_name: Optional[str] = None
+    autotask_company_id: Optional[int] = None
 
 class DeviceCreate(BaseModel):
     client_id: str
