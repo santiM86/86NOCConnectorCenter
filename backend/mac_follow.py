@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from database import db
@@ -55,6 +55,23 @@ async def _rekey(client_id: str, old_ip: str, new_ip: str) -> None:
             logger.debug(f"mac_follow rekey {coll} {old_ip}->{new_ip}: {e}")
 
 
+async def resolve_ip_from_discovery(client_id: str, mac: str, max_age_h: int = 48) -> str | None:
+    """Ultimo IP su cui il discovery (ARP/scan) ha visto questo MAC, se recente e non conteso da altro device gestito."""
+    mac = norm_mac(mac)
+    if not mac:
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(hours=max_age_h)).isoformat()
+    ep = await db.discovered_endpoints.find_one(
+        {"client_id": client_id, "$or": [{"mac": mac}, {"mac": mac.upper()}], "last_seen_at": {"$gte": since}, "ip": {"$nin": [None, ""]}},
+        {"_id": 0, "ip": 1}, sort=[("last_seen_at", -1)])
+    if not ep:
+        return None
+    other = await db.managed_devices.find_one({"client_id": client_id, "$or": [{"ip": ep["ip"]}, {"ip_address": ep["ip"]}]}, {"_id": 0, "mac": 1, "mac_address": 1})
+    if other and norm_mac(other.get("mac") or other.get("mac_address")) != mac:
+        return None
+    return ep["ip"]
+
+
 async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = "discovery") -> list[dict]:
     if not client_id or not endpoints:
         return []
@@ -87,31 +104,43 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
             continue
         cur_ip = md.get("ip") or md.get("ip_address")
         ips = seen.get(mac)
-        if not ips or not cur_ip or cur_ip in ips or len(ips) != 1:
+        if not ips or (cur_ip and cur_ip in ips) or len(ips) != 1:
             continue
         new_ip = next(iter(ips))
         other = by_ip.get(new_ip)
         if other and other.get("id") != md.get("id") and norm_mac(other.get("mac") or other.get("mac_address")) != mac:
             logger.info(f"mac_follow skip {mac}: {new_ip} appartiene ad altro device gestito ({other.get('name')})")
             continue
-        name = md.get("name") or md.get("device_name") or cur_ip
+        name = md.get("name") or md.get("device_name") or cur_ip or mac.upper()
+        first_bind = not cur_ip
         hist = {"from": cur_ip, "to": new_ip, "at": now, "source": source}
         await db.managed_devices.update_one(
             {"id": md["id"]},
-            {"$set": {"ip": new_ip, "ip_address": new_ip, "ip_previous": cur_ip, "ip_changed_at": now, "follow_mac": True},
+            {"$set": {"ip": new_ip, "ip_address": new_ip, "ip_previous": cur_ip, "ip_changed_at": now, "follow_mac": True, "ip_pending": False},
              "$push": {"ip_history": {"$each": [hist], "$slice": -20}}},
         )
         by_ip[new_ip] = md
-        await _rekey(client_id, cur_ip, new_ip)
-        alert = {
-            "id": str(uuid.uuid4()), "client_id": client_id, "device_ip": new_ip, "device_name": name, "device_type": "network",
-            "severity": "medium", "source_type": SOURCE_TYPE,
-            "title": f"IP aggiornato automaticamente: {name} {cur_ip} → {new_ip}",
-            "message": f"Il dispositivo {name} (MAC {mac.upper()}) è stato rivisto su {new_ip} invece di {cur_ip} (lease DHCP cambiato). "
-                       f"ARGUS ha aggiornato l'IP monitorato e spostato credenziali/porte/storico: nessuna azione richiesta. "
-                       f"Per fissarlo, assegna una prenotazione DHCP.",
-            "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now,
-        }
+        if first_bind:
+            await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": new_ip})
+            alert = {
+                "id": str(uuid.uuid4()), "client_id": client_id, "device_ip": new_ip, "device_name": name, "device_type": "network",
+                "severity": "low", "source_type": SOURCE_TYPE,
+                "title": f"IP rilevato: {name} → {new_ip}",
+                "message": f"Il dispositivo {name} agganciato tramite MAC {mac.upper()} è stato visto sulla rete con IP {new_ip}: "
+                           f"il monitoraggio parte ora automaticamente.",
+                "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now,
+            }
+        else:
+            await _rekey(client_id, cur_ip, new_ip)
+            alert = {
+                "id": str(uuid.uuid4()), "client_id": client_id, "device_ip": new_ip, "device_name": name, "device_type": "network",
+                "severity": "medium", "source_type": SOURCE_TYPE,
+                "title": f"IP aggiornato automaticamente: {name} {cur_ip} → {new_ip}",
+                "message": f"Il dispositivo {name} (MAC {mac.upper()}) è stato rivisto su {new_ip} invece di {cur_ip} (lease DHCP cambiato). "
+                           f"ARGUS ha aggiornato l'IP monitorato e spostato credenziali/porte/storico: nessuna azione richiesta. "
+                           f"Per fissarlo, assegna una prenotazione DHCP.",
+                "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now,
+            }
         try:
             from alert_filter import insert_alert_if_emit
             if await insert_alert_if_emit(db, alert):

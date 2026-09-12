@@ -849,6 +849,21 @@ async def get_devices(client_id: Optional[str] = None, current_user: dict = Depe
     creds = await db.device_credentials.find({"device_id": {"$in": device_ids}}, {"_id": 0, "device_id": 1}).to_list(1000)
     cred_device_ids = {c["device_id"] for c in creds}
 
+    # Device agganciati SOLO via MAC (DHCP) in attesa che il discovery risolva l'IP
+    for md in managed_devices_raw:
+        if md.get("ip") or md.get("ip_address") or not (md.get("mac") or md.get("mac_address")):
+            continue
+        devices.append({
+            "id": md.get("id") or f"md_mac_{(md.get('mac') or '').replace(':', '')}",
+            "client_id": md.get("client_id", ""), "name": md.get("name") or (md.get("mac") or "").upper(),
+            "device_type": md.get("device_type") or "generic", "ip_address": "", "hostname": md.get("hostname", ""),
+            "location": md.get("location", ""), "status": "pending_ip", "status_reason": "waiting_mac_discovery",
+            "redfish_enabled": False, "source": md.get("source") or "manual", "monitor_type": md.get("monitor_type", ""),
+            "snmp_community": md.get("community") or md.get("snmp_community", ""), "snmp_version": md.get("snmp_version", ""),
+            "http_port": md.get("http_port"), "mac": md.get("mac") or md.get("mac_address") or "", "follow_mac": True,
+            "is_vital": md.get("is_vital"), "notes": md.get("notes"), "created_at": md.get("created_at"),
+        })
+
     # === LIVENESS OVERRIDE — SINGLE SOURCE OF TRUTH (fix discrepanza pagine) ===
     # Applichiamo la stessa logica di overview.py PRIMA di serializzare, sui DICT.
     # BUG STORICO RICORRENTE (Gualdi): l'override girava DOPO, sugli oggetti Pydantic

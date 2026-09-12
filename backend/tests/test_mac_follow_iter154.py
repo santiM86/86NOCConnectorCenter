@@ -65,10 +65,30 @@ async def main():
         assert await apply_mac_follow(CID, [{"ip": "10.9.0.80", "mac": MAC}, {"ip": "10.9.0.81", "mac": MAC}], "test") == []
         ok += 1
         print("6. MAC ambiguo su 2 IP → skip OK")
+
+        # 7. device agganciato SOLO via MAC (ip None) → primo discovery assegna l'IP (alert low "IP rilevato")
+        await db.managed_devices.insert_one({"id": f"{CID}-d", "client_id": CID, "ip": None, "mac": "00:1b:cc:00:00:09", "name": "NOTEBOOK-DHCP", "follow_mac": True, "ip_pending": True})
+        ch = await apply_mac_follow(CID, [{"ip": "10.9.0.120", "mac": "00:1B:CC:00:00:09"}], "test")
+        assert len(ch) == 1 and ch[0]["old_ip"] is None and ch[0]["new_ip"] == "10.9.0.120", ch
+        md = await db.managed_devices.find_one({"id": f"{CID}-d"}, {"_id": 0})
+        assert md["ip"] == "10.9.0.120" and md["ip_address"] == "10.9.0.120" and md["ip_pending"] is False
+        al = await db.alerts.find_one({"client_id": CID, "device_ip": "10.9.0.120"}, {"_id": 0})
+        assert al and al["title"].startswith("IP rilevato: NOTEBOOK-DHCP") and al["severity"] == "low", al
+        ok += 1
+        print("7. device solo-MAC → IP assegnato al primo discovery OK")
+
+        # 8. resolve_ip_from_discovery: MAC già visto dal discovery recente → IP immediato
+        from mac_follow import resolve_ip_from_discovery
+        from datetime import datetime, timezone
+        await db.discovered_endpoints.insert_one({"client_id": CID, "ip": "10.9.0.130", "mac": "00:1b:cc:00:00:10", "last_seen_at": datetime.now(timezone.utc).isoformat()})
+        assert await resolve_ip_from_discovery(CID, "00-1B-CC-00-00-10") == "10.9.0.130"
+        assert await resolve_ip_from_discovery(CID, "aa:bb:cc:00:00:99") is None
+        ok += 1
+        print("8. resolve_ip_from_discovery OK")
     finally:
-        for c in ("managed_devices", "device_credentials", "port_memory", "alerts"):
+        for c in ("managed_devices", "device_credentials", "port_memory", "alerts", "discovered_endpoints"):
             await db[c].delete_many({"client_id": CID})
-    print(f"PASS {ok}/6")
+    print(f"PASS {ok}/8")
 
 
 asyncio.run(main())

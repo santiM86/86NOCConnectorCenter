@@ -310,7 +310,8 @@ class PollingReport(BaseModel):
     devices: list[DeviceStatusReport]
 
 class ManagedDevice(BaseModel):
-    ip: str
+    ip: Optional[str] = None       # opzionale se e' dato il MAC (device DHCP: IP risolto dal discovery)
+    mac: Optional[str] = None      # aggancio MAC → IP (follow DHCP)
     community: str = "public"
     name: str
     monitor_type: str = "snmp"

@@ -3065,12 +3065,26 @@ async def get_managed_devices(client_id: str, request: Request):
 
 @router.post("/connector/{client_id}/managed-devices")
 async def add_managed_device(client_id: str, device: ManagedDevice, current_user: dict = Depends(get_current_user)):
-    existing = await db.managed_devices.find_one({"client_id": client_id, "ip": device.ip})
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Dispositivo {device.ip} gia' presente per questo cliente")
+    from mac_follow import norm_mac, resolve_ip_from_discovery
+    ip = (device.ip or "").strip() or None
+    mac = norm_mac(device.mac) if device.mac else ""
+    if device.mac and not mac:
+        raise HTTPException(status_code=422, detail="MAC non valido: usa il formato AA:BB:CC:DD:EE:FF")
+    if not ip and not mac:
+        raise HTTPException(status_code=422, detail="Inserisci l'IP oppure il MAC del dispositivo")
+    if mac:
+        dup = await db.managed_devices.find_one({"client_id": client_id, "$or": [{"mac": mac}, {"mac": mac.upper()}, {"mac_address": mac.upper()}]}, {"_id": 0, "ip": 1, "name": 1})
+        if dup:
+            raise HTTPException(status_code=409, detail=f"MAC {mac.upper()} gia' agganciato a {dup.get('name') or dup.get('ip')}")
+        if not ip:
+            ip = await resolve_ip_from_discovery(client_id, mac)
+    if ip:
+        existing = await db.managed_devices.find_one({"client_id": client_id, "ip": ip})
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Dispositivo {ip} gia' presente per questo cliente")
     doc = {
         "id": str(uuid.uuid4()), "client_id": client_id,
-        "ip": device.ip, "community": device.community,
+        "ip": ip, "community": device.community,
         "name": device.name, "monitor_type": device.monitor_type,
         "device_type": device.device_type,
         "http_port": device.http_port,
@@ -3086,10 +3100,21 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("name", "admin")
     }
+    if mac:
+        doc.update({"mac": mac, "follow_mac": True, "source": "manual", "ip_pending": ip is None})
+        if ip:
+            doc["ip_address"] = ip
     await db.managed_devices.insert_one(doc)
     # Remove from blacklist if it was previously deleted
-    await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": device.ip})
-    return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"}}
+    if ip:
+        await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": ip})
+        try:
+            from routes.agent_ws import push_config_to_client
+            await push_config_to_client(client_id)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"status": "ok", "device": {k: v for k, v in doc.items() if k != "_id"},
+            "ip_resolved_from_mac": bool(mac and ip and not (device.ip or "").strip()), "ip_pending": ip is None}
 
 
 @router.post("/connector/{client_id}/cleanup-stale-devices")

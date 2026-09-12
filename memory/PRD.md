@@ -23,6 +23,15 @@
   `follow-mac-box`/`follow-mac-toggle` in `DeviceEditModal.js` (step 4b persist) con ultimo cambio IP.
 - Test: `tests/test_mac_follow_iter154.py` 6/6 (fingerprint + follow/rekey/alert/idempotenza/conflitto/opt-out/ambiguo),
   iteration_154 frontend 100%. ⚠️ PROD dopo Save to GitHub + redeploy. Omada Open API resta disponibile per futuro upgrade.
+- **Aggiunta device SOLO via MAC** (richiesta successiva): `ManagedDevice.ip` opzionale + `mac`. `POST /connector/{cid}/managed-devices`
+  richiede ip o mac (422), dedup per MAC (409), MAC normalizzato; senza IP prova `mac_follow.resolve_ip_from_discovery`
+  (ultimo `discovered_endpoints` <48h non conteso) → altrimenti doc con `ip:None, ip_pending:True, follow_mac:True`.
+  `apply_mac_follow` gestisce i pending: al primo discovery assegna l'IP (no rekey), alert low "IP rilevato", toglie da
+  `deleted_devices`, push config agent. `GET /api/devices` espone i pending con `status:"pending_ip"`, `ip_address:""`,
+  `mac` (poller config e loop status li ignorano già perché ip None). UI `ClientOverviewPage` dialog Aggiungi: campo
+  `device-mac-input` (IP opzionale se c'è MAC), toast differenziati (`ip_pending`/`ip_resolved_from_mac`); vista raggruppata
+  e tabella mostrano "MAC xx · IN ATTESA IP" (testid `pending-ip-mac-<mac>`). Test 8/8 + curl (add/dup/422/list) + screenshot.
+  ⚠️ MAC LAA (bit locale 0x02, es. AA:.., DE:..) esclusi dal follow: sono random/privacy — usare MAC reali nei test.
 
 
 ## 2026-06 ✅ Memoria porte switch (abitudini → down abituale vs anomalo)
