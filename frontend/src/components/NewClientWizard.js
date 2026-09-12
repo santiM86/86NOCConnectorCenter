@@ -77,10 +77,14 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     }
     if (step === 4 && !zyxelGw.loaded) {
       let stop = false;
-      const poll = () => axios.get(`${API}/zyxel/discover-gateways`).then(r => {
+      const poll = () => Promise.all([
+        axios.get(`${API}/zyxel/discover-gateways`).catch(e => ({ data: { gateways: [], error: e.response?.data?.detail || null } })),
+        axios.get(`${API}/omada/discover-gateways`).catch(() => ({ data: { gateways: [] } })),
+      ]).then(([z, o]) => {
         if (stop) return;
-        setZyxelGw({ items: r.data?.gateways || [], refreshing: !!r.data?.refreshing, loaded: true, error: r.data?.error || null });
-        if (r.data?.refreshing) setTimeout(poll, 4000);
+        const items = [...(z.data?.gateways || []).map(g => ({ ...g, vendor: "zyxel" })), ...(o.data?.gateways || [])];
+        setZyxelGw({ items, refreshing: !!z.data?.refreshing, loaded: true, error: z.data?.error || null });
+        if (z.data?.refreshing) setTimeout(poll, 4000);
       }).catch(e => { if (!stop) setZyxelGw({ items: [], refreshing: false, loaded: true, error: e.response?.data?.detail || "Zyxel Nebula non disponibile" }); });
       poll();
       return () => { stop = true; };
@@ -185,7 +189,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
     if (zyxelSel?.dev_id === g.dev_id) { setZyxelSel(null); return; }
     setZyxelSel(g);
     const pub = g.public_ip && !isPrivateIp(g.public_ip) ? g.public_ip : "";
-    setWan(w => ({ label: `Firewall ${g.model || "Zyxel"} · ${g.site_name || g.name}`, device_type: "firewall", public_ip: pub || w.public_ip || "" }));
+    setWan(w => ({ label: `Firewall ${g.model || (g.vendor === "omada" ? "Omada" : "Zyxel")} · ${g.site_name || g.name}`, device_type: "firewall", public_ip: pub || w.public_ip || "" }));
     if (g.public_ip && isPrivateIp(g.public_ip)) toast.warning(`WAN del firewall con IP privato (${g.public_ip}): doppio NAT, inserisci l'IP pubblico dell'operatore`);
   };
 
@@ -204,13 +208,18 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
       }
       if (zyxelSel) {
         try {
-          await axios.put(`${API}/clients/${client.id}/zyxel/link`, { org_id: zyxelSel.org_id, site_ids: zyxelSel.site_id ? [zyxelSel.site_id] : null });
-          okParts.push("link Nebula");
+          if (zyxelSel.vendor === "omada") {
+            await axios.put(`${API}/clients/${client.id}/omada/link`, { site_id: zyxelSel.site_id });
+            okParts.push("link Omada");
+          } else {
+            await axios.put(`${API}/clients/${client.id}/zyxel/link`, { org_id: zyxelSel.org_id, site_ids: zyxelSel.site_id ? [zyxelSel.site_id] : null });
+            okParts.push("link Nebula");
+          }
         } catch (e) { toast.error(`Link Nebula fallito: ${e.response?.data?.detail || e.message}`); }
         if (zyxelSel.lan_ip) {
           try {
             await axios.post(`${API}/connector/${client.id}/managed-devices`, {
-              ip: zyxelSel.lan_ip, name: zyxelSel.name && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(zyxelSel.name) ? zyxelSel.name : `Firewall ${zyxelSel.model || "Zyxel"}`,
+              ip: zyxelSel.lan_ip, name: zyxelSel.name && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(zyxelSel.name) ? zyxelSel.name : `Firewall ${zyxelSel.model || (zyxelSel.vendor === "omada" ? "Omada" : "Zyxel")}`,
               community: "public", monitor_type: "ping", device_type: "firewall",
             });
             await axios.post(`${API}/devices/by-ip/${encodeURIComponent(zyxelSel.lan_ip)}/vital`, { is_vital: true, client_id: client.id, reason: "firewall Nebula (wizard)" }).catch(() => {});
@@ -347,7 +356,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
             <div className="space-y-3" data-testid="wizard-step-wan">
               <div className="rounded-md border border-[var(--bg-border)] bg-[var(--bg-card)]" data-testid="wizard-zyxel-list">
                 <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--bg-border)]">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300">Trovati in Zyxel Nebula</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300">Trovati in Zyxel Nebula / TP-Link Omada</span>
                   {zyxelGw.refreshing && <span className="text-[9px] text-[var(--text-muted)] flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> scansione org in corso…</span>}
                   {!zyxelGw.refreshing && zyxelGw.loaded && <span className="text-[9px] text-[var(--text-muted)]">{zyxelGw.items.length} firewall</span>}
                   <input value={zyxelQ} onChange={e => setZyxelQ(e.target.value)} placeholder="cerca sito / modello / IP" className="ml-auto h-6 px-2 w-44 text-[10px] rounded border border-[var(--bg-border)] bg-[var(--bg-panel)] text-[var(--text-primary)]" data-testid="wizard-zyxel-search" />
@@ -362,6 +371,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
                         <li key={g.dev_id} onClick={() => pickZyxel(g)} data-testid={`wizard-zyxel-gw-${g.dev_id}`}
                           className={`px-2 py-1.5 text-[11px] cursor-pointer flex items-center gap-2 ${sel ? "bg-indigo-500/15" : "hover:bg-[var(--bg-hover)]"} ${g.linked_client_id ? "opacity-60" : ""}`}>
                           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${g.online_status === "ONLINE" ? "bg-emerald-400" : "bg-red-400"}`} />
+                          <span className={`text-[8px] px-1 rounded font-bold ${g.vendor === "omada" ? "bg-sky-500/20 text-sky-200" : "bg-cyan-500/20 text-cyan-200"}`}>{g.vendor === "omada" ? "OMADA" : "NEBULA"}</span>
                           <span className="font-semibold text-[var(--text-primary)] truncate">{g.site_name || g.name}</span>
                           <span className="text-[9px] text-[var(--text-muted)]">{g.model}</span>
                           <span className="font-mono text-[10px] text-cyan-200 ml-auto">{g.public_ip || "—"}{g.public_ip && isPrivateIp(g.public_ip) ? " ⚠ privato" : ""}</span>
@@ -373,7 +383,7 @@ export const NewClientWizard = ({ open, onClose, onCreated }) => {
                     })}
                   {zyxelGw.loaded && !zyxelGw.refreshing && zyxelGw.items.length === 0 && !zyxelGw.error && <li className="px-2 py-2 text-[10px] text-[var(--text-muted)]">Nessun firewall trovato in Nebula.</li>}
                 </ul>
-                {zyxelSel && <p className="px-2 py-1 text-[9px] text-emerald-300 border-t border-[var(--bg-border)]" data-testid="wizard-zyxel-selected">Selezionato: al "Continua" collego il cliente a Nebula (org {zyxelSel.org_name}, sito {zyxelSel.site_name}){zyxelSel.lan_ip ? `, aggiungo il firewall ${zyxelSel.lan_ip} come dispositivo vitale` : ""} e creo il target WAN.</p>}
+                {zyxelSel && <p className="px-2 py-1 text-[9px] text-emerald-300 border-t border-[var(--bg-border)]" data-testid="wizard-zyxel-selected">Selezionato: al "Continua" collego il cliente a {zyxelSel.vendor === "omada" ? "Omada" : `Nebula (org ${zyxelSel.org_name})`} (sito {zyxelSel.site_name}){zyxelSel.lan_ip ? `, aggiungo il firewall ${zyxelSel.lan_ip} come dispositivo vitale` : ""} e creo il target WAN.</p>}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <Field label="Etichetta"><Input value={wan.label} onChange={e => setWan(w => ({ ...w, label: e.target.value }))} placeholder="Firewall Zyxel" className={inputCls} data-testid="wizard-wan-label" /></Field>

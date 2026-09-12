@@ -382,6 +382,8 @@ from routes.port_memory_api import router as port_memory_api_router
 app.include_router(port_memory_api_router)
 from routes.ai_knowledge_api import router as ai_knowledge_router
 app.include_router(ai_knowledge_router)
+from routes.omada import router as omada_router
+app.include_router(omada_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -1141,8 +1143,11 @@ async def startup_event():
             max_instances=1,
             coalesce=True,
         )
+        from routes.omada import omada_sync_tick as _omada_tick
+        zyxel_scheduler.add_job(_omada_tick, trigger=_ZyTrig(minutes=5), id="omada_auto_sync",
+                                next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90), max_instances=1, coalesce=True)
         zyxel_scheduler.start()
-        logger.info("Zyxel Nebula auto-sync scheduler started (tick: 5min)")
+        logger.info("Zyxel Nebula + Omada auto-sync scheduler started (tick: 5min)")
     except Exception as e:
         logger.error(f"Failed to start Zyxel Nebula scheduler: {e}")
 
