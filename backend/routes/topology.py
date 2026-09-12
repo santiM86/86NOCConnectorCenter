@@ -677,9 +677,11 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
         pass
 
     # Memoria porte: abitudine/verdetto per ogni porta (Abituale / Anomalo / Standby PoE / Inutilizzata / In apprendimento)
+    port_memory_summary = None
     try:
-        from port_memory import classify, is_italian_holiday, schedule_summary
+        from port_memory import classify, is_italian_holiday, memory_summary, schedule_summary
         hol = is_italian_holiday()
+        port_memory_summary = await memory_summary(db, client_id, device_ip)
         mem_by_idx = {m["idx"]: m async for m in db.port_memory.find({"client_id": client_id, "local_ip": device_ip}, {"_id": 0})}
         for o in out:
             m = mem_by_idx.get(o.get("idx"))
@@ -689,11 +691,12 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
                     o["habit"]["schedule"] = schedule_summary(m)
             else:
                 o["habit"] = None
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _me:  # noqa: BLE001
+        logger.warning("port memory enrich %s: %s", device_ip, _me)
 
     return {
         "device_ip": device_ip,
+        "port_memory": port_memory_summary,
         "device_name": md_local.get("device_name") or md_local.get("name") or "",
         "device_type": md_local.get("device_type") or "",
         "client_id": md_local.get("client_id") or "",

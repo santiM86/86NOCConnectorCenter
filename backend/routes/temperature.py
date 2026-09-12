@@ -3,6 +3,7 @@ Vista unica: temperatura attuale, soglia EFFETTIVA e sua provenienza, override.
 Azioni bulk: imposta/rimuovi override su N device di N clienti in una chiamata."""
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -17,6 +18,7 @@ from hardware_alerts import (
 )
 
 router = APIRouter(prefix="/api/temperature", tags=["temperature"])
+logger = logging.getLogger("temperature")
 
 _OVERRIDE_FIELDS = ("temp_warn_c", "temp_crit_c")
 _KIND_FIELDS = {
@@ -71,10 +73,27 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
         pass
     prof_cache: Dict[str, dict] = {}
     rows: List[Dict[str, Any]] = []
+    errors = 0
     async for md in db.managed_devices.find({}, {"_id": 0}):
+        try:
+            row = await _temperature_row(md, clients, thr_by_client, polls, inlet_by_dev, prof_cache)
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            logger.warning("temperature overview: device %s/%s saltato: %s", md.get("client_id"), md.get("ip") or md.get("ip_address"), e)
+            continue
+        if row:
+            rows.append(row)
+    rows.sort(key=lambda r: ({"crit": 0, "warn": 1, "ok": 2}.get(r["worst"], 2), r["client_name"], r["name"]))
+    defaults = {k: {"warn": v[0], "crit": v[1]} for k, v in _DEFAULT_TEMP_THRESHOLDS.items()}
+    return {"devices": rows, "defaults": defaults, "errors": errors,
+            "fallback": {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}}
+
+
+async def _temperature_row(md: dict, clients: dict, thr_by_client: dict, polls: dict, inlet_by_dev: dict, prof_cache: dict) -> Optional[Dict[str, Any]]:
+    if True:
         cid, ip = md.get("client_id"), md.get("ip") or md.get("ip_address")
         if not cid or not ip or cid not in clients:
-            continue
+            return None
         pd = polls.get((cid, ip)) or {}
         pk = md.get("profile_key") or pd.get("profile_key")
         vm = pd.get("vendor_metrics") or {}
@@ -85,7 +104,7 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
         disk_cur = max(disk_vals) if disk_vals else None
         has_override = any(isinstance(md.get(f), (int, float)) for f in _OVERRIDE_FIELDS)
         if cur is None and inlet_cur is None and disk_cur is None and not has_override and not pk:
-            continue
+            return None
         if pk and pk not in prof_cache:
             prof_cache[pk] = await get_effective_profile(db, pk) or {}
         prof = prof_cache.get(pk or "", {})
@@ -105,8 +124,8 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
             dw, dc = resolve_temp_thresholds(prof_thr, dtype, dov, cbt, kind="disk", fallback=(50, 60))
             extra["disk"] = {"temp_c": disk_cur, "warn_c": dw, "crit_c": dc, "state": _state(disk_cur, dw, dc),
                              "override": md.get("disk_temp_warn_c") is not None or md.get("disk_temp_crit_c") is not None}
-        worst = max([state] + [e["state"] for e in extra.values()], key=lambda x: {"crit": 2, "warn": 1, "ok": 0}[x])
-        rows.append({
+        worst = max([state] + [e["state"] for e in extra.values()], key=lambda x: {"crit": 2, "warn": 1, "ok": 0}.get(x, 0))
+        return {
             **extra, "worst": worst,
             "client_id": cid, "client_name": clients[cid], "ip": ip,
             "name": best_display_name(md, pd, ip),
@@ -116,11 +135,7 @@ async def temperature_overview(current_user: dict = Depends(get_current_user)):
             "override_warn": md.get("temp_warn_c"), "override_crit": md.get("temp_crit_c"),
             "state": state,
             "last_poll": pd.get("last_poll") or pd.get("updated_at"),
-        })
-    rows.sort(key=lambda r: ({"crit": 0, "warn": 1, "ok": 2}[r["worst"]], r["client_name"], r["name"]))
-    defaults = {k: {"warn": v[0], "crit": v[1]} for k, v in _DEFAULT_TEMP_THRESHOLDS.items()}
-    return {"devices": rows, "defaults": defaults,
-            "fallback": {"warn": _DEFAULT_TEMP_FALLBACK[0], "crit": _DEFAULT_TEMP_FALLBACK[1]}}
+        }
 
 
 @router.post("/bulk")

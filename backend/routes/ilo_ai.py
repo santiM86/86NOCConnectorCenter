@@ -48,7 +48,8 @@ Schema JSON:
  "actions": [{"priority": 1, "action": "...", "why": "...", "component": "...", "when": "subito|entro 7 giorni|prossima manutenzione"}],
  "ignore": ["voci di log che sono rumore e perché"],
  "watch": ["cosa monitorare nei prossimi giorni"],
- "confidence": 0-100
+ "confidence": 0-100,
+ "kb_refs": ["id voci base di conoscenza usate"]
 }"""
 
 
@@ -107,7 +108,12 @@ async def _context(client_id: str, ip: str, limit: int = 100) -> dict:
         "memory_dimms": trim(ilo.get("memory_modules") or rf.get("memory_dimms"), 24, ("locator", "name", "size_gb", "capacity_mb", "status", "health")),
         "nics": trim(ilo.get("network_interfaces") or rf.get("network_adapters"), 8, ("name", "model", "status", "health", "link", "speed_mbps")),
     }
+    import ai_knowledge as kb
+    _ev = [{k: e.get(k) for k in ("created", "severity", "message", "class", "code", "count", "repaired", "action") if e.get(k) not in (None, "", False) or k in ("repaired",)} for e in events]
+    _kb_text = " ".join(str(e.get("message") or "") + " " + str(e.get("class") or "") for e in _ev[:40]) + " " + str(hw.get("model") or "") + " ilo"
     return {
+        "knowledge_base": await kb.search_kb(db, _kb_text, "HPE" if re.search(r"hpe|proliant|hewlett", str(hw.get("model") or "") + str(hw.get("manufacturer") or ""), re.I) else None, limit=8),
+        "case_memory": await kb.case_memory(db, client_id, ip, None, limit=10),
         "server": {"name": md.get("name") or md.get("hostname") or ilo.get("device_name") or ip, "ip": ip,
                    "events_source": cache.get("source"), "events_fetched_at": cache.get("fetched_at")},
         "events": [{k: e.get(k) for k in ("created", "severity", "message", "class", "code", "count", "repaired", "action") if e.get(k) not in (None, "", False) or k in ("repaired",)} for e in events],
@@ -139,7 +145,7 @@ async def run_analysis(client_id: str, ip: str, trigger: str = "manual", user: O
     if not ctx["events"] and not ctx["hardware"].get("model"):
         raise HTTPException(status_code=404, detail="Nessun evento IML/SEL né dati hardware disponibili per questo server")
     chat = LlmChat(api_key=api_key, session_id=f"ilo-ai-{client_id}-{ip}-{uuid.uuid4().hex[:8]}",
-                   system_message=SYSTEM_PROMPT).with_model(*MODEL)
+                   system_message=SYSTEM_PROMPT + __import__("ai_knowledge").kb_instructions()).with_model(*MODEL)
     prompt = ("Analizza questo server e rispondi con il JSON richiesto.\n\n"
               f"CONTESTO (JSON):\n{json.dumps(ctx, ensure_ascii=False, default=str)}")
     t0 = _now()

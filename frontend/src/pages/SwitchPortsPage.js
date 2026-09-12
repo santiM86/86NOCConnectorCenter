@@ -8,7 +8,7 @@
  * - Filtri: tutte / up / down / admin-down / con neighbor / PoE attivo
  * - Responsive nativo (mobile + desktop)
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
@@ -153,7 +153,18 @@ function PortTile({ p, onClick, active }) {
   );
 }
 
-function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
+function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload }) {
+  const [authBusy, setAuthBusy] = useState(false);
+  const authorizeDevice = async () => {
+    setAuthBusy(true);
+    try {
+      const r = await axios.post(`${API}/devices/${encodeURIComponent(deviceIp)}/switch-ports/${p.idx}/authorize-device`, {}, { params: clientId ? { client_id: clientId } : {} });
+      toast.success(`Cambio autorizzato: memoria aggiornata${r.data.alerts_closed ? `, ${r.data.alerts_closed} alert chiusi` : ""}`);
+      onReload?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Autorizzazione fallita");
+    } finally { setAuthBusy(false); }
+  };
   if (!p) return null;
   const isUp = p.oper === 1 && p.admin === 1;
   const isPoe = p.poe_status === 3;
@@ -202,6 +213,21 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId }) {
           {p.habit.schedule && (
             <span className="font-mono text-[9px] text-[var(--text-muted)] w-full flex flex-wrap gap-x-2" data-testid={`switch-port-schedule-${p.idx}`}>
               {Object.entries(p.habit.schedule).map(([d, h]) => <span key={d}><b className="text-[var(--text-secondary)]">{d}</b> {h}</span>)}
+            </span>
+          )}
+  {p.habit?.prev_device && (
+            <span className="w-full text-[10px] text-orange-200" data-testid={`switch-port-changed-detail-${p.idx}`}>
+              Dispositivo cambiato il {new Date(p.habit.device_changed_at).toLocaleString("it-IT")}: prima <b>{p.habit.prev_device.name || p.habit.prev_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.prev_device.mac}</span>
+              {p.habit.last_device && <> → ora <b>{p.habit.last_device.name || p.habit.last_device.ip || "?"}</b> <span className="font-mono text-[9px]">{p.habit.last_device.mac}</span></>}
+              <button onClick={authorizeDevice} disabled={authBusy} data-testid={`port-authorize-device-${p.idx}`}
+                className="ml-2 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-60 transition-colors">
+                {authBusy ? "…" : "✓ Autorizza cambio"}
+              </button>
+            </span>
+          )}
+          {!p.habit?.prev_device && (p.habit?.authorized_devices || []).length > 0 && (
+            <span className="w-full text-[9px] text-emerald-300/80" data-testid={`switch-port-authorized-${p.idx}`}>
+              Dispositivi autorizzati: {p.habit.authorized_devices.map(a => a.name || a.ip || a.mac).join(", ")}
             </span>
           )}
           {p.habit.reason && <span className="w-full text-[var(--text-secondary)] italic">{p.habit.reason}</span>}
@@ -438,6 +464,31 @@ function DiagnoseDialog({ diag, loading, onClose, onAction, actionLoading }) {
 
 // ----- Page -----
 
+function LearningDaysEditor({ value, onSaved }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState(value || 7);
+  const save = async () => {
+    try {
+      await axios.put(`${API}/ai/port-memory/settings`, { learning_days: Number(v) });
+      toast.success(`Apprendimento memoria porte: ${v} giorni (vale per tutti gli switch)`);
+      setEdit(false); onSaved?.();
+    } catch (e) { toast.error(e.response?.data?.detail?.[0]?.msg || e.response?.data?.detail || "Salvataggio fallito"); }
+  };
+  if (!edit) return (
+    <button onClick={() => { setV(value || 7); setEdit(true); }} className="ml-1 text-indigo-300 hover:underline" title="Giorni di apprendimento prima che una porta venga classificata (globale)" data-testid="port-memory-learning-days">
+      · apprendimento {value || 7} gg ✎
+    </button>
+  );
+  return (
+    <span className="ml-1 inline-flex items-center gap-1" data-testid="port-memory-learning-days-editor">
+      <input type="number" min={1} max={60} value={v} onChange={e => setV(e.target.value)} className="w-12 h-5 px-1 text-[10px] rounded border border-[var(--bg-border)] bg-[var(--bg-card)] text-[var(--text-primary)]" data-testid="port-memory-learning-days-input" />
+      <span>gg</span>
+      <button onClick={save} className="px-1.5 h-5 rounded bg-indigo-500/20 border border-indigo-500/40 text-indigo-200 text-[9px]" data-testid="port-memory-learning-days-save">Salva</button>
+      <button onClick={() => setEdit(false)} className="text-[var(--text-muted)]">✕</button>
+    </span>
+  );
+}
+
 const SRC_BADGE = {
   datto_rmm: ["DATTO", "bg-fuchsia-500/20 text-fuchsia-300"], mac_manual: ["B", "bg-violet-500/20 text-violet-300"],
   mac_managed: ["M", "bg-cyan-500/20 text-cyan-300"], hostname: ["H", "bg-emerald-500/20 text-emerald-300"],
@@ -519,6 +570,8 @@ export default function SwitchPortsPage() {
   // v3.8.35: filtro per ruolo (WAN/LAN/DMZ/MGMT/other) - usato sui firewall/router.
   const [roleFilter, setRoleFilter] = useState(null);  // null = tutti i ruoli
   const [selected, setSelected] = useState(null);
+  const selectedRef = useRef(null);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [cableView, setCableView] = useState(null);
   // Ordinamento tabella (header cliccabili)
   const [sortBy, setSortBy] = useState("idx");     // idx|name|status|speed|rx|tx|poe|neighbor
@@ -618,8 +671,8 @@ export default function SwitchPortsPage() {
       setData(r.data);
       setNeedClientPick(false);
       // Aggiorna selected con dati freschi
-      if (selected) {
-        const fresh = (r.data?.ports || []).find(x => x.idx === selected.idx);
+      if (selectedRef.current) {
+        const fresh = (r.data?.ports || []).find(x => x.idx === selectedRef.current.idx);
         if (fresh) setSelected(fresh);
       }
     } catch (e) {
@@ -835,6 +888,14 @@ export default function SwitchPortsPage() {
             {(t.poe_active > 0) && <span className="text-amber-300 flex items-center gap-0.5"><Lightning size={10} weight="fill" /> {t.poe_active} PoE</span>}
             {(t.with_neighbor > 0) && <span className="text-cyan-300">{t.with_neighbor} con neighbor</span>}
             {(t.loop_suspect > 0) && <span className="text-rose-300 font-semibold flex items-center gap-0.5"><Warning size={10} weight="fill" /> {t.loop_suspect} loop</span>}
+            {data.port_memory && (
+              <span className={`flex items-center gap-1 ${data.port_memory.ports ? "text-indigo-300" : "text-amber-300"}`} data-testid="switch-ports-memory-status"
+                title={data.port_memory.last_update ? `Ultimo aggiornamento memoria: ${new Date(data.port_memory.last_update).toLocaleString("it-IT")}` : "La memoria si popola ad ogni poll SNMP delle porte"}>
+                · Memoria porte: {data.port_memory.ports ? `${data.port_memory.ports} porte, ${data.port_memory.since_days} gg${data.port_memory.learning ? " (in apprendimento)" : ""}` : "nessun dato ancora"}
+                {data.port_memory.changed_7d > 0 && <span className="text-orange-300 font-semibold">· {data.port_memory.changed_7d} dispositivi cambiati (7gg)</span>}
+                <LearningDaysEditor value={data.port_memory.learning_days} onSaved={reload} />
+              </span>
+            )}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => setShowAudit(s => !s)} className="h-7 gap-1 text-[11px] border-indigo-500/40 text-indigo-300" data-testid="switch-ports-ai-audit-toggle">✦ Audit AI</Button>
@@ -1039,7 +1100,7 @@ export default function SwitchPortsPage() {
       </div>
 
       {/* Pannello dettaglio porta selezionata */}
-      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} clientId={clientId || data.client_id} />}
+      {selected && <PortDetailPanel p={selected} onClose={() => setSelected(null)} onOpenCable={() => setCableView(selected)} deviceIp={data.device_ip} clientId={clientId || data.client_id} onReload={reload} />}
 
       {/* Modale Vista Cavo */}
       {cableView && (
@@ -1129,6 +1190,12 @@ export default function SwitchPortsPage() {
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">DOWN</span>
                       )}
                       {!isUp && p.admin !== 2 && p.habit && <HabitBadge habit={p.habit} idx={p.idx} />}
+                      {p.habit?.device_changed_at && (
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-200 border border-orange-500/40 cursor-help" data-testid={`port-device-changed-${p.idx}`}
+                          title={`Dispositivo cambiato il ${new Date(p.habit.device_changed_at).toLocaleString("it-IT")} — prima: ${p.habit.prev_device?.name || p.habit.prev_device?.ip || p.habit.prev_device?.mac || "?"} (${p.habit.prev_device?.mac || ""})`}>
+                          CAMBIATO
+                        </span>
+                      )}
                       {p.loop_suspect && (
                         <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-0.5" title={(p.loop_reasons || []).join(" · ")} data-testid={`switch-port-row-loop-${p.idx}`}>
                           <Warning size={9} weight="fill" /> LOOP

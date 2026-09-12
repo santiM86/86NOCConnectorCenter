@@ -320,6 +320,101 @@ async def list_org_devices(org_id: str, current_user: dict = Depends(get_current
 
 # ==================== Client link ====================
 
+_GW_CACHE: dict = {"at": None, "data": None, "running": False, "error": None}
+
+
+async def _discover_gateways_job() -> None:
+    """Scansione di tutte le org Nebula (in background: puo' richiedere >20s)."""
+    _GW_CACHE["running"], _GW_CACHE["error"] = True, None
+    try:
+        orgs = await db.zyxel_orgs_cache.find({}, {"_id": 0}).to_list(1000)
+        if not orgs:
+            orgs = [{"org_id": o.get("orgId"), "name": o.get("name")} for o in (await _nebula_request("GET", "/organizations") or []) if o.get("orgId")]
+        links = {}
+        async for l in db.zyxel_client_links.find({}, {"_id": 0, "client_id": 1, "client_name": 1, "org_id": 1, "site_ids": 1}):
+            for sid in (l.get("site_ids") or [None]):
+                links[(l["org_id"], sid)] = l
+        sem = asyncio.Semaphore(6)
+        out: list[dict] = []
+
+        async def one_gw(org, site, d):
+            sid, dev_id = site.get("siteId"), d.get("devId")
+            row = {"org_id": org["org_id"], "org_name": org.get("name"), "site_id": sid, "site_name": site.get("name"),
+                   "dev_id": dev_id, "name": d.get("name"), "model": d.get("model"), "mac": d.get("mac"), "sn": d.get("sn"),
+                   "online_status": None, "public_ip": None, "lan_ip": None, "wan_interfaces": []}
+            link = links.get((org["org_id"], sid)) or links.get((org["org_id"], None))
+            if link:
+                row["linked_client_id"], row["linked_client_name"] = link["client_id"], link.get("client_name")
+            async with sem:
+                try:
+                    for o in (await _nebula_request("GET", f"/{sid}/online-status", timeout=20) or []):
+                        if o.get("devId") == dev_id:
+                            row["online_status"] = o.get("currentStatus")
+                except (ZyxelError, HTTPException) as e:
+                    logger.debug(f"discover online {dev_id}: {e}")
+                try:
+                    ifs = await _nebula_request("GET", f"/{sid}/gw/{dev_id}/interface-settings", timeout=20)
+                    if isinstance(ifs, dict):
+                        wans = [{"interface": w.get("interface"), "enabled": w.get("enabled"), "public_ip": w.get("ipv4Address"), "type": w.get("ipv4Type")}
+                                for w in (ifs.get("wan") or [])]
+                        row["wan_interfaces"] = wans
+                        primary = next((w for w in wans if w.get("enabled") and w.get("public_ip")), None)
+                        row["public_ip"] = (primary or {}).get("public_ip")
+                        lans = [l.get("ipv4Address") for l in (ifs.get("lan") or []) if l.get("ipv4Address")]
+                        row["lan_ip"] = lans[0] if lans else None
+                except (ZyxelError, HTTPException) as e:
+                    logger.debug(f"discover ifs {dev_id}: {e}")
+            return row
+
+        tasks = []
+        for org in orgs:
+            try:
+                grouped = await _nebula_request("GET", f"/organizations/{org['org_id']}/sites/devices", timeout=30) or []
+                sites = {s.get("siteId"): s for s in (await _nebula_request("GET", f"/organizations/{org['org_id']}/sites", timeout=30) or [])}
+            except (ZyxelError, HTTPException) as e:
+                logger.warning(f"discover org {org.get('org_id')}: {e}")
+                continue
+            for g in grouped:
+                site = sites.get(g.get("siteId")) or {"siteId": g.get("siteId"), "name": g.get("siteId")}
+                for d in (g.get("devices") or []):
+                    if (d.get("type") or "").upper().startswith("GW"):
+                        tasks.append(one_gw(org, site, d))
+        for r in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(r, dict):
+                out.append(r)
+        out.sort(key=lambda r: (bool(r.get("linked_client_id")), (r.get("site_name") or "").lower()))
+        _GW_CACHE["at"], _GW_CACHE["data"] = datetime.now(timezone.utc), out
+    except Exception as e:  # noqa: BLE001
+        _GW_CACHE["error"] = str(e)[:200]
+        logger.warning(f"discover gateways failed: {e}")
+    finally:
+        _GW_CACHE["running"] = False
+
+
+@router.get("/zyxel/discover-gateways")
+async def discover_gateways(refresh: bool = False, current_user: dict = Depends(get_current_user)):
+    """Firewall/gateway Nebula di tutte le org con sito, stato e IP pubblico WAN (wizard Nuovo Cliente).
+    La scansione gira in background: la risposta e' immediata (cache 5 min + firewall gia' sincronizzati),
+    `refreshing=true` finche' non e' completa → il frontend ripete la chiamata."""
+    require_admin(current_user)
+    await _get_creds()
+    now = datetime.now(timezone.utc)
+    stale = not _GW_CACHE["at"] or (now - _GW_CACHE["at"]).total_seconds() >= 300
+    if (refresh or stale) and not _GW_CACHE["running"]:
+        asyncio.create_task(_discover_gateways_job())
+    data = _GW_CACHE["data"]
+    if data is None:
+        # prima risposta immediata: firewall gia' sincronizzati (clienti gia' collegati)
+        data = []
+        async for d in db.zyxel_devices.find({"device_type": "firewall"}, {"_id": 0}):
+            data.append({"org_id": d.get("org_id"), "org_name": d.get("org_name"), "site_id": d.get("site_id"), "site_name": d.get("site_name"),
+                         "dev_id": d.get("dev_id"), "name": d.get("name"), "model": d.get("model"), "mac": d.get("mac"), "sn": d.get("sn"),
+                         "online_status": d.get("online_status"), "public_ip": d.get("public_ip"), "lan_ip": ((d.get("lan_interfaces") or [{}])[0]).get("ip"),
+                         "wan_interfaces": d.get("wan_interfaces") or [], "linked_client_id": d.get("client_id"), "linked_client_name": d.get("client_name")})
+    return {"gateways": data, "refreshing": _GW_CACHE["running"], "error": _GW_CACHE["error"],
+            "updated_at": _GW_CACHE["at"].isoformat() if _GW_CACHE["at"] else None}
+
+
 @router.get("/clients/{client_id}/zyxel/link")
 async def get_zyxel_link(client_id: str, current_user: dict = Depends(get_current_user)):
     link = await db.zyxel_client_links.find_one({"client_id": client_id}, {"_id": 0})
