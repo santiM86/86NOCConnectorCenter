@@ -74,7 +74,9 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
                 data = await _degraded_overview(str(e))
             except Exception as e2:  # noqa: BLE001
                 logger.exception("overview/clients degraded fallback failed: %s", e2)
-                raise HTTPException(status_code=500, detail=f"overview error: {e}")
+                from routes.app_version import get_version_info
+                _h, _p = get_version_info()
+                raise HTTPException(status_code=500, detail=f"overview error: {e} [build 2.0.{_p} {_h[:8]}]")
             return data  # non cachato: al prossimo giro si ritenta il calcolo completo
         _overview_cache["data"] = data
         _overview_cache["at"] = time.monotonic()
