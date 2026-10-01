@@ -24,6 +24,35 @@ _overview_cache: dict = {"at": 0.0, "data": None}
 _overview_lock = asyncio.Lock()
 
 
+async def _degraded_overview(error: str) -> dict:
+    """Fallback quando il calcolo completo fallisce: lista clienti + conteggi alert reali, resto a zero.
+    Così la Panoramica mostra sempre i clienti (mai '0 clienti') e segnala il degrado."""
+    def _empty_counts():
+        return {"total": 0, "online": 0, "offline": 0, "stale": 0, "unknown": 0,
+                "vital_total": 0, "vital_online": 0, "vital_offline": 0, "vital_stale": 0}
+    clients = await db.clients.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(2000)
+    alerts_by_client: dict = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
+    async for r in db.alerts.aggregate([{"$match": {"status": "active"}}, {"$group": {"_id": {"c": "$client_id", "s": "$severity"}, "n": {"$sum": 1}}}]):
+        a = alerts_by_client[r["_id"].get("c")]
+        a[r["_id"].get("s") or "low"] = a.get(r["_id"].get("s") or "low", 0) + r["n"]
+        a["total"] += r["n"]
+    result = []
+    for c in clients:
+        cid = c.get("id")
+        a = alerts_by_client.get(cid, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0})
+        health = "critical" if a["critical"] else "warning" if a["high"] else "ok"
+        result.append({"id": cid, "name": c.get("name", "?"), "health": health, "alerts": a, "devices": _empty_counts(),
+                       "wan": {"status": "unknown", "latency_ms": None, "gateway": None}, "backup": {"ok": 0, "warning": 0, "error": 0, "total": 0, "stale": 0},
+                       "printers": {"total": 0, "low_toner": 0, "ok": 0}, "endpoints": _empty_counts(), "connector_online": None, "scanner_health": [],
+                       "degraded": True, "detail": {"wan_targets": [], "devices_list": [], "endpoints_list": [], "vital_list": [], "recent_alerts": []}})
+    result.sort(key=lambda x: ({"critical": 0, "warning": 1, "ok": 3}.get(x["health"], 9), str(x.get("name") or "")))
+    return {"clients": result, "degraded": True, "error": error[:300],
+            "global": {"total_clients": len(clients), "clients_ok": sum(1 for r in result if r["health"] == "ok"),
+                       "clients_warning": sum(1 for r in result if r["health"] == "warning"), "clients_critical": sum(1 for r in result if r["health"] == "critical"),
+                       "total_alerts": sum(a["total"] for a in alerts_by_client.values()), "critical_alerts": sum(a["critical"] for a in alerts_by_client.values()),
+                       "total_devices": 0, "devices_online": 0, "total_endpoints": 0, "endpoints_online": 0}}
+
+
 @router.get("/overview/clients")
 async def get_clients_overview(current_user: dict = Depends(get_current_user)):
     """Returns aggregated status for all clients: WAN, devices, alerts, backup, printers."""
@@ -41,7 +70,12 @@ async def get_clients_overview(current_user: dict = Depends(get_current_user)):
             logger.exception("overview/clients failed: %s", e)
             if _overview_cache["data"] is not None:
                 return _overview_cache["data"]
-            raise HTTPException(status_code=500, detail=f"overview error: {e}")
+            try:
+                data = await _degraded_overview(str(e))
+            except Exception as e2:  # noqa: BLE001
+                logger.exception("overview/clients degraded fallback failed: %s", e2)
+                raise HTTPException(status_code=500, detail=f"overview error: {e}")
+            return data  # non cachato: al prossimo giro si ritenta il calcolo completo
         _overview_cache["data"] = data
         _overview_cache["at"] = time.monotonic()
         logger.info("overview/clients computed in %.2fs (%d clients)", time.monotonic() - t0, len(data.get("clients", [])))

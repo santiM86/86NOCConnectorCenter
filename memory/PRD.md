@@ -1,6 +1,18 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Panoramica: fallback degradato (mai più "0 clienti"/HTTP 500) + indice managed_devices parziale
+**Segnalazione PROD**: "overview error: '<client_id>'" (KeyError) → Panoramica vuota. Nel repo attuale tutte le mappe
+per-cliente sono già guardate (defaultdict/get): il 500 in PROD indica codice backend NON aggiornato → serve Save to
+GitHub + redeploy. In più, hardening definitivo lato API: `routes/overview.py::_degraded_overview()` — se il calcolo
+completo fallisce e non c'è cache, l'endpoint risponde comunque 200 con la lista clienti + conteggi alert reali
+(aggregazione Mongo), resto a zero, `degraded:true` + `error` (non cachato → ritenta al giro dopo). Frontend
+`DashboardPage.js`: banner ambra `overview-degraded-banner` con il dettaglio errore. Verificato forzando KeyError.
+**Indice** `managed_devices (client_id, ip) unique` ora PARZIALE (`ip` $type string): i device agganciati solo via MAC
+(ip=None) non collidono più (prima il 2° pending per cliente → DuplicateKey 500). Migrazione automatica allo startup
+(drop vecchio indice se non parziale). `add_managed_device`: DuplicateKey → 409 invece di 500.
+
+
 ## 2026-06 ✅ Registro accessi Amministratori di Sistema (modulo A "clone Intrusa") + ErrorBoundary pagine
 **Contesto**: utente ha chiesto analisi di intrusa.io (SIEM/compliance PMI) e di clonare il modulo Log Manager AdS.
 - **Agent Go** (`cmd/agent/seclog_windows.go` + stub `seclog_other.go`, lanciato in `runAgent` → `runSecLogCollector`,

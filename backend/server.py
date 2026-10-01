@@ -478,7 +478,15 @@ async def startup_event():
         await db.device_poll_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
 
         await db.managed_devices.create_index([("client_id", 1)])
-        await db.managed_devices.create_index([("client_id", 1), ("ip", 1)], unique=True)
+        # Unicità (client, ip) SOLO per ip valorizzato: i device agganciati via MAC in attesa di IP hanno ip=None
+        try:
+            _mi = await db.managed_devices.index_information()
+            if "client_id_1_ip_1" in _mi and not _mi["client_id_1_ip_1"].get("partialFilterExpression"):
+                await db.managed_devices.drop_index("client_id_1_ip_1")
+        except Exception as _e_idx:  # noqa: BLE001
+            logger.warning(f"managed_devices index migration: {_e_idx}")
+        await db.managed_devices.create_index([("client_id", 1), ("ip", 1)], unique=True,
+                                              partialFilterExpression={"ip": {"$type": "string"}})
 
         await db.metrics_history.create_index([("client_id", 1), ("timestamp", -1)])
         await db.metrics_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
