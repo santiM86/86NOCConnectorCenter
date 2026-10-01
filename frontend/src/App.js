@@ -75,6 +75,7 @@ const RogueDevicesPage = lazyRetry(() => import("@/pages/RogueDevicesPage"));
 const TrendPage = lazyRetry(() => import("@/pages/TrendPage"));
 const DeviceMetricsPage = lazyRetry(() => import("@/pages/DeviceMetricsPage"));
 const SyslogPage = lazyRetry(() => import("@/pages/SyslogPage"));
+const SecurityLogPage = lazyRetry(() => import("@/pages/SecurityLogPage"));
 const TrapsPage = lazyRetry(() => import("@/pages/TrapsPage"));
 const DiscoveryPage = lazyRetry(() => import("@/pages/DiscoveryPage"));
 const LanScannerPage = lazyRetry(() => import("@/pages/LanScannerPage"));
@@ -311,6 +312,7 @@ function App() {
               <Route path="trends" element={<TrendPage />} />
               <Route path="device-metrics" element={<DeviceMetricsPage />} />
               <Route path="syslog" element={<SyslogPage />} />
+              <Route path="security-log" element={<SecurityLogPage />} />
               <Route path="snmp-traps" element={<TrapsPage />} />
               <Route path="discovery" element={<DiscoveryPage />} />
               <Route path="lan-scanner" element={<LanScannerPage />} />

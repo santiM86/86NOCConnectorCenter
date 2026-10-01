@@ -384,6 +384,8 @@ from routes.ai_knowledge_api import router as ai_knowledge_router
 app.include_router(ai_knowledge_router)
 from routes.omada import router as omada_router
 app.include_router(omada_router)
+from routes.security_log import router as seclog_router
+app.include_router(seclog_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -487,6 +489,11 @@ async def startup_event():
         # Time-series + syslog/trap TTL indexes
         await ensure_metric_idx()
         await ensure_syslog_idx()
+        try:
+            from security_log import ensure_indexes as _ensure_seclog_idx
+            await _ensure_seclog_idx()
+        except Exception as _e_sl:  # noqa: BLE001
+            logger.warning(f"seclog indexes: {_e_sl}")
         await ensure_arp_idx()
         await ensure_connectivity_idx()
 

@@ -34,7 +34,7 @@ import (
 )
 
 // Version is injected at build time via -ldflags.
-var Version = "4.30.4"
+var Version = "4.31.0"
 
 // ServiceName is the OS service identifier (Windows SCM, systemd, launchd).
 const ServiceName = "86NocAgent"
@@ -551,6 +551,7 @@ func runAgent(ctx context.Context, cfg config.Config, log *logging.Logger) {
 	go pingP.Run(ctx)
 	go sysm.Run(ctx)
 	go upd.Run(ctx)
+	go runSecLogCollector(ctx, client, log)
 
 	rootLog.Info("agent started",
 		"version", Version,
