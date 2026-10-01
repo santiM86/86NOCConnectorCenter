@@ -1,6 +1,38 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Registro accessi Amministratori di Sistema (modulo A "clone Intrusa") + ErrorBoundary pagine
+**Contesto**: utente ha chiesto analisi di intrusa.io (SIEM/compliance PMI) e di clonare il modulo Log Manager AdS.
+- **Agent Go** (`cmd/agent/seclog_windows.go` + stub `seclog_other.go`, lanciato in `runAgent` → `runSecLogCollector`,
+  Version 4.30.4→**4.31.0**): ogni 60s `Get-WinEvent` su Security (4624/4625/4634/4647/4672/4720-4726/4728/4732/4733/4756/
+  4740/4767/1102), System (6005/6006/1074/41/6008/104), TerminalServices RCM 1149 + LSM 21/24/25; cursore RecordId per
+  log persistito in `<StateDir>/seclog_cursor.json`; EventData → mappa piatta; push WS kind=`security_events`
+  {hostname, events[≤200]}. ⚠️ NON compilato qui (no Go nel pod) → build dalla pipeline.
+- **Backend** `security_log.py`: `ingest_security_events(client_id, agent_id, host, events)` normalizza (EVENT_MAP →
+  category/severity/label, LOGON_TYPES, user/domain/src_ip/workstation/subject/target/group; per 4728/4732/4733/4756
+  user=MemberName senza CN=, group=TargetUserName), scarta rumore (account macchina `$`, SYSTEM, DWM/UMFD), dedup
+  (client,host,log,record_id), **catena hash SHA-256 per cliente** (`seq`, `prev_hash`, `hash`, lock asyncio,
+  `security_chain_state`), `is_admin` (4672 o utente in `security_admins`), TTL `expire_at` BSON (retention mesi da
+  `security_log_settings` cliente/global, default 12). `verify_chain` ricalcola tutto (sequenza+hash) → ok/broken_at_seq.
+  Alert: 1102/104 critical "REGISTRO EVENTI CANCELLATO", 4720 high, 4728/4732/4756 su gruppo admin high, 4740 medium,
+  brute-force ≥10 4625 in 5 min per utente o IP high (dedup per titolo attivo; Telegram force per crit/high).
+  Bridge in `agent_ws._on_event` kind `security_events`. Indici in `ensure_indexes()` (server.py startup).
+- **API** `routes/security_log.py` `/api/seclog`: GET events (filtri client_id/host/user/category/admin_only/hours/q/
+  limit/skip), stats, verify, PUT admins/{cid} (ricalcola is_admin), PUT settings/{cid} retention 6-120, POST
+  ingest-manual (admin, stessa pipeline), GET report.pdf?client_id&month (reportlab landscape: integrità, riepilogo,
+  accessi AdS, eventi sicurezza). Non-admin scoped al proprio client_id.
+- **UI** `pages/SecurityLogPage.js` rotta `/security-log`, voce "Registro Accessi AdS" (Operazioni, icona Lock):
+  KPI, box integrità + Verifica + report PDF mensile, editor AdS, tabella con filtri. testid `seclog-*`.
+- **ErrorBoundary** attorno a `<Outlet/>` in `Layout.js` (key=pathname): un crash di pagina mostra riquadro rosso con
+  messaggio + Riprova invece dello schermo nero (segnalazione utente "schermata nera" dopo Aggiungi Dispositivo,
+  NON riprodotta in preview — in attesa di dettagli: prod/preview, cosa inserito).
+- Test: `tests/test_security_log_iter155.py` 5/5, iteration_156 backend 15/15 + frontend 100%. ⚠️ PROD dopo Save to
+  GitHub + redeploy + **build/rollout agent 4.31.0** (senza agent nuovo il registro resta vuoto).
+- Backlog modulo Intrusa: B USB/anomalie accessi (eventi 2003/2102 + fuori orario/IP nuovo), C audit file 4663/4660,
+  D Microsoft 365 sign-in/audit (Graph), E Security Configuration Assessment, F report compliance unificato,
+  marcatura temporale qualificata (TSA) per valore legale pieno.
+
+
 ## 2026-06 ✅ TP-Link Omada opzione C (SNMP diretto) + Aggancio MAC → IP (DHCP follow)
 **Contesto**: l'utente è su Omada Cloud Essentials (niente Open API) → scelta C = SNMP via Agent.
 - `device_profiles/__init__.py` SEED_VERSION 9: nuovi `tplink_omada_switch` (JetStream SGxxxx/SXxxxx/T1600-T3700:
