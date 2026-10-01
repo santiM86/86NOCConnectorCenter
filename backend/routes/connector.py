@@ -3104,7 +3104,12 @@ async def add_managed_device(client_id: str, device: ManagedDevice, current_user
         doc.update({"mac": mac, "follow_mac": True, "source": "manual", "ip_pending": ip is None})
         if ip:
             doc["ip_address"] = ip
-    await db.managed_devices.insert_one(doc)
+    try:
+        await db.managed_devices.insert_one(doc)
+    except Exception as _e_ins:  # noqa: BLE001
+        if "duplicate key" in str(_e_ins).lower():
+            raise HTTPException(status_code=409, detail="Dispositivo gia' presente per questo cliente (IP o MAC duplicato)")
+        raise
     # Remove from blacklist if it was previously deleted
     if ip:
         await db.deleted_devices.delete_many({"client_id": client_id, "device_ip": ip})

@@ -463,6 +463,8 @@ from routes.ai_knowledge_api import router as ai_knowledge_router
 app.include_router(ai_knowledge_router)
 from routes.omada import router as omada_router
 app.include_router(omada_router)
+from routes.security_log import router as seclog_router
+app.include_router(seclog_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router
@@ -555,7 +557,15 @@ async def startup_event():
         await db.device_poll_status.create_index([("client_id", 1), ("device_ip", 1)], unique=True)
 
         await db.managed_devices.create_index([("client_id", 1)])
-        await db.managed_devices.create_index([("client_id", 1), ("ip", 1)], unique=True)
+        # Unicità (client, ip) SOLO per ip valorizzato: i device agganciati via MAC in attesa di IP hanno ip=None
+        try:
+            _mi = await db.managed_devices.index_information()
+            if "client_id_1_ip_1" in _mi and not _mi["client_id_1_ip_1"].get("partialFilterExpression"):
+                await db.managed_devices.drop_index("client_id_1_ip_1")
+        except Exception as _e_idx:  # noqa: BLE001
+            logger.warning(f"managed_devices index migration: {_e_idx}")
+        await db.managed_devices.create_index([("client_id", 1), ("ip", 1)], unique=True,
+                                              partialFilterExpression={"ip": {"$type": "string"}})
 
         await db.metrics_history.create_index([("client_id", 1), ("timestamp", -1)])
         await db.metrics_history.create_index([("client_id", 1), ("device_ip", 1), ("timestamp", -1)])
@@ -566,6 +576,11 @@ async def startup_event():
         # Time-series + syslog/trap TTL indexes
         await ensure_metric_idx()
         await ensure_syslog_idx()
+        try:
+            from security_log import ensure_indexes as _ensure_seclog_idx
+            await _ensure_seclog_idx()
+        except Exception as _e_sl:  # noqa: BLE001
+            logger.warning(f"seclog indexes: {_e_sl}")
         await ensure_arp_idx()
         await ensure_connectivity_idx()
 

@@ -494,6 +494,10 @@ async def _on_event(conn: _Connection, evt: Dict[str, Any]) -> None:
             # questo modulo per REGISTRY).
             from routes.lan_scanner import bridge_lan_scan_event
             await bridge_lan_scan_event(kind, data)
+        elif kind == "security_events" and isinstance(data, dict):
+            from security_log import ingest_security_events
+            res = await ingest_security_events(conn.client_id, conn.agent_id, data.get("hostname") or "", data.get("events") or [])
+            logger.info("seclog agent=%s host=%s stored=%s skipped=%s", conn.agent_id, data.get("hostname"), res.get("stored"), res.get("skipped"))
         elif kind == "module_stuck":
             logger.warning("agent v4 module_stuck agent_id=%s data=%s", conn.agent_id, data)
         elif kind == "crash_recovered":

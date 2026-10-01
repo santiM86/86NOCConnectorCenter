@@ -5,6 +5,7 @@ import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import AgentUpgradeBanner from "@/components/AgentUpgradeBanner";
 import SiteDownBanner from "@/components/SiteDownBanner";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import {
   ShieldWarning,
   ChartLineUp,
@@ -95,6 +96,7 @@ const navConfig = [
       { path: "/device-metrics", icon: ChartLine, label: "Trend Metriche", roles: ["admin", "operator", "viewer"] },
       { path: "/server-metrics", icon: Desktop, label: "Server con Agent", roles: ["admin", "operator"] },
       { path: "/syslog", icon: ListChecks, label: "Syslog Viewer", roles: ["admin", "operator"] },
+      { path: "/security-log", icon: Lock, label: "Registro Accessi AdS", roles: ["admin", "operator"] },
       { path: "/snmp-traps", icon: Pulse, label: "SNMP Traps", roles: ["admin", "operator"] },
       { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
       { path: "/intelligence", icon: Brain, label: "NOC Intelligence", roles: ["admin", "operator"] },
@@ -417,7 +419,9 @@ export default function Layout() {
           <div className="w-8" />
         </header>
         <Suspense fallback={<div className="flex items-center justify-center h-[60vh]" data-testid="page-loader"><div className="w-6 h-6 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" /></div>}>
-          <Outlet />
+          <ErrorBoundary key={location.pathname} label="pagina" hint="La pagina ha incontrato un errore imprevisto. Premi Riprova o ricarica; se persiste, invia questo messaggio al supporto.">
+            <Outlet />
+          </ErrorBoundary>
         </Suspense>
       </main>
 

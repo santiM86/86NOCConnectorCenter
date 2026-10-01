@@ -150,6 +150,13 @@ export default function DashboardPage() {
       {/* Fascia KPI con trend + sparkline (periodo 24h/7g/30g) */}
       <KpiStrip />
 
+      {overview?.degraded && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200" data-testid="overview-degraded-banner">
+          Panoramica in modalità ridotta: il calcolo completo (dispositivi/WAN/backup) è fallito sul server, mostro clienti e alert. Nuovo tentativo automatico ogni 30s.
+          {overview.error ? <span className="block text-[10px] text-amber-300/80 mt-0.5 font-mono">dettaglio: {overview.error}</span> : null}
+        </div>
+      )}
+
       {/* Ricerca / filtro clienti */}
       <div className="noc-panel p-3 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 flex-1 min-w-[200px]">

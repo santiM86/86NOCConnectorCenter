@@ -1,0 +1,25 @@
+{
+  "summary": "Full backend + frontend testing of nuovo modulo 'Registro accessi Amministratori di Sistema' (/api/seclog/* + /security-log). 15/15 pytest API test PASS (ingest-manual, dedup, normalizzazione eventi 4624/4672/4720/4732/1102/6005/1149, rumore macchine/SYSTEM, catena hash SHA-256, verify ok/tamper, admins recalc is_admin, settings 422 fuori range, stats senza client_id → 400, report PDF %PDF, alert critical/high generati). UI /security-log testata end-to-end sul cliente 86BIT_Office con dati reali seedati via ingest-manual: KPI corretti (AdS 8, falliti 5, RDP 1, account/gruppi 2, totale 11), verify button → testo verde '11 eventi verificati', 11 righe render con seq decrescente, filtri categoria/host/admin/q funzionanti, admins editor + toast, pulsante Scarica PDF → GET /api/seclog/report.pdf 200 application/pdf. Pulizia completata (eventi, chain, admins, alert, settings).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_seclog_api_iter156.py",
+    "/app/test_reports/pytest/iter156_seclog.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "security_log.py expire_at usa timedelta(days=30*months): approssimazione (per 12m → 360gg invece dei ~365). Accettabile ma documentare.",
+    "security_log._emit dedup su (client_id,title,status=active) implica che un secondo evento 1102 su un host diverso NON genera nuovo alert finché il primo non è risolto. Valutare dedup per source_type+device_ip.",
+    "routes/security_log.ingest_manual non richiede body.events non vuoto: una POST con events=[] ritorna {stored:0} silenziosamente — ok ma considerare 400 per feedback."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_seclog_api_iter156.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100%"},
+  "test_credentials": "info@86bit.it / Ariel17051986@!@86 + TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3 (OK)",
+  "seed_data_creation": "Seedati 12 eventi (11 stored, 1 noise) su client 86BIT_Office host QA-SRV01 per UI testing e PULITI a fine run (events:11 chain:1 admins:1 alerts:2). Fixture 'test-seclog-qa' per pytest ripulita a fine suite.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Nuova regression suite API seclog: /app/backend/tests/test_seclog_api_iter156.py (15 tests, usa REACT_APP_BACKEND_URL + 2FA TOTP). Pre-cleanup inside test_01 e cleanup fixture usano direct mongo via /app/backend/database. CID fisso 'test-seclog-qa' (idempotente). Il test iter155 (python script standalone) rimane valido in parallelo. Menu 'Registro Accessi AdS' è sotto gruppo 'OPERAZIONI' nel sidebar. 1102 (critical) + 4720 (high) + 4732/Administrators (high) + ≥10x4625 (high) sono tutti emessi correttamente in db.alerts.",
+  "rca of the issue": "N/A"
+}
