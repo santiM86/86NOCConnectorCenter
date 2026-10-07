@@ -56,11 +56,17 @@ async def refresh(current_user: dict = Depends(get_current_user)):
 
 @router.get("/lookup/{ip}")
 async def lookup(ip: str, current_user: dict = Depends(get_current_user)):
-    """Arricchimento on-demand di un IP pubblico (IOC locali + AbuseIPDB + GreyNoise + InternetDB + KEV)."""
+    """Arricchimento on-demand di un IP pubblico (IOC locali + AbuseIPDB + GreyNoise + InternetDB + Shodan + KEV)."""
     try:
         return await osint.lookup_ip(ip)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/shodan/info")
+async def shodan_info(current_user: dict = Depends(get_current_user)):
+    """Piano/crediti della key Shodan configurata (None se assente)."""
+    return {"info": await osint.shodan_api_info()}
 
 
 @router.get("/kev")

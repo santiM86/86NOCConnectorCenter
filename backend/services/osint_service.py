@@ -35,7 +35,7 @@ from security import security_manager
 logger = logging.getLogger("osint")
 
 # Provider che richiedono una API key
-KEYED_PROVIDERS = ("abusech", "abuseipdb", "greynoise", "nvd")
+KEYED_PROVIDERS = ("abusech", "abuseipdb", "greynoise", "nvd", "shodan")
 SETTINGS_PREFIX = "osint_"
 SETTINGS_SUFFIX = "_api_key"
 
@@ -52,7 +52,15 @@ FEED_INTERVALS = {
 }
 
 # TTL cache lookup per-IP (ore)
-IP_CACHE_TTL_H = {"abuseipdb": 24, "greynoise": 168, "internetdb": 168}
+IP_CACHE_TTL_H = {"abuseipdb": 24, "greynoise": 168, "internetdb": 168, "shodan": 24}
+
+# Porte/servizi che NON dovrebbero essere esposti su Internet (alert "servizio rischioso")
+RISKY_PORTS = {
+    21: "FTP", 23: "Telnet", 135: "MS-RPC", 137: "NetBIOS", 139: "NetBIOS", 445: "SMB", 1433: "MSSQL", 1521: "Oracle",
+    3306: "MySQL", 3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 5985: "WinRM", 5986: "WinRM", 6379: "Redis",
+    9200: "Elasticsearch", 11211: "Memcached", 27017: "MongoDB", 2375: "Docker API", 161: "SNMP", 389: "LDAP", 636: "LDAPS",
+    8291: "MikroTik Winbox", 4899: "Radmin", 5060: "SIP",
+}
 
 
 # ==================== KEY MANAGEMENT ====================
@@ -466,6 +474,76 @@ async def _internetdb(ip: str):
         return {"error": str(e)[:120]}
 
 
+async def _shodan_host(ip: str):
+    """Shodan API completa (richiede key): servizi/banner, prodotto+versione, OS, org/ISP/ASN, CVE, hostnames."""
+    key = await get_api_key("shodan")
+    if not key:
+        return None
+    cached = await _cache_get(ip, "shodan")
+    if cached is not None:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.get(f"https://api.shodan.io/shodan/host/{ip}", params={"key": key, "minify": "false"}, headers={"User-Agent": _UA})
+        if r.status_code == 404:
+            res = {"ports": [], "vulns": [], "services": [], "hostnames": [], "tags": [], "found": False}
+            await _cache_set(ip, "shodan", res)
+            return res
+        if r.status_code == 401:
+            return {"error": "Shodan: API key non valida"}
+        if r.status_code == 429:
+            return {"error": "Shodan: limite richieste raggiunto (rate limit)"}
+        r.raise_for_status()
+        d = r.json()
+        services = []
+        for s in d.get("data", []) or []:
+            ssl = s.get("ssl") or {}
+            cert = (ssl.get("cert") or {})
+            services.append({
+                "port": s.get("port"), "transport": s.get("transport") or "tcp", "module": (s.get("_shodan") or {}).get("module"),
+                "product": s.get("product"), "version": s.get("version"), "os": s.get("os"),
+                "banner": (s.get("data") or "")[:200].strip(), "cpe": (s.get("cpe23") or s.get("cpe") or [])[:3],
+                "vulns": sorted((s.get("vulns") or {}).keys())[:20] if isinstance(s.get("vulns"), dict) else [],
+                "ssl_expires": cert.get("expires"), "ssl_subject": (cert.get("subject") or {}).get("CN"),
+                "http_title": (s.get("http") or {}).get("title"), "timestamp": s.get("timestamp"),
+            })
+        services.sort(key=lambda x: x.get("port") or 0)
+        res = {
+            "found": True, "ports": sorted(set(d.get("ports", []) or [])), "vulns": sorted(set(d.get("vulns", []) or [])),
+            "hostnames": d.get("hostnames", []) or [], "domains": d.get("domains", []) or [], "tags": d.get("tags", []) or [],
+            "os": d.get("os"), "org": d.get("org"), "isp": d.get("isp"), "asn": d.get("asn"),
+            "country": d.get("country_name"), "city": d.get("city"), "last_update": d.get("last_update"),
+            "services": services,
+        }
+        await _cache_set(ip, "shodan", res)
+        return res
+    except Exception as e:
+        logger.warning(f"OSINT shodan {ip}: {e}")
+        return {"error": str(e)[:120]}
+
+
+async def shodan_api_info() -> dict | None:
+    """Crediti/piano della key Shodan (per la UI)."""
+    key = await get_api_key("shodan")
+    if not key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
+            r = await c.get("https://api.shodan.io/api-info", params={"key": key}, headers={"User-Agent": _UA})
+        if r.status_code == 401:
+            return {"error": "API key non valida"}
+        r.raise_for_status()
+        d = r.json()
+        return {"plan": d.get("plan"), "query_credits": d.get("query_credits"), "scan_credits": d.get("scan_credits"),
+                "monitored_ips": d.get("monitored_ips"), "unlocked": d.get("unlocked")}
+    except Exception as e:
+        return {"error": str(e)[:120]}
+
+
+def risky_ports(ports: list) -> list[dict]:
+    return [{"port": p, "service": RISKY_PORTS[p]} for p in sorted(set(ports or [])) if p in RISKY_PORTS]
+
+
 async def lookup_ip(ip: str) -> dict:
     """Arricchimento on-demand di un IP pubblico con tutte le fonti disponibili."""
     if not _is_public_ip(ip):
@@ -478,11 +556,15 @@ async def lookup_ip(ip: str) -> dict:
         "abuseipdb": await _abuseipdb(ip),
         "greynoise": await _greynoise(ip),
         "internetdb": await _internetdb(ip),
+        "shodan": await _shodan_host(ip),
     }
-    # KEV cross-ref sulle vulns InternetDB
+    # KEV cross-ref sulle vulns InternetDB + Shodan
     idb = result["internetdb"] or {}
-    kev_hits = await _kev_hits(idb.get("vulns", []) if isinstance(idb, dict) else [])
+    sh = result["shodan"] if isinstance(result["shodan"], dict) else {}
+    cves = set(idb.get("vulns", []) if isinstance(idb, dict) else []) | set(sh.get("vulns", []) or [])
+    kev_hits = await _kev_hits(sorted(cves))
     result["kev_hits"] = kev_hits
+    result["risky_ports"] = risky_ports(list(set(idb.get("ports", []) if isinstance(idb, dict) else []) | set(sh.get("ports", []) or [])))
     return result
 
 

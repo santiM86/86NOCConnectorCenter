@@ -23,6 +23,7 @@ const KEY_PROVIDERS = [
   { id: "abuseipdb", label: "AbuseIPDB", url: "https://www.abuseipdb.com/account/api", note: "Reputazione IP — 1.000 check/giorno free" },
   { id: "greynoise", label: "GreyNoise Community", url: "https://www.greynoise.io/", note: "Scanner/noise — riduce falsi positivi" },
   { id: "nvd", label: "NVD (NIST)", url: "https://nvd.nist.gov/developers/request-an-api-key", note: "Opzionale: dettagli CVE, rate limit più alto" },
+  { id: "shodan", label: "Shodan (API completa)", url: "https://account.shodan.io/", note: "Servizi/banner/versioni, OS, org/ISP, CVE sugli IP pubblici — alert su porte rischiose e nuove porte. Senza key resta attivo InternetDB (solo porte/CVE)" },
 ];
 
 function fmtTime(iso) {
@@ -51,11 +52,15 @@ export default function OsintPage() {
   const [kev, setKev] = useState([]);
   const [kevQuery, setKevQuery] = useState("");
   const [kevAssets, setKevAssets] = useState(null);
+  const [shodanInfo, setShodanInfo] = useState(null);
 
   const reloadStatus = useCallback(async () => {
     try {
       const r = await axios.get(`${API}/api/osint/status`, { headers });
       setStatus(r.data);
+      if (r.data?.keys?.shodan?.configured) {
+        axios.get(`${API}/api/osint/shodan/info`, { headers }).then(x => setShodanInfo(x.data?.info || null)).catch(() => setShodanInfo(null));
+      } else setShodanInfo(null);
     } catch {
       toast.error("Errore caricamento stato OSINT");
     } finally {
@@ -264,6 +269,7 @@ export default function OsintPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               <LookupCard title="AbuseIPDB" data={lookupResult.abuseipdb} />
               <LookupCard title="GreyNoise" data={lookupResult.greynoise} />
+              <LookupCard title="Shodan (API)" data={lookupResult.shodan} />
               <LookupCard title="Shodan InternetDB" data={lookupResult.internetdb} />
             </div>
             {lookupResult.kev_hits?.length > 0 && (
@@ -310,7 +316,22 @@ export default function OsintPage() {
                     data-testid={`osint-exposure-row-${e.public_ip}`}>
                     <td className="px-3 py-2">{e.client_name || "—"}</td>
                     <td className="px-3 py-2 font-mono">{e.public_ip}</td>
-                    <td className="px-3 py-2 font-mono text-[10px]">{(e.ports || []).slice(0, 8).join(", ") || "—"}</td>
+                    <td className="px-3 py-2 font-mono text-[10px]">
+                      {(e.ports || []).slice(0, 8).join(", ") || "—"}
+                      {(e.risky_ports || []).length > 0 && (
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300" title={e.risky_ports.map(r => `${r.service} ${r.port}`).join(", ")} data-testid={`osint-risky-${e.public_ip}`}>
+                          {e.risky_ports.length} rischiose
+                        </span>
+                      )}
+                      {(e.new_ports || []).length > 0 && (
+                        <span className="ml-1 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300" title={`Nuove: ${e.new_ports.join(", ")}`}>+{e.new_ports.length} nuove</span>
+                      )}
+                      {e.shodan?.services?.length > 0 && (
+                        <div className="text-[9px] text-[var(--text-muted)] mt-0.5" title={e.shodan.services.map(s => `${s.port}/${s.transport} ${s.product || s.module || ""} ${s.version || ""}`).join("\n")}>
+                          {e.shodan.org ? `${e.shodan.org} · ` : ""}{e.shodan.services.filter(s => s.product).slice(0, 3).map(s => `${s.product}${s.version ? " " + s.version : ""}`).join(", ")}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2">{(e.vulns || []).length}</td>
                     <td className="px-3 py-2">
                       {e.kev_count > 0 ? (
@@ -514,6 +535,11 @@ export default function OsintPage() {
                     <p className="text-[10px] text-[var(--text-muted)]">
                       {p.note} · <a href={p.url} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">ottieni chiave</a>
                     </p>
+                    {p.id === "shodan" && st?.configured && shodanInfo && (
+                      <p className={`text-[10px] mt-0.5 ${shodanInfo.error ? "text-red-400" : "text-emerald-300"}`} data-testid="osint-shodan-info">
+                        {shodanInfo.error ? `Shodan: ${shodanInfo.error}` : `Shodan piano ${shodanInfo.plan || "?"} · crediti query ${shodanInfo.query_credits ?? "—"} · scan ${shodanInfo.scan_credits ?? "—"}`}
+                      </p>
+                    )}
                   </div>
                   {st?.configured && (
                     <Button onClick={() => deleteKey(p.id)} size="sm" variant="outline"

@@ -1,6 +1,24 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ Shodan API completa come fonte OSINT (+ alert porte rischiose / nuove porte)
+- `services/osint_service.py`: provider `shodan` in KEYED_PROVIDERS (key cifrata come gli altri, UI OSINT → Chiavi API);
+  `_shodan_host(ip)` (GET api.shodan.io/shodan/host/{ip}, cache 24h `osint_ip_cache`) → found, ports, vulns, hostnames,
+  domains, tags, os, org, isp, asn, country, city, last_update, `services[]` (port/transport/module/product/version/
+  banner/cpe/vulns/ssl_expires/ssl_subject/http_title). `shodan_api_info()` (piano/crediti; 401 → "API key non valida").
+  `RISKY_PORTS` + `risky_ports(ports)`. `lookup_ip` include `shodan`, KEV cross-ref su InternetDB∪Shodan, `risky_ports`.
+- `services/osint_poller.osint_exposure_tick`: merge InternetDB + Shodan (se key) → `osint_exposure` con `risky_ports`,
+  `source`, `shodan{...}`, `new_ports` (diff vs scansione precedente); `_emit_port_alerts`: high `osint_exposed_service`
+  (dedup per titolo, auto-resolve quando spariscono, Telegram) + medium `osint_new_port`. Senza key: solo InternetDB
+  ma gli alert porte rischiose/nuove funzionano comunque.
+- API: `GET /api/osint/shodan/info`. UI `OsintPage.js`: riga chiave Shodan + crediti (`osint-shodan-info`), LookupCard
+  "Shodan (API)", tabella esposizione con badge "N rischiose" (`osint-risky-<ip>`), "+N nuove", org/prodotti.
+- Test `tests/test_shodan_iter157.py` 4/4 (mock HTTP) + curl reale (host lookup ok, api-info 401 su key finta).
+  NB: ipaddress considera 203.0.113.x non pubblico → nei test usare IP reali (8.8.4.4).
+- Aperto: LECS NDR (Cyber Evolution) — proposto Syslog CEF/LEEF via nuovo ricevitore syslog nell'Agent Go + parser
+  → ndr_events/alert; in attesa risposte utente (unità disponibile? CEF/LEEF? porta).
+
+
 ## 2026-06 ✅ Panoramica: fallback degradato (mai più "0 clienti"/HTTP 500) + indice managed_devices parziale
 **Segnalazione PROD**: "overview error: '<client_id>'" (KeyError) → Panoramica vuota. Nel repo attuale tutte le mappe
 per-cliente sono già guardate (defaultdict/get): il 500 in PROD indica codice backend NON aggiornato → serve Save to
