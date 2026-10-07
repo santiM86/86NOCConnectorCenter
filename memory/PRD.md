@@ -1,6 +1,26 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ USB & anomalie accessi (modulo B Intrusa) + scadenza certificati SSL esposti
+- **Agent Go** `seclog_windows.go`: sorgenti con campo `Match` (regex PowerShell su Message): Security +6416 (PnP audit),
+  `Microsoft-Windows-Kernel-PnP/Configuration` 400 filtrato `USBSTOR|USB\VID_|WPDBUSENUM`, `DriverFrameworks-UserMode/
+  Operational` 2003/2100/2102. `enableUsbAuditLogs()` all'avvio: `wevtutil sl ... /e:true` + `auditpol` PnP success.
+- **Backend** `security_log.py`: EVENT_MAP usb_insert (6416/400/2003) / usb_remove (2100/2102) con guardia sul nome log
+  (`_USB_LOGS`, TerminalServices per 21/24/25), campo `device`; `_noise` esenta usb/power/log_cleared.
+  `get_settings(cid)` (global→cliente→default: retention, `work_hours{start,end,days[0-6],tz}` default 07-20 lun-sab
+  Europe/Rome, `usb_alerts`, `after_hours_alerts`, `new_origin_alerts`). `_evaluate_anomalies`: USB → medium
+  `seclog_usb_insert` (dedup 1h per device via `usb_key`, instant); accessi interattivi (4624 type 2/7/10/11, 1149)
+  fuori orario → medium `seclog_after_hours`; origine (src_ip o workstation) mai vista per (client,user) in
+  `security_login_profiles` (TTL 90gg, apprendimento 24h) → high se IP pubblico / medium interno `seclog_new_origin`.
+  API: `GET/PUT /api/seclog/settings/{cid}` (parziale, valida HH:MM). UI `SecurityLogPage` pannello `AnomalySettings`
+  (toggle, orario, giorni, retention) + KPI "USB inseriti" + categorie USB + colonna device.
+- **Certificati**: `osint_poller._tls_cert_info(ip,port,sni)` handshake TLS diretto (cryptography) → cn/issuer/sans/
+  not_after/days_left/self_signed; `_check_certificates` su porte esposte ∩ TLS_PORTS (443,8443,4443,10443,465,993,995,
+  636,8843): ≤30gg medium, ≤7gg/scaduto high (+Telegram, escalation), rinnovato → resolved. Salvato in
+  `osint_exposure.certs`; UI OSINT colonna "Certificati SSL" (`osint-certs-<ip>`). Funziona SENZA key Shodan.
+- Test `tests/test_anomalies_iter158.py` 5/5 + UI verificata (salvataggio orari persistente).
+
+
 ## 2026-06 ✅ Shodan API completa come fonte OSINT (+ alert porte rischiose / nuove porte)
 - `services/osint_service.py`: provider `shodan` in KEYED_PROVIDERS (key cifrata come gli altri, UI OSINT → Chiavi API);
   `_shodan_host(ip)` (GET api.shodan.io/shodan/host/{ip}, cache 24h `osint_ip_cache`) → found, ports, vulns, hostnames,

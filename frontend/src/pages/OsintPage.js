@@ -307,6 +307,7 @@ export default function OsintPage() {
                   <th className="text-left px-3 py-2">Porte</th>
                   <th className="text-left px-3 py-2">CVE</th>
                   <th className="text-left px-3 py-2">KEV</th>
+                  <th className="text-left px-3 py-2">Certificati SSL</th>
                   <th className="text-left px-3 py-2">Scan</th>
                 </tr>
               </thead>
@@ -339,6 +340,13 @@ export default function OsintPage() {
                           {e.kev_count} sfruttate
                         </span>
                       ) : <span className="text-emerald-400">0</span>}
+                    </td>
+                    <td className="px-3 py-2 text-[10px]" data-testid={`osint-certs-${e.public_ip}`}>
+                      {(e.certs || []).length === 0 ? <span className="text-[var(--text-muted)]">—</span> : e.certs.map((c, i) => (
+                        <div key={i} className={c.days_left < 0 ? "text-red-400 font-semibold" : c.days_left <= 7 ? "text-red-300" : c.days_left <= 30 ? "text-amber-300" : "text-emerald-300"} title={`${c.cn || "?"} · ${c.issuer || "?"} · scade ${String(c.not_after).slice(0, 10)}`}>
+                          :{c.port} {c.cn || "?"} · {c.days_left < 0 ? "SCADUTO" : `${c.days_left} gg`}{c.self_signed ? " · self-signed" : ""}
+                        </div>
+                      ))}
                     </td>
                     <td className="px-3 py-2 text-[10px] text-[var(--text-muted)]">{fmtTime(e.last_scan)}</td>
                   </tr>

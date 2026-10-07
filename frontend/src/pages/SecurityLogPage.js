@@ -13,7 +13,9 @@ const CAT = {
   group_change: ["Gruppo", "text-red-300"], lockout: ["Lockout", "text-amber-300"], log_cleared: ["LOG CANCELLATO", "text-red-400 font-bold"],
   power_on: ["Avvio", "text-cyan-300"], power_off: ["Arresto", "text-cyan-300"], power_crash: ["Crash", "text-red-300"],
   rdp_connect: ["RDP", "text-violet-300"], rdp_session: ["Sessione RDP", "text-violet-300"],
+  usb_insert: ["USB inserito", "text-orange-300 font-semibold"], usb_remove: ["USB rimosso", "text-[var(--text-muted)]"],
 };
+const DAYS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 const PERIODS = [["24", "24h"], ["168", "7gg"], ["720", "30gg"], ["2160", "90gg"]];
 const inp = "h-8 text-xs bg-[var(--bg-card)] border-[var(--bg-border)] text-[var(--text-primary)]";
 const fmt = (ts) => { try { return new Date(ts).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "medium" }); } catch { return ts; } };
@@ -44,6 +46,43 @@ function AdminsEditor({ clientId, admins, onSaved }) {
         <Input value={val} onChange={e => setVal(e.target.value)} placeholder="administrator, nome.cognome" className={inp} data-testid="seclog-admins-input" />
         <Button size="sm" onClick={save} className="h-8 text-xs bg-amber-600 hover:bg-amber-700 text-white" data-testid="seclog-admins-save">Salva</Button>
       </div>
+    </div>
+  );
+}
+
+function AnomalySettings({ clientId }) {
+  const [s, setS] = useState(null);
+  useEffect(() => { if (clientId) axios.get(`${API}/seclog/settings/${clientId}`).then(r => setS(r.data)).catch(() => {}); }, [clientId]);
+  if (!s) return null;
+  const wh = s.work_hours || {};
+  const save = async () => {
+    try {
+      const { data } = await axios.put(`${API}/seclog/settings/${clientId}`, { work_hours: wh, usb_alerts: s.usb_alerts, after_hours_alerts: s.after_hours_alerts, new_origin_alerts: s.new_origin_alerts, retention_months: s.retention_months });
+      setS(data); toast.success("Impostazioni anomalie salvate");
+    } catch (e) { toast.error(e.response?.data?.detail || "Errore salvataggio"); }
+  };
+  const setWh = (patch) => setS({ ...s, work_hours: { ...wh, ...patch } });
+  const toggleDay = (i) => setWh({ days: (wh.days || []).includes(i) ? wh.days.filter(d => d !== i) : [...(wh.days || []), i].sort() });
+  return (
+    <div className="noc-panel p-3 space-y-2" data-testid="seclog-anomaly-settings">
+      <div className="text-[11px] font-semibold flex items-center gap-1.5"><ShieldAlert size={13} className="text-orange-300" /> Anomalie: USB, fuori orario, origini nuove</div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={!!s.usb_alerts} onChange={e => setS({ ...s, usb_alerts: e.target.checked })} data-testid="seclog-toggle-usb" /> Alert USB inserito</label>
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={!!s.after_hours_alerts} onChange={e => setS({ ...s, after_hours_alerts: e.target.checked })} data-testid="seclog-toggle-afterhours" /> Accessi fuori orario</label>
+        <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={!!s.new_origin_alerts} onChange={e => setS({ ...s, new_origin_alerts: e.target.checked })} data-testid="seclog-toggle-neworigin" /> Accessi da IP/postazione mai vista</label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="text-[var(--text-muted)]">Orario lavorativo</span>
+        <input type="time" value={wh.start || "07:00"} onChange={e => setWh({ start: e.target.value })} className={`${inp} rounded px-1`} data-testid="seclog-work-start" />
+        <span>–</span>
+        <input type="time" value={wh.end || "20:00"} onChange={e => setWh({ end: e.target.value })} className={`${inp} rounded px-1`} data-testid="seclog-work-end" />
+        <div className="flex gap-0.5">{DAYS.map((d, i) => <button key={d} onClick={() => toggleDay(i)} className={`px-1.5 h-7 rounded text-[10px] border ${(wh.days || []).includes(i) ? "bg-amber-500/20 border-amber-500/40 text-amber-200" : "border-[var(--bg-border)] text-[var(--text-muted)]"}`} data-testid={`seclog-day-${i}`}>{d}</button>)}</div>
+        <span className="text-[var(--text-muted)]">Retention</span>
+        <input type="number" min={6} max={120} value={s.retention_months} onChange={e => setS({ ...s, retention_months: Number(e.target.value) })} className={`${inp} rounded px-1 w-16`} data-testid="seclog-retention" />
+        <span className="text-[var(--text-muted)]">mesi</span>
+        <Button size="sm" onClick={save} className="h-7 text-xs bg-orange-600 hover:bg-orange-700 text-white ml-auto" data-testid="seclog-anomaly-save">Salva</Button>
+      </div>
+      <p className="text-[10px] text-[var(--text-muted)]">Le "origini note" per utente si imparano automaticamente nelle prime 24 h e valgono 90 giorni. IP pubblico mai visto = alert alto (Telegram), postazione interna nuova = medio.</p>
     </div>
   );
 }
@@ -107,11 +146,12 @@ export default function SecurityLogPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
         <Tile label="Accessi AdS" value={stats?.admin_events ?? "—"} tone="text-amber-300" testid="seclog-kpi-admin" />
         <Tile label="Accessi riusciti" value={bc.logon_success ?? 0} tone="text-emerald-300" testid="seclog-kpi-ok" />
         <Tile label="Accessi falliti" value={bc.logon_failed ?? 0} tone={bc.logon_failed ? "text-red-300" : ""} testid="seclog-kpi-failed" />
         <Tile label="RDP" value={(bc.rdp_connect || 0) + (bc.rdp_session || 0)} tone="text-violet-300" testid="seclog-kpi-rdp" />
+        <Tile label="USB inseriti" value={bc.usb_insert ?? 0} tone={bc.usb_insert ? "text-orange-300" : ""} testid="seclog-kpi-usb" />
         <Tile label="Account / gruppi" value={(bc.account_created || 0) + (bc.account_deleted || 0) + (bc.group_change || 0)} tone={(bc.account_created || bc.group_change) ? "text-red-300" : ""} testid="seclog-kpi-accounts" />
         <Tile label="Eventi totali (storico)" value={stats?.total_all_time ?? "—"} testid="seclog-kpi-total" />
       </div>
@@ -135,6 +175,7 @@ export default function SecurityLogPage() {
         </div>
         <AdminsEditor clientId={clientId} admins={stats?.admins || []} onSaved={load} />
       </div>
+      <AnomalySettings clientId={clientId} />
 
       <div className="noc-panel" data-testid="seclog-table">
         <div className="px-3 py-2 border-b border-[var(--bg-border)] flex items-center gap-2 flex-wrap">
@@ -163,7 +204,7 @@ export default function SecurityLogPage() {
                     <td><span className={tone}>{lbl}</span> <span className="text-[var(--text-muted)]">· {e.label} ({e.event_id})</span></td>
                     <td className="font-mono">{e.domain ? `${e.domain}\\` : ""}{e.user}{e.target_user && e.target_user !== e.user ? <span className="text-[var(--text-muted)]"> → {e.target_user}</span> : null}{e.group ? <span className="text-red-300"> [{e.group}]</span> : null}</td>
                     <td>{e.logon_type_label || "—"}</td>
-                    <td className="font-mono">{e.src_ip || e.workstation || "—"}</td>
+                    <td className="font-mono">{e.src_ip || e.workstation || (e.device ? <span className="text-orange-300" title={e.device}>{e.device.slice(0, 40)}</span> : "—")}</td>
                     <td>{e.is_admin ? <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-200 font-bold">AdS</span> : ""}</td>
                     <td className="font-mono text-[var(--text-muted)]" title={`hash ${e.hash}`}>#{e.seq}</td>
                   </tr>
