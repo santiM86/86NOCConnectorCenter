@@ -9899,3 +9899,9 @@ Health null è normale HPE (usa i sottosistemi).
 - UI OmadaSettingsPage: "Aggiungi organizzazione" (form), tabella controller (Test/Sync/modifica/elimina, stato/errore), Siti→Clienti con colonna organizzazione, dispositivi. Guida adattata a Omada Cloud (entrare nell'organizzazione → Global View → Impostazioni → Integrazione piattaforma → Open API).
 - Testato con mock (tests/mock_omada_server.py): add/test/sync/link/discover + credenziali errate → "Omada -44106: Invalid client". Mock rimosso. IN ATTESA: l'utente crea le app Open API nelle 4 organizzazioni (prima Galvan) e le inserisce.
 - Dubbio aperto: disponibilità Open API su Omada Cloud-Based Controller piano Essentials — se manca la voce, chiedere screenshot.
+
+## 2026-06 Fix "Tipo macchina non mantenuto" (BLUEEDENSRV, 3 IP)
+- mac_follow: un doc con stesso MAC ma VIVO su altro IP (server 1 NIC multi-IP) non viene piu cancellato come duplicato (solo alert multi-IP).
+- mac_follow merge duplicato: le impostazioni del duplicato (virtualization, soglie, silence...) vengono fuse nel device seguito prima della cancellazione.
+- DeviceEditModal: dopo Salva/Applica ora rilegge dal backend e mostra errore se il Tipo macchina non coincide (niente piu falso verde).
+- Test: tests/test_mac_follow_iter154.py 12/12. Causa in produzione non confermata da dati (VM self-hosted non leggibile).

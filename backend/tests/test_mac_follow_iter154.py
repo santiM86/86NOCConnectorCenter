@@ -108,10 +108,33 @@ async def main():
         assert mi and "10.100.110.9" in mi["title"] and mi["severity"] == "high", mi
         ok += 1
         print("10. multi-IP con vecchio vivo → alert informativo, nessuno spostamento OK")
+
+        # 11. Server con 1 NIC e piu' IP (BLUEEDENSRV): vecchio IP 'offline' ma doc sul nuovo IP VIVO con impostazioni → NON cancellare
+        await db.managed_devices.insert_many([
+            {"id": f"{CID}-be1", "client_id": CID, "ip": "10.180.118.5", "ip_address": "10.180.118.5", "mac": "00:15:5d:aa:bb:01", "name": "BLUEEDENSRV", "status": "offline", "consecutive_ping_failures": 4},
+            {"id": f"{CID}-be2", "client_id": CID, "ip": "10.180.118.7", "ip_address": "10.180.118.7", "mac": "00:15:5d:aa:bb:01", "name": "BLUEEDENSRV", "status": "online", "virtualization": "hyperv"},
+        ])
+        ch = await apply_mac_follow(CID, [{"ip": "10.180.118.5", "mac": "00:15:5d:aa:bb:01"}, {"ip": "10.180.118.7", "mac": "00:15:5d:aa:bb:01"}], "test")
+        be2 = await db.managed_devices.find_one({"id": f"{CID}-be2"}, {"_id": 0})
+        assert ch == [] and be2 and be2["virtualization"] == "hyperv", (ch, be2)
+        ok += 1
+        print("11. multi-IP stesso NIC con doc vivo → nessun merge, impostazioni preservate OK")
+
+        # 12. merge duplicato (non vivo) → le impostazioni del duplicato passano al device seguito
+        await db.managed_devices.delete_many({"id": {"$in": [f"{CID}-be1", f"{CID}-be2"]}})
+        await db.managed_devices.insert_many([
+            {"id": f"{CID}-m1", "client_id": CID, "ip": "10.9.9.1", "ip_address": "10.9.9.1", "mac": "00:15:5d:aa:bb:02", "name": "SRVX", "status": "offline", "consecutive_ping_failures": 5},
+            {"id": f"{CID}-m2", "client_id": CID, "ip": "10.9.9.2", "ip_address": "10.9.9.2", "mac": "00:15:5d:aa:bb:02", "name": "SRVX", "virtualization": "vmware"},
+        ])
+        ch = await apply_mac_follow(CID, [{"ip": "10.9.9.2", "mac": "00:15:5d:aa:bb:02"}], "test")
+        m1 = await db.managed_devices.find_one({"id": f"{CID}-m1"}, {"_id": 0})
+        assert len(ch) == 1 and m1["ip"] == "10.9.9.2" and m1["virtualization"] == "vmware", (ch, m1)
+        ok += 1
+        print("12. merge duplicato preserva impostazioni (tipo macchina) OK")
     finally:
         for c in ("managed_devices", "device_credentials", "port_memory", "alerts", "discovered_endpoints"):
             await db[c].delete_many({"client_id": CID})
-    print(f"PASS {ok}/10")
+    print(f"PASS {ok}/12")
 
 
 asyncio.run(main())

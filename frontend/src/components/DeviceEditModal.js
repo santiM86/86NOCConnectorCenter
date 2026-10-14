@@ -138,6 +138,10 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     return () => { cancelled = true; };
   }, [open, clientId, device?.id, device?.snmp_community, device?.community, device?.snmp_version]);
 
+  // Verifica reale: il valore riletto dal backend deve coincidere con quello scelto.
+  const virtMismatch = (confirmed) =>
+    confirmed && (confirmed.virtualization || "") !== virtualization;
+
   const buildOptimistic = () => ({
     ...device,
     alerts_silenced: alertsSilenced,
@@ -329,6 +333,10 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
     // Ricarica dal backend per CONFERMARE la persistenza (verifica reale).
     const confirmed = await reloadSavedDevice();
     setSaving(false);
+    if (virtMismatch(confirmed)) {
+      toast.error("Tipo macchina NON mantenuto dal server: il valore riletto è diverso da quello scelto. Riprova o segnala il dispositivo.");
+      return;
+    }
     setSavedOk(true);
     if (silencePersisted) {
       toast.success(alertsSilenced
@@ -362,6 +370,10 @@ export function DeviceEditModal({ clientId, device, open, onClose, onSaved }) {
       const res = await axios.post(`${API}/connector/${clientId}/request-refresh`);
       const confirmed = await reloadSavedDevice();
       setRefreshing(false);
+      if (virtMismatch(confirmed)) {
+        toast.error("Tipo macchina NON mantenuto dal server: il valore riletto è diverso da quello scelto. Riprova o segnala il dispositivo.");
+        return;
+      }
       setSavedOk(true);
       toast.success(res.data?.message || "Impostazioni salvate ✓ — richiesta di refresh inviata al connector");
       setTimeout(() => {

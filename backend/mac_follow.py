@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from database import db
+from managed_device_dedup import merge_field_dicts
 
 logger = logging.getLogger("mac_follow")
 SOURCE_TYPE = "mac_follow_ip_update"
@@ -147,7 +148,16 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
         merged_dup = None
         if other and other.get("id") != md.get("id"):
             if norm_mac(other.get("mac") or other.get("mac_address")) == mac:
+                if other.get("status") == "online" and int(other.get("consecutive_ping_failures") or 0) < 2:
+                    # stesso NIC con piu' IP vivi (server multi-IP): non e' un duplicato, non cancellare
+                    await _emit_multi_ip_alert(client_id, md, name, mac, cur_ip, candidates)
+                    continue
                 # voce DUPLICATA (stesso MAC censito due volte, es. auto-censimento dello scan sul nuovo IP) → merge
+                full_md = await db.managed_devices.find_one({"id": md["id"]}, {"_id": 0}) or {}
+                full_dup = await db.managed_devices.find_one({"id": other["id"]}, {"_id": 0}) or {}
+                fill = merge_field_dicts(full_md, full_dup)
+                if fill:
+                    await db.managed_devices.update_one({"id": md["id"]}, {"$set": fill})
                 await db.managed_devices.delete_one({"id": other["id"]})
                 merged_dup = other.get("name") or new_ip
                 logger.info(f"mac_follow merge duplicato {mac}: rimosso '{merged_dup}' ({new_ip}), tengo '{name}'")
