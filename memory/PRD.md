@@ -9905,3 +9905,10 @@ Health null è normale HPE (usa i sottosistemi).
 - mac_follow merge duplicato: le impostazioni del duplicato (virtualization, soglie, silence...) vengono fuse nel device seguito prima della cancellazione.
 - DeviceEditModal: dopo Salva/Applica ora rilegge dal backend e mostra errore se il Tipo macchina non coincide (niente piu falso verde).
 - Test: tests/test_mac_follow_iter154.py 12/12. Causa in produzione non confermata da dati (VM self-hosted non leggibile).
+
+## 2026-06 MAC condiviso + alert "Scheda di rete cambiata"
+- MAC condiviso (stesso MAC su piu device gestiti o piu IP, es. VM dietro la stessa NIC): nessuno spostamento/merge/cancellazione/alert; vecchi alert mac_follow_multi_ip chiusi automaticamente. Sostituisce la logica merge NAS01.
+- MAC-follow (cambio IP) solo per MAC esclusivi visti su un unico IP non gestito.
+- Nuovo alert source_type nic_changed: stesso IP con MAC diverso confermato su 2 rilevazioni; HIGH vitali / MEDIUM altri; aggiorna mac, mac_previous, mac_history. Ignora MAC di altri device gestiti (gateway/proxy ARP) e ARP momentanei.
+- MAC rescue vitali disattivato su MAC condiviso (mac_is_shared).
+- Test: test_mac_follow_iter154.py 13/13, test_mac_rescue_iter159.py 3/3, iteration_158.json 100%.
