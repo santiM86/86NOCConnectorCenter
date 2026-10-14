@@ -9912,3 +9912,11 @@ Health null è normale HPE (usa i sottosistemi).
 - Nuovo alert source_type nic_changed: stesso IP con MAC diverso confermato su 2 rilevazioni; HIGH vitali / MEDIUM altri; aggiorna mac, mac_previous, mac_history. Ignora MAC di altri device gestiti (gateway/proxy ARP) e ARP momentanei.
 - MAC rescue vitali disattivato su MAC condiviso (mac_is_shared).
 - Test: test_mac_follow_iter154.py 13/13, test_mac_rescue_iter159.py 3/3, iteration_158.json 100%.
+
+## 2026-06 Server e sue VM + Storico MAC + Regole Alert Engine (P0 chiuso)
+- Server e sue VM: GET /api/clients/{cid}/nic-groups (gruppi MAC condiviso, host proposto: fisico > unico non-VM > nome piu frequente), POST .../nic-groups/host (host manuale, collezione nic_hosts). UI: blocco "Server e sue VM" in DevicesGroupedView (components/NicHostGroups.jsx), VM non duplicate nelle categorie.
+- Storico MAC: GET /api/devices/by-ip/{ip}/mac-history; sezione in DeviceInfoCard (components/MacHistorySection.jsx).
+- Regole su metrica (alert_rules.py, routes/alert_rules.py): packet_loss, latency, cpu, ram, disk, temperature; soglia + durata + gravita; scope all/client/device; dedup + auto-chiusura; valutate ad ogni tick Alert Engine; POST /api/alert-rules/run.
+- Dipendenze padre -> figli (alert_dependencies): manuali + proposte host -> VM; padre giu -> figli soppressi (gate in insert_alert_if_emit + vital watchdog) e aggiunti a impacted_devices del padre; padre su -> figli ancora giu alertano.
+- UI: Impostazioni -> Alert Engine (AlertRulesPanel.jsx, AlertDependenciesPanel.jsx).
+- Test: tests/test_alert_rules_iter160.py 4/4, test_alert_engine_api_iter160.py 8/8, iteration_160.json 100%.
