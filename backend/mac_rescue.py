@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from database import db
-from mac_follow import norm_mac
+from mac_follow import mac_is_shared, norm_mac
 
 logger = logging.getLogger("mac_rescue")
 RESCUE_WAIT_S = 120
@@ -28,6 +28,8 @@ async def start_mac_rescue(conn: Any, client_id: str, md: dict) -> Optional[str]
     ip = md.get("ip") or md.get("ip_address")
     mac = norm_mac(md.get("mac") or md.get("mac_address"))
     if not ip or not mac or md.get("follow_mac") is False:
+        return None
+    if await mac_is_shared(client_id, mac):  # VM sulla stessa NIC: impossibile sapere quale sia → niente rescue
         return None
     st = await db.mac_rescue_state.find_one({"client_id": client_id, "ip": ip}, {"_id": 0})
     if st and (_now() - datetime.fromisoformat(st["started_at"])).total_seconds() < RESCUE_COOLDOWN_S:
