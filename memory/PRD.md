@@ -1,6 +1,19 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ MAC rescue vitali (scan ARP mirato prima dell'offline) + alert HIGH cambio IP vitale
+- `backend/mac_rescue.py`: `start_mac_rescue(conn, cid, md)` → run `lan_scan_runs` con `purpose:"mac_rescue"` + comando
+  agent `lan_scan` sulla /24 del device (cooldown 600s, stato `mac_rescue_state`); `rescue_pending(cid, ip)` (finestra
+  120s); `on_rescue_scan_event(kind, run, data)` chiamato da `lan_scanner.bridge_lan_scan_event` per result/done →
+  `apply_mac_follow(source="mac_rescue")`; se trovato: cancella `vital_offline_state`, risolve alert offline attivi
+  (corr_*/connector_offline/...) con nota "Falso offline: cambiato IP".
+- Hook: `agent_ws._bridge_ping_poll` al 2° ping fallito di vitale/infra con MAC → start_mac_rescue. Gate in
+  `alert_engine.run_vital_watchdog`: se `rescue_pending` e nessun alert ancora emesso → rinvia (continue).
+- `mac_follow`: alert cambio IP per device `is_vital` o source mac_rescue → severity **high**, titolo "VITALE IP cambiato:
+  …", `force_telegram`/`instant` + invio Telegram; non vitali restano medium "IP cambiato".
+- Test `tests/test_mac_rescue_iter159.py` 3/3, regressione iter154 8/8.
+
+
 ## 2026-06 ✅ USB & anomalie accessi (modulo B Intrusa) + scadenza certificati SSL esposti
 - **Agent Go** `seclog_windows.go`: sorgenti con campo `Match` (regex PowerShell su Message): Security +6416 (PnP audit),
   `Microsoft-Windows-Kernel-PnP/Configuration` 400 filtrato `USBSTOR|USB\VID_|WPDBUSENUM`, `DriverFrameworks-UserMode/

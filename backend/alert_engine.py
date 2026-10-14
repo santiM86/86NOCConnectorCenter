@@ -1314,6 +1314,15 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
         should_fire = v["confidence"] >= 90 or elapsed_min >= warn_min or bool(s.get("_fast_confirmed"))
         if not should_fire:
             continue
+        # MAC rescue in corso (scan ARP mirato: il device potrebbe aver solo cambiato IP) → attendi l'esito
+        if not state.get("alert_id"):
+            try:
+                from mac_rescue import rescue_pending
+                if await rescue_pending(cid, ip):
+                    logger.info("[corr] %s: alert offline rinviato, MAC rescue in corso", ip)
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
 
         sev = v["severity"]
         prev_sev = state.get("severity")

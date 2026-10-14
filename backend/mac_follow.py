@@ -87,7 +87,7 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
     mds = await db.managed_devices.find(
         {"client_id": client_id, "$or": [{"mac": {"$nin": [None, ""]}}, {"mac_address": {"$nin": [None, ""]}}]},
         {"_id": 0, "id": 1, "ip": 1, "ip_address": 1, "mac": 1, "mac_address": 1, "name": 1, "device_name": 1,
-         "follow_mac": 1, "mac_is_random": 1},
+         "follow_mac": 1, "mac_is_random": 1, "is_vital": 1},
     ).to_list(5000)
     by_ip: dict[str, dict] = {}
     for md in mds:
@@ -132,10 +132,11 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
             }
         else:
             await _rekey(client_id, cur_ip, new_ip)
+            vital = bool(md.get("is_vital")) or source == "mac_rescue"
             alert = {
                 "id": str(uuid.uuid4()), "client_id": client_id, "device_ip": new_ip, "device_name": name, "device_type": "network",
-                "severity": "medium", "source_type": SOURCE_TYPE,
-                "title": f"IP aggiornato automaticamente: {name} {cur_ip} → {new_ip}",
+                "severity": "high" if vital else "medium", "source_type": SOURCE_TYPE, "force_telegram": vital, "instant": vital,
+                "title": f"{'VITALE ' if vital else ''}IP cambiato: {name} {cur_ip} → {new_ip}",
                 "message": f"Il dispositivo {name} (MAC {mac.upper()}) è stato rivisto su {new_ip} invece di {cur_ip} (lease DHCP cambiato). "
                            f"ARGUS ha aggiornato l'IP monitorato e spostato credenziali/porte/storico: nessuna azione richiesta. "
                            f"Per fissarlo, assegna una prenotazione DHCP.",
@@ -146,6 +147,9 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
             if await insert_alert_if_emit(db, alert):
                 import webpush as _wp
                 await _wp.notify_new_alert(db, alert)
+                if alert.get("force_telegram"):
+                    from alert_engine import notify_alert_telegram
+                    await notify_alert_telegram(db, alert)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"mac_follow alert {name}: {e}")
         changes.append({"mac": mac, "old_ip": cur_ip, "new_ip": new_ip, "name": name, "device_id": md["id"]})
