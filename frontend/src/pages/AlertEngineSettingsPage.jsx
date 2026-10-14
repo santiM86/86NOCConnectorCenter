@@ -8,8 +8,10 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   ArrowLeft, BellRinging, Pulse, Cloud, PaperPlaneTilt, ArrowsClockwise,
-  Warning, CheckCircle, Broadcast, ShieldCheck, Lightning,
+  Warning, CheckCircle, Broadcast, ShieldCheck, Lightning, ChartLineUp, TreeStructure,
 } from "@phosphor-icons/react";
+import { AlertRulesPanel } from "@/components/AlertRulesPanel";
+import { AlertDependenciesPanel } from "@/components/AlertDependenciesPanel";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -446,6 +448,16 @@ export default function AlertEngineSettingsPage() {
           </Button>
           <span className="text-[9px] text-[var(--text-muted)]">Popola switch_ip dai dati SNMP FDB → abilita la soppressione switch-level (auto ogni 10 min).</span>
         </div>
+      </Section>
+
+      <Section icon={ChartLineUp} color="#22D3EE" title="Regole su metrica"
+        desc="Esempio: perdita pacchetti > 5% per 15 minuti → alert alto. Si applicano a tutti i clienti, a un cliente o a un singolo dispositivo; l'alert si chiude da solo quando la metrica rientra.">
+        <AlertRulesPanel />
+      </Section>
+
+      <Section icon={TreeStructure} color="#F59E0B" title="Dipendenze padre → figli (anti alert-storm)"
+        desc="Se il padre va giù arriva UN solo alert con l'elenco dei figli impattati; gli alert dei figli vengono soppressi. Quando il padre torna, restano solo i figli ancora giù. Si somma all'inibizione automatica switch/sito.">
+        <AlertDependenciesPanel />
       </Section>
 
       <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)] px-1">

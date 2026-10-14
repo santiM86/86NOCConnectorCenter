@@ -1201,11 +1201,31 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
             if it[0]["client_id"] == cid and it[3].get("root_cause") in ("site_power_down", "site_isolated"):
                 site_anchor_md_ids.add(id(it[0]))
 
+    # Dipendenze manuali padre → figli (Impostazioni → Alert Engine)
+    dep_parents: dict = {}
+    dep_down: set = set()
+    try:
+        from alert_rules import dependency_children_map
+        dep_parents = await dependency_children_map()
+        if dep_parents:
+            dep_down = {(it[0]["client_id"], it[0].get("ip") or it[0].get("ip_address")) for it in items
+                        if not it[3].get("up") and it[3].get("alertable")}
+            async for st in db.vital_offline_state.find({"level": {"$gte": 1}}, {"_id": 0, "client_id": 1, "ip": 1}):
+                dep_down.add((st.get("client_id"), st.get("ip")))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("dependency map skip: %s", e)
+
+    def _dep_parent_down(md):
+        cid = md["client_id"]; ip = md.get("ip") or md.get("ip_address")
+        return next((p for p in dep_parents.get((cid, ip), []) if (cid, p) in dep_down), None)
+
     def _is_suppressed(md, fam):
         cid = md["client_id"]; ip = md.get("ip") or md.get("ip_address")
         # L'anchor dell'outage di sito NON va mai soppresso (e' l'unico alert emesso)
         if id(md) in site_anchor_md_ids:
             return False
+        if _dep_parent_down(md):
+            return True
         if cid in isolated_clients and fam != "firewall":
             return True
         parent_sw = ctx["child_to_switch"].get(ip)
@@ -1247,6 +1267,16 @@ async def run_vital_watchdog(db, cfg_global: Dict[str, Any]) -> int:
                     kids.append({"name": _best_device_name(x[0], xip), "ip": xip})
             if kids:
                 impacts_by_anchor[id(md_a)] = kids
+    if dep_parents:
+        md_by_key = {(it[0]["client_id"], it[0].get("ip") or it[0].get("ip_address")): it[0] for it in items}
+        for it in items:
+            pip = _dep_parent_down(it[0])
+            parent_md = md_by_key.get((it[0]["client_id"], pip)) if pip else None
+            if parent_md is not None and not it[3].get("up"):
+                xip = it[0].get("ip") or it[0].get("ip_address")
+                lst = impacts_by_anchor.setdefault(id(parent_md), [])
+                if all(k["ip"] != xip for k in lst):
+                    lst.append({"name": _best_device_name(it[0], xip), "ip": xip})
 
     warn_min = float(cfg_global.get("vital_warn_minutes", 3))
     actions = 0
@@ -1979,6 +2009,11 @@ class AlertEngine:
             await run_backbone_watchdog(self.db, cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("backbone watchdog error: %s", e, exc_info=True)
+        try:
+            from alert_rules import run_metric_rules
+            await run_metric_rules()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("metric rules error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,

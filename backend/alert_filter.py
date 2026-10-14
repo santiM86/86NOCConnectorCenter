@@ -121,6 +121,13 @@ async def insert_alert_if_emit(db, alert_doc: dict, force: bool = False) -> bool
     if not force and cid and ip:
         if await is_device_silenced(db, cid, ip):
             return False
+        # Dipendenza padre → figlio: padre giu' → alert figlio soppresso (registrato come impatto sul padre)
+        try:
+            from alert_rules import suppressed_by_parent
+            if await suppressed_by_parent(alert_doc):
+                return False
+        except Exception:
+            pass
     # Finestra di manutenzione attiva → non creare l'alert (device o cliente).
     if not force and cid:
         try:
