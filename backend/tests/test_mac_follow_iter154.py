@@ -85,10 +85,33 @@ async def main():
         assert await resolve_ip_from_discovery(CID, "aa:bb:cc:00:00:99") is None
         ok += 1
         print("8. resolve_ip_from_discovery OK")
+        # 9. Scenario NAS01: vecchio IP ancora in ARP (stantio) ma device offline + voce DUPLICATA stesso MAC sul nuovo IP → follow + merge
+        await db.managed_devices.insert_many([
+            {"id": f"{CID}-nas", "client_id": CID, "ip": "192.168.200.12", "ip_address": "192.168.200.12", "mac": "00:11:32:48:d6:99", "name": "NAS01", "status": "offline", "consecutive_ping_failures": 5, "profile_key": "synology_dsm", "is_vital": True},
+            {"id": f"{CID}-nasdup", "client_id": CID, "ip": "10.100.110.3", "ip_address": "10.100.110.3", "mac": "00:11:32:48:d6:99", "name": "NAS01", "source": "ui_scan_button"},
+        ])
+        ch = await apply_mac_follow(CID, [{"ip": "192.168.200.12", "mac": "00:11:32:48:D6:99"}, {"ip": "10.100.110.3", "mac": "00:11:32:48:d6:99"}], "test")
+        assert len(ch) == 1 and ch[0]["old_ip"] == "192.168.200.12" and ch[0]["new_ip"] == "10.100.110.3", ch
+        nas = await db.managed_devices.find_one({"id": f"{CID}-nas"}, {"_id": 0})
+        assert nas["ip"] == "10.100.110.3" and nas["profile_key"] == "synology_dsm"
+        assert await db.managed_devices.count_documents({"client_id": CID, "mac": "00:11:32:48:d6:99"}) == 1  # duplicato rimosso
+        al = await db.alerts.find_one({"client_id": CID, "device_ip": "10.100.110.3", "source_type": "mac_follow_ip_update"}, {"_id": 0})
+        assert al and al["severity"] == "high" and "VITALE IP cambiato" in al["title"] and "duplicata" in al["message"], al
+        ok += 1
+        print("9. NAS01: ARP stantio + duplicato stesso MAC → follow, merge, alert HIGH OK")
+
+        # 10. vecchio IP VIVO + MAC visto anche altrove → nessuno spostamento, alert 'stesso MAC visto anche su'
+        await db.managed_devices.update_one({"id": f"{CID}-nas"}, {"$set": {"status": "online", "consecutive_ping_failures": 0}})
+        ch = await apply_mac_follow(CID, [{"ip": "10.100.110.3", "mac": "00:11:32:48:d6:99"}, {"ip": "10.100.110.9", "mac": "00:11:32:48:d6:99"}], "test")
+        assert ch == [] and (await db.managed_devices.find_one({"id": f"{CID}-nas"}))["ip"] == "10.100.110.3"
+        mi = await db.alerts.find_one({"client_id": CID, "source_type": "mac_follow_multi_ip"}, {"_id": 0})
+        assert mi and "10.100.110.9" in mi["title"] and mi["severity"] == "high", mi
+        ok += 1
+        print("10. multi-IP con vecchio vivo → alert informativo, nessuno spostamento OK")
     finally:
         for c in ("managed_devices", "device_credentials", "port_memory", "alerts", "discovered_endpoints"):
             await db[c].delete_many({"client_id": CID})
-    print(f"PASS {ok}/8")
+    print(f"PASS {ok}/10")
 
 
 asyncio.run(main())
