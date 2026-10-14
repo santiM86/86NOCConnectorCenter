@@ -1,6 +1,16 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ BUG NAS01 duplicato senza alert cambio IP → fix mac_follow (ARP stantio, merge duplicati, alert multi-IP)
+**Causa**: `apply_mac_follow` saltava ogni MAC visto su >1 IP (ARP del vecchio IP ancora presente nella tabella
+dell'agent) e sul nuovo IP era stato auto-censito un duplicato (source ui_scan_button) → nessun follow, nessun alert.
+**Fix** `mac_follow.py`: `old_dead` = status offline o consecutive_ping_failures≥2 (proiezione estesa); se vecchio IP
+vivo e MAC visto altrove → `_emit_multi_ip_alert` (source_type `mac_follow_multi_ip`, high se vitale + Telegram, dedup
+titolo) e nessuno spostamento; se morto e 1 candidato → follow; se sul nuovo IP esiste managed_device con lo STESSO MAC →
+merge (duplicato eliminato, si tiene l'originale con profilo) + nota "Voce duplicata … unificata" nel messaggio.
+Test iter154 ora 10/10, repro testing agent iteration_157 100% (`tests/test_mac_dup_repro.py`).
+
+
 ## 2026-06 ✅ MAC rescue vitali (scan ARP mirato prima dell'offline) + alert HIGH cambio IP vitale
 - `backend/mac_rescue.py`: `start_mac_rescue(conn, cid, md)` → run `lan_scan_runs` con `purpose:"mac_rescue"` + comando
   agent `lan_scan` sulla /24 del device (cooldown 600s, stato `mac_rescue_state`); `rescue_pending(cid, ip)` (finestra

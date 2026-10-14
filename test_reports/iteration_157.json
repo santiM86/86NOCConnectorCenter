@@ -1,0 +1,24 @@
+{
+  "summary": "Backend-only testing iter157 per fix duplicato NAS01 in mac_follow. Eseguite tutte le 3 verifiche richieste: (1) test_mac_follow_iter154.py PASS 10/10 inclusi i nuovi casi 9 (NAS01 ARP stantio + merge duplicato + alert HIGH VITALE) e 10 (vecchio vivo + MAC altrove → mac_follow_multi_ip). (2) test_mac_rescue_iter159.py PASS 3/3. (3) Nuovo repro indipendente test_mac_dup_repro.py con client_id 'test-qa-macdup' PASS 3/3: scenario (a) follow 192.168.200.12→10.100.110.3 con merge duplicato, A.ip aggiornato, B eliminato (count MAC=1), alert mac_follow_ip_update severity=high titolo 'VITALE IP cambiato' message contiene 'duplicata'; scenario (b) A online + endpoints {10.100.110.3,10.100.110.9} → nessun change, A.ip invariato, alert mac_follow_multi_ip con '10.100.110.9' severity=high; scenario (c) regressione printer 10.9.0.50→10.9.0.73 con alert medium 'IP cambiato'. Cleanup totale a fine test. Backend up: GET /api/health=200, login + verify-2fa (TOTP) OK, GET /api/devices=200 (81KB).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_mac_follow_iter154.py",
+    "/app/backend/tests/test_mac_rescue_iter159.py",
+    "/app/backend/tests/test_mac_dup_repro.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mac_follow.apply_mac_follow: la logica 'old_dead' usa consecutive_ping_failures>=2 come soglia; valore hardcoded, considerare esporre come costante/config.",
+    "La find_one in _emit_multi_ip_alert dedup usa match esatto sul title: se cambia l'ordine dei candidates (sort già applicato in chiamante — OK) non ci sono problemi, ma il dedup non copre scenari dove la lista candidates cresce (nuovo IP aggiuntivo genererebbe un nuovo alert distinto; comportamento voluto, da documentare).",
+    "merged_dup: viene eliminato il device duplicato senza salvare un breadcrumb (ip_history o audit) sulla rimozione — eventuale debug futuro perde traccia dell'operazione di merge."
+  ],
+  "updated_files": ["/app/backend/tests/test_mac_dup_repro.py"],
+  "success_rate": {"backend": "100%", "frontend": "n/a"},
+  "test_credentials": "admin info@86bit.it (2FA TOTP NMHDJNO53WLTOSREUXWERE6FDH5TAKC3) — verify-2fa richiede Authorization Bearer con il token temp restituito da /auth/login (il body {code: TOTP} è sufficiente).",
+  "seed_data_creation": "Nessun seed persistente. Il test crea client_id 'test-qa-macdup' con managed_devices/alerts e li pulisce a fine run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fix bug duplicato NAS01 in /app/backend/mac_follow.py verificato end-to-end. I test di riferimento sono: tests/test_mac_follow_iter154.py (10 casi, include i 2 nuovi: ARP stantio+merge e multi-ip con vecchio vivo), tests/test_mac_dup_repro.py (3 casi scenario specifico richiesto). Entrambi PASS. source_type usati: 'mac_follow_ip_update' (change) e 'mac_follow_multi_ip' (informativo).",
+  "rca of the issue": "Prima del fix, apply_mac_follow saltava quando il MAC appariva su più IP (len(candidates)>1 includendo l'IP corrente stantio in ARP). Dopo il fix: se cur_ip è 'morto' (status offline o consecutive_ping_failures>=2) i candidates escludono già cur_ip (sorted(ip for ip in ips if ip != cur_ip)), quindi se ne resta esattamente 1 si procede al follow. Inoltre, se sul nuovo IP esiste un'altra managed_devices con lo stesso MAC (auto-censita dall'ui_scan_button), viene eliminata e menzionata nel message dell'alert come 'duplicata ... unificata'. Alert severity=high + title 'VITALE IP cambiato' se is_vital, altrimenti medium 'IP cambiato'. Caso vecchio IP ancora vivo con MAC altrove → nessuno spostamento, source_type 'mac_follow_multi_ip' con severity=high se vitale."
+}
