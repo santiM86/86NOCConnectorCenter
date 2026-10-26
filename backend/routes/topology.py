@@ -153,8 +153,13 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
     endpoints = await db.discovered_endpoints.find({"switch_ip": device_ip, "client_id": client_id}, {"_id": 0}).to_list(5000)
 
     # Managed devices SOLO del client corrente: MAC -> device map (no cross-tenant)
-    md_all = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "vendor": 1, "client_id": 1}).to_list(2000)
+    md_all = await db.managed_devices.find({"client_id": client_id}, {"_id": 0, "ip": 1, "device_type": 1, "device_name": 1, "name": 1, "vendor": 1, "client_id": 1, "virtualization": 1}).to_list(2000)
     md_by_ip = {d["ip"]: d for d in md_all if d.get("ip")}
+    try:
+        from alert_rules import nic_groups as _nic_groups
+        _nic = await _nic_groups(client_id)
+    except Exception:
+        _nic = []
 
     # v3.6.15: MAC Cross-Correlation per trunk switch-to-switch.
     # Se un endpoint sulla porta locale risolve a un altro switch managed, cerchiamo
@@ -556,6 +561,8 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
                                  "device_type": _md.get("device_type") or "", "is_managed": bool(_md) or bool(e.get("is_managed")),
                                  "last_seen_at": e.get("last_seen_at")})
             attached.sort(key=lambda a: (not a["is_managed"], a["source"] not in ("datto_rmm", "mac_manual"), a["name"].lower()))
+        from vm_port import build_vm_host
+        vm_host = build_vm_host(attached, _nic, md_by_ip) if attached else None
 
         out.append({
             "idx": p.get("idx"),
@@ -582,6 +589,7 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
             "neighbor": neighbor_obj,
             "attached": attached[:24],
             "attached_count": len(attached),
+            "vm_host": vm_host,
         })
 
     # Port_number summary for UI badge
