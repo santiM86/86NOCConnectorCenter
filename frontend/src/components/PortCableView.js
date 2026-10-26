@@ -16,6 +16,8 @@ import PortFlapHistory from "./PortFlapHistory";
 import PortAttachedTree from "./PortAttachedTree";
 import DattoInfoPanel from "./DattoInfoPanel";
 import { PortUserLine } from "./PortUser";
+import PortMultiDevices from "./PortMultiDevices";
+import { isMultiDevicePort } from "./portMulti";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -99,6 +101,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
   const isPoe = p.poe_status === 3;
   const isAdminDown = p.admin === 2;
   const n = p.neighbor;
+  const multi = isUp && isMultiDevicePort(p);
   const remote = n ? remoteIconFor(n.remote_device_type, n.remote_sys_cap) : null;
 
   // Cable color by speed/status
@@ -224,7 +227,9 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
 
           {/* --- Blocco REMOTE DEVICE --- */}
           <div>
-            {n && remote ? (
+            {multi ? (
+              <PortMultiDevices p={p} clientId={clientId} />
+            ) : n && remote ? (
               <div className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 border border-cyan-400/30">
                 <div className="w-10 h-10 rounded-md border flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${remote.color}20`, borderColor: `${remote.color}60` }}>
                   <remote.Icon size={18} style={{ color: remote.color }} weight="bold" />
@@ -261,7 +266,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                   )}
                   <PortUserLine u={p.datto_user} idx={`cable-${p.idx}`} />
                   {n.match_source === "datto_rmm" && !p.vm_host?.host_name && (
-                    <DattoInfoPanel clientId={clientId} ip={n.remote_ip} mac={n.remote_chassis_id} testIdSuffix={`cable-${p.idx}`} />
+                    <DattoInfoPanel clientId={clientId} ip={n.remote_ip} mac={n.remote_chassis_id} name={n.remote_device_name} testIdSuffix={`cable-${p.idx}`} />
                   )}
                 </div>
               </div>
@@ -280,7 +285,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                 </div>
               </div>
             )}
-            {isUp && <PortAttachedTree p={p} />}
+            {isUp && !multi && <PortAttachedTree p={p} />}
           </div>
         </div>
 
