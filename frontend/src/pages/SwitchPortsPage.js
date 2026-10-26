@@ -235,10 +235,10 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
         </div>
       )}
       {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
-      {(p.attached || []).length > 0 && (
+      {!p.vm_host && (p.attached || []).some(a => a.mac !== (p.neighbor?.remote_chassis_id || "").toUpperCase()) && (
         <div className="text-[11px]" data-testid={`switch-port-attached-detail-${p.idx}`}>
           <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Dispositivi visti sulla porta · {p.attached_count}</span>
-          {!p.vm_host && <AttachedList p={p} full />}
+          <AttachedList p={p} full />
         </div>
       )}
 

@@ -19,7 +19,7 @@ def build_vm_host(attached: list[dict], groups: list[dict], md_by_ip: dict) -> O
     if len(attached) < 2:
         return None
     ips = {a.get("ip") for a in attached if a.get("ip")}
-    group = next((g for g in groups if ips & {m["ip"] for m in g.get("members") or []}), None)
+    group = next((g for g in groups if ips & {m.get("ip") for m in g.get("members") or []}), None)
     kinds = [vm_kind(a["mac"]) for a in attached if vm_kind(a["mac"])]
     if not kinds and not group:
         return None

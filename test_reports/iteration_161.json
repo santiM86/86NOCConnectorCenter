@@ -1,0 +1,26 @@
+{
+  "summary": "Iter161: tested the VM / virtualization-host port feature. Unit tests: test_vm_port_iter161 passed 5/5, regression test_mac_follow_iter154 passed 13/13, test_alert_rules_iter160 passed 4/4. New API pytest test_vm_host_api_iter161.py passed 3/3. It seeds switch 10.161.0.1 (client TEST_VM161): port 52 has a physical host TEST_HYPERV01 plus 2 Hyper-V VMs (SRVDC, SRVDATI); port 10 has a single PC. Results: vm_host={kind:Hyper-V, host_name TEST_HYPERV01, host_ip, host_mac, vms[2]} on port 52; null on port 10; no cross-tenant leak. UI check with Playwright after admin login + TOTP: the table badge port-vmhost-badge-52 shows 'Host Hyper-V · 2 VM' and no attached toggle; there is no badge on port 10. Clicking tile 52 shows port-vmhost-52 with 'PORTA HOST DI VIRTUALIZZAZIONE · HYPER-V · 2 VM', the host line 'Connesso a TEST_HYPERV01 10.161.0.10 AA:BB:CC:00:16:01', and both port-vmhost-vm-52-<mac> rows. The legacy neighbor block and the AttachedList are hidden. Port 10 still shows the legacy 'Connesso a'. All seed data was cleaned up (count 0 in every collection).",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "vm_port.build_vm_host", "issue": "Group matching uses m['ip'] (KeyError if a NIC group member has no ip). Use m.get('ip')."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "SwitchPortsPage PortDetailPanel", "issues": ["On a vm_host port, the header 'Dispositivi visti sulla porta · N' (switch-port-attached-detail-<idx>) still shows with an empty body because only AttachedList is hidden. Hide the whole block when vm_host is set, or move the count into the VmHostBlock. The same empty header also appears for single-device ports (port 10 shows '· 1' with nothing below)."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_vm_host_api_iter161.py", "/app/backend/tests/test_vm_port_iter161.py", "/app/test_reports/pytest/pytest_iter161.xml"],
+  "action_items": ["Hide the orphaned 'Dispositivi visti sulla porta' header on vm_host ports (cosmetic)", "Use m.get('ip') in build_vm_host group matching"],
+  "critical_code_review_comments": [
+    "routes/topology.py is ~2450 lines; split it up (get_switch_ports alone is ~500 lines).",
+    "'from vm_port import build_vm_host' sits inside the per-port loop; move it out of the loop.",
+    "_refresh_devices migration path: if there is no port_devices yet and len(cur)>1, all current MACs are treated as known. A real swap that happens during the first refresh after deploy will therefore be silent. This is probably acceptable."
+  ],
+  "updated_files": ["/app/backend/tests/test_vm_host_api_iter161.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Seeded and then removed: client_id TEST_VM161, switch 10.161.0.1 (switch_ports, managed_devices, discovered_endpoints). Set KEEP_SEED=1 to keep the seed for UI testing.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with: set -a; . backend/.env; . frontend/.env; set +a; pytest tests/test_vm_host_api_iter161.py. The test logs in with admin + TOTP and retries after 31 seconds if the code is rejected. UI route: /switch-ports/<ip>?clientId=<cid>."
+}

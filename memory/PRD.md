@@ -9920,3 +9920,9 @@ Health null è normale HPE (usa i sottosistemi).
 - Dipendenze padre -> figli (alert_dependencies): manuali + proposte host -> VM; padre giu -> figli soppressi (gate in insert_alert_if_emit + vital watchdog) e aggiunti a impacted_devices del padre; padre su -> figli ancora giu alertano.
 - UI: Impostazioni -> Alert Engine (AlertRulesPanel.jsx, AlertDependenciesPanel.jsx).
 - Test: tests/test_alert_rules_iter160.py 4/4, test_alert_engine_api_iter160.py 8/8, iteration_160.json 100%.
+
+## 2026-06 Porte switch con piu dispositivi / host VM
+- port_memory: insieme port_devices (TTL 30gg) invece di un solo last_device; Dispositivo cambiato (port_device_change) solo se sparisce tutto l insieme e compare un MAC nuovo; VM nuova su porta host = alert low port_new_vm; alert falsi chiusi se il prev e ancora presente.
+- vm_port.py: OUI hypervisor (Hyper-V, VMware, KVM, VirtualBox, Xen, Parallels) + gruppi NIC -> vm_host {kind, host, vms} nel payload switch-ports (topology.py).
+- UI SwitchPortsPage: VmHostBlock (Connesso a = host, sotto le VM), badge in tabella.
+- Test: tests/test_vm_port_iter161.py 5/5, iteration_161.json 100%.
