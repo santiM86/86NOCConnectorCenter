@@ -1,0 +1,39 @@
+{
+  "summary": "Tested 'Cerca utente' (GET /api/datto/user-search + topbar UserSearch) and 'Collega MAC virtuali' (datto_mac_links in device-info, datto_users_for, user-search). 8 of 10 backend tests passed. The frontend flow worked end to end on desktop and mobile: search, results, empty state, clear button, and clicking a location opened the switch page with port 7 selected and the Vista Cavo modal showing. Two backend bugs: results include devices of clients that no longer exist, and locating a PC by MAC fails when the scanner stored the MAC in lowercase or without separators.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/datto/user-search", "issue": "Results are not limited to clients that exist. The datto_devices query has no check against db.clients. In preview, 12 results came from the deleted clients ae6eb96b/1c04e486/588ea729 (27PADELSRV, SRVDC, SRVDATI, win11tv, each listed 3 times). client_name falls back to the raw UUID, and the dropdown shows it. Fix: load the existing client ids first, then add {client_id: {$in: ids}} to the datto_devices query.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/datto/user-search (_locate)", "issue": "The MAC match is an exact string compare against discovered_endpoints.mac. Datto/link MACs are uppercase with colons, but scanner endpoints are often lowercase ('9c:75:14:50:c1:45') or bare ('aaaa00000001'): 14 of 20 endpoints in preview are lowercase. An endpoint with mac '00:15:5d:01:79:0d' and a non-matching IP was not located. Fix: query with all format variants (upper, lower, bare) or a case-insensitive regex. Currently only the IP fallback hides the problem."},
+      {"endpoint": "datto_users_for / datto_mac_links lookups", "issue": "Same exact-match risk if callers pass MACs that are not normalized. Make sure callers pass _norm_mac()'d MACs."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "User search results", "issue": "Orphan-client results show the client UUID instead of a name (caused by the backend issue above)", "affected_selectors": ["[data-testid^=user-search-result-]"]}
+    ],
+    "design_issues": [
+      {"screen": "UserSearch", "issues": ["Responses that arrive out of order are not discarded or cancelled, so a slow reply to an earlier query can overwrite the results of a later one (minor).", "While a new query loads, the old results stay on screen with no spinner, because loading && !res is false when res already exists."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_user_search_maclinks_iter166.py", "/app/test_reports/pytest/pytest_iter166.xml"],
+  "action_items": [
+    "user_search.py: keep only devices whose client_id exists in db.clients",
+    "user_search.py _locate: match endpoint MACs regardless of case and separators (upper, lower, bare 12-hex)",
+    "Optional: UserSearch.jsx: ignore out-of-order responses and show a loading state when the query changes"
+  ],
+  "critical_code_review_comments": [
+    "_backfill_last_user runs on every search request. It is cheap once all devices have last_user, but it still issues a query each time. Consider running it at Datto sync time instead.",
+    "_locate runs up to 3 queries per result (up to 50 results), an N+1 pattern. It is acceptable at the current scale.",
+    "device-info: remember_mac_link uses d.client_id, while _linked_device filters on the client_id passed in the request. These are consistent, because IP and name lookups use allow_global=False."
+  ],
+  "updated_files": ["/app/backend/tests/test_user_search_maclinks_iter166.py"],
+  "success_rate": {"backend": "80% (8/10)", "frontend": "100%"},
+  "seed_data_creation": "Temporary data only, all removed: TEST_sw_iter166 managed switch at 10.10.1.2, a TEST_iter166 discovered_endpoint (port 7), a TEST_iter166 port_memory row, and a TEST_iter166fe endpoint on 10.10.41.220 port 7 used for the UI deep link. datto_mac_links is back to 0 documents. Side effect: the backfill test unset last_user on SRVDATI86B, and the backfill restored it to 'SRVDATI86B\\Administrator'.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Admin token is cached in /tmp/argus_tok. For UI tests, inject it with localStorage 'noc_token' so you do not need to log in again. CHASW-B at 10.10.41.220 (client da3d6e40) has 26 ports and is the right target for deep links. After the fixes, rerun test_user_search_only_existing_clients and test_user_search_location_lowercase_mac.",
+  "rca of the issue": "Orphan results: user_search queries datto_devices by last_user only. Devices from Datto sites whose clients were deleted are still in datto_devices, so they show up. Lowercase MAC: _locate uses $in with exact-case Datto MACs, but discovered_endpoints stores the scanner's raw MAC format."
+}
