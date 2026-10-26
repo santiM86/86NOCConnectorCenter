@@ -179,50 +179,126 @@ async def record_ports(db, client_id: str, local_ip: str, ports: list) -> int:
     return n
 
 
+PORT_DEVICE_TTL_DAYS = 30   # un MAC non visto da 30gg esce dall'insieme "abituale" della porta
+ENDPOINT_FRESH_H = 24
+
+
+async def _resolve_false_changes(db, client_id: str, local_ip: str, idx: int, present: set, now: datetime) -> None:
+    """Chiude gli alert 'Dispositivo cambiato' della porta il cui dispositivo 'precedente' e' ancora presente."""
+    async for a in db.alerts.find({"client_id": client_id, "device_ip": local_ip, "source_type": "port_device_change",
+                                   "status": {"$ne": "resolved"}, "raw_data.idx": idx}, {"_id": 0, "id": 1, "raw_data": 1}):
+        prev = (((a.get("raw_data") or {}).get("prev_device") or {}).get("mac") or "").upper()
+        if prev and prev in present:
+            await db.alerts.update_one({"id": a["id"]}, {"$set": {
+                "status": "resolved", "resolved_at": now.isoformat(), "resolved_by_system": True,
+                "resolution_note": "Porta con piu' dispositivi: il dispositivo precedente e' ancora presente, non e' un cambio"}})
+
+
 async def _refresh_devices(db, client_id: str, local_ip: str, up_ports: list, now: datetime) -> None:
+    """Ogni porta ricorda l'INSIEME dei dispositivi visti (port_devices). 'Dispositivo cambiato' solo se
+    sparisce tutto l'insieme abituale e compare un MAC nuovo; su porta host VM una VM nuova = alert low."""
+    from vm_port import vm_kind
     if not up_ports:
         return
     cutoff = (now - timedelta(minutes=DEVICE_REFRESH_MIN)).isoformat()
     stale_docs = {m["idx"]: m async for m in db.port_memory.find(
         {"client_id": client_id, "local_ip": local_ip,
          "$or": [{"device_refreshed_at": {"$exists": False}}, {"device_refreshed_at": {"$lt": cutoff}}]},
-        {"_id": 0, "idx": 1, "last_device": 1, "first_seen": 1, "name": 1, "authorized_devices": 1})}
+        {"_id": 0, "idx": 1, "last_device": 1, "first_seen": 1, "name": 1, "authorized_devices": 1, "port_devices": 1, "prev_device": 1})}
     stale = set(stale_docs)
     if not stale:
         return
-    counts: dict = {}
-    macs: dict = {}
+    fresh = (now - timedelta(hours=ENDPOINT_FRESH_H)).isoformat()
+    cur_by_port: dict = {}
     async for e in db.discovered_endpoints.find(
             {"client_id": client_id, "switch_ip": local_ip, "port": {"$in": list(stale)}},
-            {"_id": 0, "port": 1, "mac": 1, "ip": 1, "hostname": 1, "datto_name": 1}):
+            {"_id": 0, "port": 1, "mac": 1, "ip": 1, "hostname": 1, "datto_name": 1, "last_seen_at": 1}):
         try:
             pi = int(e.get("port"))
         except Exception:
             continue
-        counts[pi] = counts.get(pi, 0) + 1
-        if e.get("mac") and pi not in macs:
-            macs[pi] = {"mac": str(e.get("mac")).upper(), "ip": e.get("ip") or "", "hostname": e.get("hostname") or e.get("datto_name") or ""}
+        if not e.get("mac") or (e.get("last_seen_at") and str(e["last_seen_at"]) < fresh):
+            continue
+        mac = str(e["mac"]).upper()
+        lst = cur_by_port.setdefault(pi, {})
+        lst.setdefault(mac, {"mac": mac, "ip": e.get("ip") or "", "hostname": e.get("hostname") or e.get("datto_name") or ""})
+    ttl = (now - timedelta(days=PORT_DEVICE_TTL_DAYS)).isoformat()
     for pi in stale:
-        setv = {"device_refreshed_at": now.isoformat()}
-        d = macs.get(pi)
-        if d and counts.get(pi, 0) <= 3:  # >3 MAC = uplink/trunk: non ha "un" device
-            name = d.get("hostname") or ""
-            if d["ip"]:
-                md = await db.managed_devices.find_one(
-                    {"client_id": client_id, "$or": [{"ip": d["ip"]}, {"ip_address": d["ip"]}]}, {"_id": 0, "name": 1, "hostname": 1})
-                name = (md or {}).get("name") or (md or {}).get("hostname") or name
-            setv["last_device"] = {"mac": d["mac"], "ip": d["ip"], "name": name, "seen_at": now.isoformat()}
-            old = (stale_docs.get(pi) or {}).get("last_device") or {}
-            first = _parse((stale_docs.get(pi) or {}).get("first_seen"))
-            known = first is not None and (now - first).total_seconds() >= LEARNING_DAYS * 86400
-            authorized = {a.get("mac") for a in ((stale_docs.get(pi) or {}).get("authorized_devices") or [])}
-            if old.get("mac") and old["mac"] != d["mac"] and known and d["mac"] not in authorized:
-                setv["prev_device"] = old
-                setv["device_changed_at"] = now.isoformat()
-                await _emit_device_change(db, client_id, local_ip, pi, (stale_docs.get(pi) or {}).get("name") or f"port{pi}", old, setv["last_device"])
-        elif counts.get(pi, 0) > 3:
-            setv["mac_count"] = counts[pi]
-        await db.port_memory.update_one({"client_id": client_id, "local_ip": local_ip, "idx": pi}, {"$set": setv})
+        doc = stale_docs.get(pi) or {}
+        setv: dict = {"device_refreshed_at": now.isoformat()}
+        unset: dict = {}
+        cur = list((cur_by_port.get(pi) or {}).values())
+        is_vm = any(vm_kind(c["mac"]) for c in cur)
+        if cur and (len(cur) <= 3 or is_vm):
+            for c in cur:
+                name = c["hostname"]
+                if c["ip"]:
+                    md = await db.managed_devices.find_one(
+                        {"client_id": client_id, "$or": [{"ip": c["ip"]}, {"ip_address": c["ip"]}]}, {"_id": 0, "name": 1, "hostname": 1})
+                    name = (md or {}).get("name") or (md or {}).get("hostname") or name
+                c["name"] = name
+            cur_macs = {c["mac"] for c in cur}
+            known = [k for k in (doc.get("port_devices") or []) if (k.get("last_seen") or "") >= ttl]
+            known_macs = {k["mac"] for k in known}
+            old = doc.get("last_device") or {}
+            first = _parse(doc.get("first_seen"))
+            learned = first is not None and (now - first).total_seconds() >= LEARNING_DAYS * 86400
+            authorized = {a.get("mac") for a in (doc.get("authorized_devices") or [])}
+            if not known and old.get("mac"):
+                known_macs = {old["mac"]} | (cur_macs if len(cur) > 1 else set())
+            present = cur_macs & known_macs
+            new_macs = [c for c in cur if c["mac"] not in known_macs and c["mac"] not in authorized]
+            # rappresentante stabile: se il device abituale e' ancora presente lo teniamo
+            rep = next((c for c in cur if c["mac"] == old.get("mac")), None) or next((c for c in cur if not vm_kind(c["mac"])), None) or cur[0]
+            setv["last_device"] = {"mac": rep["mac"], "ip": rep["ip"], "name": rep["name"], "seen_at": now.isoformat()}
+            setv["is_vm_port"] = is_vm
+            merged = {k["mac"]: k for k in known}
+            for c in cur:
+                merged[c["mac"]] = {"mac": c["mac"], "ip": c["ip"], "name": c["name"],
+                                    "first_seen": (merged.get(c["mac"]) or {}).get("first_seen") or now.isoformat(), "last_seen": now.isoformat()}
+            setv["port_devices"] = sorted(merged.values(), key=lambda k: k["last_seen"], reverse=True)[:64]
+            pname = doc.get("name") or f"port{pi}"
+            if known_macs and learned and new_macs:
+                if not present:
+                    prev = old if old.get("mac") in known_macs else next(iter(known), {}) or {"mac": next(iter(known_macs))}
+                    setv["prev_device"] = prev
+                    setv["device_changed_at"] = now.isoformat()
+                    await _emit_device_change(db, client_id, local_ip, pi, pname, prev, {**new_macs[0], "seen_at": now.isoformat()})
+                elif is_vm:
+                    for n in new_macs:
+                        await _emit_new_vm(db, client_id, local_ip, pi, pname, n)
+            if present:
+                await _resolve_false_changes(db, client_id, local_ip, pi, present, now)
+                if ((doc.get("prev_device") or {}).get("mac") or "").upper() in present:
+                    unset = {"prev_device": "", "device_changed_at": ""}
+        elif len(cur) > 3:
+            setv["mac_count"] = len(cur)
+        upd: dict = {"$set": setv}
+        if unset:
+            upd["$unset"] = unset
+        await db.port_memory.update_one({"client_id": client_id, "local_ip": local_ip, "idx": pi}, upd)
+
+
+async def _emit_new_vm(db, client_id: str, local_ip: str, idx: int, pname: str, dev: dict) -> None:
+    """Alert informativo: nuova VM mai vista sulla porta dell'host di virtualizzazione."""
+    try:
+        from alert_engine import _mk_alert
+        from alert_filter import insert_alert_if_emit
+        from vm_port import vm_kind
+        sw = await db.managed_devices.find_one({"client_id": client_id, "$or": [{"ip": local_ip}, {"ip_address": local_ip}]},
+                                               {"_id": 0, "name": 1, "device_name": 1, "hostname": 1})
+        sw_name = (sw or {}).get("name") or (sw or {}).get("device_name") or (sw or {}).get("hostname") or local_ip
+        cl = await db.clients.find_one({"id": client_id}, {"_id": 0, "name": 1})
+        n = dev.get("name") or dev.get("ip") or dev["mac"]
+        alert = _mk_alert(client_id, (cl or {}).get("name") or client_id, sw_name, local_ip, "switch", "low", "port_new_vm",
+                          f"Nuova VM sulla porta {pname} di {sw_name}: {n}",
+                          f"Sulla porta {pname} (host di virtualizzazione) e' comparsa una VM mai vista: {n} "
+                          f"{dev.get('ip') or ''} MAC {dev['mac']} ({vm_kind(dev['mac']) or 'VM'}). Le altre VM sono ancora presenti: nessun cambio cavo.")
+        alert["dedup_key"] = f"{client_id}:{local_ip}:port_new_vm:{idx}:{dev['mac']}"
+        alert["raw_data"] = {"idx": idx, "port_name": pname, "new_device": dev}
+        await insert_alert_if_emit(db, alert)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"port_memory new vm alert {local_ip}:{idx}: {e}")
 
 
 def classify(mem: Optional[dict], oper_up: bool, poe_w: float = 0.0, at: Optional[datetime] = None,

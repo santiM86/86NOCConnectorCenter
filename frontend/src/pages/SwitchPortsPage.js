@@ -22,6 +22,7 @@ import PortCableView from "@/components/PortCableView";
 import PortFlapHistory from "@/components/PortFlapHistory";
 import PortAiExplain from "@/components/PortAiExplain";
 import SwitchAiAudit from "@/components/SwitchAiAudit";
+import VmHostBlock, { VmHostBadge } from "@/components/VmHostBlock";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -234,7 +235,7 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
         </div>
       )}
       {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
-      {(p.attached || []).length > 0 && (
+      {!p.vm_host && (p.attached || []).some(a => a.mac !== (p.neighbor?.remote_chassis_id || "").toUpperCase()) && (
         <div className="text-[11px]" data-testid={`switch-port-attached-detail-${p.idx}`}>
           <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Dispositivi visti sulla porta · {p.attached_count}</span>
           <AttachedList p={p} full />
@@ -320,8 +321,10 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
         </div>
       )}
 
+      <VmHostBlock p={p} />
+
       {/* Neighbor */}
-      {p.neighbor && (
+      {p.neighbor && !p.vm_host && (
         <div className="flex items-start gap-2 text-[11px] border-t border-[var(--bg-border)] pt-2">
           <PortIcon p={p} size={16} />
           <div className="flex-1 min-w-0">
@@ -1295,7 +1298,7 @@ export default function SwitchPortsPage() {
                       ) : (
                         <span className="text-[10px] text-[var(--text-muted)] italic">—</span>
                       )}
-                      <AttachedList p={p} />
+                      {p.vm_host ? <VmHostBadge p={p} /> : <AttachedList p={p} />}
                     </td>
                   </tr>
                 );

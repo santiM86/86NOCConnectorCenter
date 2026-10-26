@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from database import db
 from deps import get_current_user, require_admin
-from security_log import EVENT_MAP, get_admins, ingest_security_events, retention_months, verify_chain
+from security_log import EVENT_MAP, get_admins, get_settings, ingest_security_events, retention_months, verify_chain
 
 router = APIRouter(prefix="/api/seclog", tags=["security-log"])
 CATEGORIES = sorted({v[0] for v in EVENT_MAP.values()})
@@ -90,16 +90,35 @@ async def set_admins(client_id: str, body: AdminsIn, current_user: dict = Depend
 
 
 class SettingsIn(BaseModel):
-    retention_months: int = Field(ge=6, le=120)
+    retention_months: Optional[int] = Field(default=None, ge=6, le=120)
+    work_hours: Optional[dict] = None   # {start:"07:00", end:"20:00", days:[0..6], tz:"Europe/Rome"}
+    usb_alerts: Optional[bool] = None
+    after_hours_alerts: Optional[bool] = None
+    new_origin_alerts: Optional[bool] = None
+
+
+@router.get("/settings/{client_id}")
+async def get_client_settings(client_id: str, current_user: dict = Depends(get_current_user)):
+    return await get_settings(client_id)
 
 
 @router.put("/settings/{client_id}")
 async def set_settings(client_id: str, body: SettingsIn, current_user: dict = Depends(get_current_user)):
     require_admin(current_user)
-    await db.security_log_settings.update_one({"client_id": client_id}, {"$set": {"retention_months": body.retention_months}}, upsert=True)
-    if client_id != "global":
-        await db.security_events.update_many({"client_id": client_id}, [{"$set": {"expire_at": {"$dateAdd": {"startDate": {"$toDate": "$ts"}, "unit": "day", "amount": 30 * body.retention_months}}}}])
-    return {"ok": True, "retention_months": body.retention_months}
+    upd = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "work_hours" in upd:
+        wh = upd["work_hours"]
+        import re as _re
+        if not all(_re.fullmatch(r"\d{2}:\d{2}", str(wh.get(k, ""))) for k in ("start", "end")):
+            raise HTTPException(status_code=422, detail="work_hours.start/end nel formato HH:MM")
+        wh["days"] = sorted({int(d) for d in (wh.get("days") or []) if 0 <= int(d) <= 6})
+        wh.setdefault("tz", "Europe/Rome")
+    if not upd:
+        raise HTTPException(status_code=422, detail="Nessuna impostazione da salvare")
+    await db.security_log_settings.update_one({"client_id": client_id}, {"$set": upd}, upsert=True)
+    if "retention_months" in upd and client_id != "global":
+        await db.security_events.update_many({"client_id": client_id}, [{"$set": {"expire_at": {"$dateAdd": {"startDate": {"$toDate": "$ts"}, "unit": "day", "amount": 30 * upd["retention_months"]}}}}])
+    return {"ok": True, **(await get_settings(client_id))}
 
 
 class IngestIn(BaseModel):

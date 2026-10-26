@@ -27,6 +27,7 @@ import { useWebConsoleTabs } from "@/components/WebConsoleTabs";
 import ILoLiveMetrics from "@/components/ILoLiveMetrics";
 import IloServerPanel from "@/components/IloServerPanel";
 import { DeviceEditModal } from "@/components/DeviceEditModal";
+import { NicHostGroups, useNicGroups } from "@/components/NicHostGroups";
 import ConnectivityDialog from "@/components/ConnectivityDialog";
 import DiscoveryPage from "./DiscoveryPage";
 import VulnerabilityPage from "./VulnerabilityPage";
@@ -1923,11 +1924,14 @@ function EmptyMacroDropTarget({ macroKey, label, color, icon: Icon, onDeviceDrop
 
 function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onDeviceMove, clientId, selectedIps, onToggleSelect, emptyMessage }) {
   // Partizionamento via macroOf (utils/deviceCategory)
+  const { groups: nicGroups, reload: reloadNicGroups } = useNicGroups(clientId);
+  const nicChildIps = new Set(nicGroups.flatMap(g => g.child_ips));
   const buckets = {
     firewall: [], switch: [], router: [], server: [], nas: [], ups: [], ap: [],
     tvcc: [], printer: [], voip: [], workstation: [], mobile: [], iot: [], other: [],
   };
   devices.forEach(d => {
+    if (nicChildIps.has(d.ip_address)) return;
     const m = macroOf(d);
     if (m === "_skip") return;
     if (buckets[m]) buckets[m].push(d);
@@ -1971,6 +1975,25 @@ function DevicesGroupedView({ devices, skipList, onInfoClick, renderActions, onD
         )}
       </p>
       <div className="space-y-3">
+        <NicHostGroups
+          groups={nicGroups}
+          clientId={clientId}
+          devices={devices}
+          onChanged={reloadNicGroups}
+          renderChildren={(kids) => (
+            <DeviceGroup
+              label="VM / IP sulla stessa scheda di rete"
+              icon={Monitor}
+              devices={kids}
+              color="#06B6D4"
+              onInfoClick={onInfoClick}
+              renderActions={renderActions}
+              clientId={clientId}
+              selectedIps={selectedIps}
+              onToggleSelect={onToggleSelect}
+            />
+          )}
+        />
         {GROUPS.map(g => (
           buckets[g.key].length > 0 ? (
             <DeviceGroup

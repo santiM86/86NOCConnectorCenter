@@ -194,26 +194,43 @@ async def osint_exposure_tick() -> None:
                 continue
             processed += 1
 
-            vulns = idb.get("vulns", []) or []
+            # Shodan completo (se key configurata): servizi/banner/versioni/org + CVE aggiuntive
+            sh = await osint._shodan_host(ip)
+            sh = sh if isinstance(sh, dict) and not sh.get("error") else {}
+            ports = sorted(set(idb.get("ports", []) or []) | set(sh.get("ports", []) or []))
+            vulns = sorted(set(idb.get("vulns", []) or []) | set(sh.get("vulns", []) or []))
             kev_hits = await osint._kev_hits(vulns)
             client_id = t.get("client_id")
+            prev_ports = set((existing or {}).get("ports") or [])
+            new_ports = sorted(set(ports) - prev_ports) if existing else []
 
             doc = {
                 "target_id": t.get("id"),
                 "client_id": client_id,
                 "public_ip": ip,
                 "label": t.get("label"),
-                "ports": idb.get("ports", []),
+                "ports": ports,
                 "vulns": vulns,
                 "kev_hits": [k.get("cve_id") for k in kev_hits],
                 "kev_count": len(kev_hits),
-                "hostnames": idb.get("hostnames", []),
-                "tags": idb.get("tags", []),
+                "hostnames": sorted(set(idb.get("hostnames", []) or []) | set(sh.get("hostnames", []) or [])),
+                "tags": sorted(set(idb.get("tags", []) or []) | set(sh.get("tags", []) or [])),
+                "risky_ports": osint.risky_ports(ports),
+                "source": "shodan+internetdb" if sh else "internetdb",
+                "shodan": {k: sh.get(k) for k in ("services", "os", "org", "isp", "asn", "country", "city", "last_update", "domains")} if sh else None,
+                "new_ports": new_ports,
                 "last_scan": now.isoformat(),
             }
+            try:
+                doc["certs"] = await _check_certificates(client_id, ip, t.get("label") or ip, ports, doc["hostnames"])
+            except Exception as _e_cert:  # noqa: BLE001
+                logger.debug(f"OSINT cert check {ip}: {_e_cert}")
+                doc["certs"] = (existing or {}).get("certs") or []
             await db.osint_exposure.update_one(
                 {"target_id": t.get("id")}, {"$set": doc}, upsert=True
             )
+            if client_id:
+                await _emit_port_alerts(client_id, ip, t.get("label") or ip, new_ports, doc["risky_ports"], sh.get("services") or [])
 
             # Alert per-tenant se ci sono CVE attivamente sfruttate esposte
             # (solo RECENTI: niente CVE vecchie di anni — l'esposizione salvata
@@ -233,6 +250,122 @@ async def osint_exposure_tick() -> None:
             logger.info(f"[osint-exposure] scanned {processed} public IP(s)")
     except Exception as e:
         logger.exception(f"[osint-exposure] tick failed: {e}")
+
+
+TLS_PORTS = (443, 8443, 4443, 10443, 465, 993, 995, 636, 8843)
+CERT_WARN_DAYS = 30
+
+
+async def _tls_cert_info(ip: str, port: int, sni: str | None = None) -> dict | None:
+    """Handshake TLS diretto (senza verifica) per leggere CN/issuer/scadenza del certificato esposto."""
+    import ssl
+    import asyncio as _aio
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        reader, writer = await _aio.wait_for(_aio.open_connection(ip, port, ssl=ctx, server_hostname=sni or ip), timeout=8)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        sslobj = writer.get_extra_info("ssl_object")
+        der = sslobj.getpeercert(binary_form=True) if sslobj else None
+        if not der:
+            return None
+        try:
+            from cryptography import x509
+            cert = x509.load_der_x509_certificate(der)
+            na = cert.not_valid_after_utc if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.replace(tzinfo=timezone.utc)
+            cn = next((a.value for a in cert.subject if a.oid.dotted_string == "2.5.4.3"), None)
+            issuer = next((a.value for a in cert.issuer if a.oid.dotted_string == "2.5.4.10"), None) or next((a.value for a in cert.issuer if a.oid.dotted_string == "2.5.4.3"), None)
+            try:
+                sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)[:5]
+            except Exception:  # noqa: BLE001
+                sans = []
+        except ImportError:
+            return None
+        days = int((na - datetime.now(timezone.utc)).total_seconds() // 86400)
+        return {"port": port, "cn": cn, "issuer": issuer, "sans": sans, "not_after": na.isoformat(), "days_left": days,
+                "self_signed": bool(issuer and cn and issuer == cn)}
+    finally:
+        writer.close()
+
+
+async def _check_certificates(client_id: str | None, ip: str, label: str, ports: list, hostnames: list) -> list[dict]:
+    """Controlla i certificati TLS sulle porte esposte note e genera alert a 30 gg (medium), 7 gg/scaduto (high)."""
+    certs = []
+    sni = next((h for h in (hostnames or []) if "." in h), None)
+    for p in [p for p in TLS_PORTS if p in set(ports or [])] or ([443] if not ports else []):
+        info = await _tls_cert_info(ip, p, sni)
+        if info:
+            certs.append(info)
+    if not client_id:
+        return certs
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for c in certs:
+        d = c["days_left"]
+        title = f"Certificato SSL in scadenza: {c.get('cn') or label}:{c['port']} ({label})"
+        if d <= CERT_WARN_DAYS:
+            sev = "high" if d <= 7 else "medium"
+            when = "SCADUTO" if d < 0 else f"scade tra {d} giorni"
+            if not await db.alerts.find_one({"client_id": client_id, "device_ip": ip, "title": title, "status": "active"}, {"_id": 1}):
+                alert_doc = {"id": str(uuid.uuid4()), "client_id": client_id, "device_id": None, "device_ip": ip, "device_name": label,
+                             "device_type": "firewall", "severity": sev, "source_type": "osint_cert_expiry", "title": title,
+                             "message": f"Il certificato esposto su {ip}:{c['port']} (CN {c.get('cn') or '?'}, emesso da {c.get('issuer') or '?'}) {when} "
+                                        f"({c['not_after'][:10]}). Rinnovalo prima della scadenza per evitare errori di accesso a VPN/portali/posta.",
+                             "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": now_iso}
+                if await insert_alert_if_emit(db, alert_doc) and sev == "high":
+                    try:
+                        from alert_engine import notify_alert_telegram
+                        await notify_alert_telegram(db, alert_doc)
+                    except Exception:  # noqa: BLE001
+                        pass
+            elif d <= 7:
+                await db.alerts.update_many({"client_id": client_id, "device_ip": ip, "title": title, "status": "active", "severity": "medium"},
+                                            {"$set": {"severity": "high", "message": f"Il certificato su {ip}:{c['port']} {when} ({c['not_after'][:10]})."}})
+        else:
+            await db.alerts.update_many({"client_id": client_id, "device_ip": ip, "title": title, "status": "active"},
+                                        {"$set": {"status": "resolved", "resolved_at": now_iso, "resolution_note": f"Certificato rinnovato: scade il {c['not_after'][:10]}."}})
+    return certs
+
+
+async def _emit_port_alerts(client_id: str, ip: str, label: str, new_ports: list, risky: list[dict], services: list[dict]) -> None:
+    """Alert (dedup per titolo attivo) per: servizi rischiosi esposti (high) e nuove porte aperte dall'ultima scansione (medium)."""
+    svc_by_port = {s.get("port"): s for s in services if s.get("port")}
+
+    def _desc(p: int) -> str:
+        s = svc_by_port.get(p) or {}
+        prod = " ".join(x for x in (s.get("product"), s.get("version")) if x)
+        return f"{p}/{s.get('transport', 'tcp')}" + (f" ({prod})" if prod else "")
+
+    async def _emit(severity: str, title: str, message: str, source_type: str) -> None:
+        if await db.alerts.find_one({"client_id": client_id, "device_ip": ip, "title": title, "status": "active"}, {"_id": 1}):
+            return
+        alert_doc = {"id": str(uuid.uuid4()), "client_id": client_id, "device_id": None, "device_ip": ip, "device_name": label,
+                     "device_type": "firewall", "severity": severity, "source_type": source_type, "title": title, "message": message,
+                     "status": "active", "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None,
+                     "created_at": datetime.now(timezone.utc).isoformat()}
+        if await insert_alert_if_emit(db, alert_doc) and severity in ("high", "critical"):
+            try:
+                from alert_engine import notify_alert_telegram
+                await notify_alert_telegram(db, alert_doc)
+            except Exception:  # noqa: BLE001
+                pass
+
+    if risky:
+        lst = ", ".join(f"{r['service']} {_desc(r['port'])}" for r in risky[:8])
+        await _emit("high", f"OSINT: servizi rischiosi esposti su Internet ({label})",
+                    f"L'IP pubblico {ip} espone servizi che non dovrebbero essere raggiungibili da Internet: {lst}. "
+                    f"Verifica le regole NAT/port-forward del firewall e limita l'accesso (VPN, IP whitelist). Fonte: Shodan.", "osint_exposed_service")
+    else:
+        await db.alerts.update_many({"client_id": client_id, "device_ip": ip, "source_type": "osint_exposed_service", "status": "active"},
+                                    {"$set": {"status": "resolved", "resolved_at": datetime.now(timezone.utc).isoformat(),
+                                              "resolution_note": "Servizi rischiosi non più esposti (OSINT auto-resolve)."}})
+    if new_ports:
+        lst = ", ".join(_desc(p) for p in new_ports[:10])
+        await _emit("medium", f"OSINT: nuove porte esposte su {label}: {', '.join(str(p) for p in new_ports[:6])}",
+                    f"Dall'ultima scansione l'IP pubblico {ip} espone nuove porte: {lst}. Se non previsto, controlla il firewall (nuova regola NAT/UPnP?). Fonte: Shodan.",
+                    "osint_new_port")
 
 
 async def _emit_exposure_alert(client_id: str, ip: str, label: str,

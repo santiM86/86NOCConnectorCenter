@@ -51,7 +51,16 @@ EVENT_MAP: dict[int, tuple[str, str, str]] = {
     21: ("rdp_session", "info", "Sessione RDP avviata"),
     24: ("rdp_session", "info", "Sessione RDP disconnessa"),
     25: ("rdp_session", "info", "Sessione RDP riconnessa"),
+    # USB / dispositivi rimovibili
+    6416: ("usb_insert", "warning", "Dispositivo esterno riconosciuto (PnP audit)"),
+    400: ("usb_insert", "warning", "Dispositivo USB configurato (Kernel-PnP)"),
+    2003: ("usb_insert", "warning", "Dispositivo USB inserito"),
+    2100: ("usb_remove", "info", "Dispositivo USB rimosso"),
+    2102: ("usb_remove", "info", "Dispositivo USB rimosso"),
 }
+_USB_LOGS = ("Microsoft-Windows-Kernel-PnP/Configuration", "Microsoft-Windows-DriverFrameworks-UserMode/Operational")
+_INTERACTIVE_LOGON_TYPES = {2, 7, 10, 11}
+DEFAULT_WORK_HOURS = {"start": "07:00", "end": "20:00", "days": [0, 1, 2, 3, 4, 5], "tz": "Europe/Rome"}  # lun-sab
 LOGON_TYPES = {2: "Interattivo", 3: "Rete", 4: "Batch", 5: "Servizio", 7: "Sblocco", 8: "Rete (chiaro)",
                9: "Nuove credenziali", 10: "RDP / Remoto", 11: "Cache"}
 _SYSTEM_ACCOUNTS = {"system", "anonymous logon", "local service", "network service", "-", ""}
@@ -74,10 +83,10 @@ def event_hash(prev_hash: str, doc: dict) -> str:
 
 
 def _noise(ev: dict) -> bool:
+    if ev.get("category") in ("usb_insert", "usb_remove", "log_cleared", "power_on", "power_off", "power_crash"):
+        return False
     user = (ev.get("user") or "").lower()
-    if user.endswith("$") or user in _SYSTEM_ACCOUNTS or user.startswith(("dwm-", "umfd-")):
-        return ev.get("event_id") not in (1102, 104, 6005, 6006, 1074, 41, 6008)
-    return False
+    return user.endswith("$") or user in _SYSTEM_ACCOUNTS or user.startswith(("dwm-", "umfd-"))
 
 
 async def get_admins(client_id: str) -> set[str]:
@@ -100,6 +109,11 @@ def _normalize(client_id: str, agent_id: str, host: str, ev: dict) -> Optional[d
         return None
     meta = EVENT_MAP.get(eid)
     if not meta:
+        return None
+    log_name = str(ev.get("log") or "Security")
+    if eid in (400, 2003, 2100, 2102) and log_name not in _USB_LOGS:
+        return None
+    if eid in (21, 24, 25) and "TerminalServices" not in log_name:
         return None
     cat, sev, label = meta
     data = ev.get("data") or {}
@@ -131,8 +145,12 @@ def _normalize(client_id: str, agent_id: str, host: str, ev: dict) -> Optional[d
         "target_user": str(user if group_evt else (data.get("TargetUserName") or "")) or None,
         "group": str(data.get("TargetUserName") if group_evt else "") or None,
         "failure_reason": str(data.get("Status") or data.get("FailureReason") or "") or None,
+        "device": str(data.get("DeviceDescription") or data.get("DriverDescription") or data.get("DeviceInstanceId") or data.get("InstanceId") or data.get("DeviceId") or "")[:160] or None,
         "message": str(ev.get("message") or "")[:400] or None,
     }
+    if cat in ("usb_insert", "usb_remove") and not doc["user"]:
+        doc["user"] = str(data.get("SubjectUserName") or "")
+        doc["domain"] = str(data.get("SubjectDomainName") or doc["domain"])
     if doc["src_ip"] in ("-", "127.0.0.1", "::1"):
         doc["src_ip"] = None
     return doc
@@ -175,6 +193,7 @@ async def ingest_security_events(client_id: str, agent_id: str, host: str, event
     if new_docs:
         try:
             await _evaluate_alerts(client_id, host, new_docs)
+            await _evaluate_anomalies(client_id, host, new_docs)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"seclog alerts {client_id}: {e}")
     return {"stored": stored, "skipped": skipped, "last_seq": seq}
@@ -197,14 +216,100 @@ async def verify_chain(client_id: str, host: Optional[str] = None) -> dict:
             "reason": None if tail_ok else "stato catena non coincide con l'ultimo evento (eventi in coda rimossi?)"}
 
 
-async def _emit(client_id: str, host: str, severity: str, title: str, message: str, source_type: str, user: str = "") -> None:
+async def get_settings(client_id: str) -> dict:
+    """Impostazioni registro per cliente con fallback global/default: retention, orari lavoro, toggle alert."""
+    g = await db.security_log_settings.find_one({"client_id": "global"}, {"_id": 0}) or {}
+    c = await db.security_log_settings.find_one({"client_id": client_id}, {"_id": 0}) or {}
+    merged = {"retention_months": DEFAULT_RETENTION_MONTHS, "work_hours": dict(DEFAULT_WORK_HOURS), "usb_alerts": True,
+              "after_hours_alerts": True, "new_origin_alerts": True}
+    for src in (g, c):
+        for k, v in src.items():
+            if v is None or k == "client_id":
+                continue
+            merged[k] = {**merged["work_hours"], **v} if k == "work_hours" and isinstance(v, dict) else v
+    return merged
+
+
+def _outside_work_hours(ts_iso: str, wh: dict) -> Optional[str]:
+    """Ritorna una descrizione se l'istante cade fuori dall'orario lavorativo, altrimenti None."""
+    try:
+        from zoneinfo import ZoneInfo
+        t = datetime.fromisoformat(ts_iso.replace("Z", "+00:00")).astimezone(ZoneInfo(wh.get("tz") or "Europe/Rome"))
+        sh, sm = (int(x) for x in str(wh.get("start", "07:00")).split(":"))
+        eh, em = (int(x) for x in str(wh.get("end", "20:00")).split(":"))
+    except (ValueError, KeyError):
+        return None
+    if t.weekday() not in (wh.get("days") or DEFAULT_WORK_HOURS["days"]):
+        return f"{t:%A %d/%m %H:%M} (giorno non lavorativo)"
+    mins = t.hour * 60 + t.minute
+    if mins < sh * 60 + sm or mins >= eh * 60 + em:
+        return f"{t:%d/%m %H:%M} (orario {wh.get('start')}-{wh.get('end')})"
+    return None
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        import ipaddress
+        return not ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return True
+
+
+async def _evaluate_anomalies(client_id: str, host: str, docs: list[dict]) -> None:
+    """USB inseriti, accessi fuori orario, accessi da origine mai vista (profilo per utente, 90 gg)."""
+    st = await get_settings(client_id)
+    wh = st.get("work_hours") or DEFAULT_WORK_HOURS
+    now = _now()
+    for d in docs:
+        h = d.get("host") or host
+        who = f" (utente {d['user']})" if d.get("user") else ""
+        if d["category"] == "usb_insert" and st.get("usb_alerts", True):
+            dev = d.get("device") or "dispositivo USB"
+            key = (dev or "")[:60]
+            recent = await db.alerts.find_one({"client_id": client_id, "device_ip": h, "source_type": "seclog_usb_insert", "usb_key": key,
+                                               "created_at": {"$gte": (now - timedelta(hours=1)).isoformat()}}, {"_id": 1})
+            if not recent:
+                await _emit(client_id, h, "medium", f"Chiavetta/dispositivo USB inserito su {h}{who}",
+                            f"Rilevato dispositivo rimovibile su {h}: {dev}. Se non autorizzato, verificare esfiltrazione dati o malware. Evento {d['event_id']} ({d['log']}).",
+                            "seclog_usb_insert", extra={"usb_key": key, "instant": True})
+            continue
+        is_access = (d["category"] == "logon_success" and (d.get("logon_type") in _INTERACTIVE_LOGON_TYPES)) or d["category"] in ("rdp_connect",)
+        if not is_access or not d.get("user"):
+            continue
+        user = d["user"].lower()
+        if st.get("after_hours_alerts", True):
+            out = _outside_work_hours(d["ts"], wh)
+            if out:
+                await _emit(client_id, h, "medium", f"Accesso fuori orario su {h}: {d['user']} — {out.split(' (')[0]}",
+                            f"L'utente {d.get('domain') + chr(92) if d.get('domain') else ''}{d['user']} ha effettuato un accesso {d.get('logon_type_label') or 'RDP'} su {h} alle {out}"
+                            f"{' da ' + d['src_ip'] if d.get('src_ip') else ''}. Verificare che sia atteso.", "seclog_after_hours")
+        if st.get("new_origin_alerts", True):
+            origin = d.get("src_ip") or d.get("workstation")
+            if origin:
+                prof = await db.security_login_profiles.find_one({"client_id": client_id, "user": user}, {"_id": 0})
+                known = set((prof or {}).get("origins") or [])
+                first_seen = (prof or {}).get("first_seen")
+                learned = first_seen and (now - datetime.fromisoformat(first_seen)).total_seconds() > 86400
+                if prof and learned and origin not in known:
+                    public = d.get("src_ip") and not _is_private_ip(d["src_ip"])
+                    await _emit(client_id, h, "high" if public else "medium",
+                                f"Accesso da origine mai vista su {h}: {d['user']} da {origin}",
+                                f"L'utente {d['user']} non aveva mai effettuato accessi da {origin}{' (IP pubblico!)' if public else ''} negli ultimi 90 giorni "
+                                f"(origini note: {', '.join(sorted(known)[:6]) or 'nessuna'}). Possibile credenziale compromessa.", "seclog_new_origin")
+                await db.security_login_profiles.update_one(
+                    {"client_id": client_id, "user": user},
+                    {"$addToSet": {"origins": origin}, "$set": {"last_seen": now.isoformat(), "expire_at": now + timedelta(days=90)},
+                     "$setOnInsert": {"first_seen": now.isoformat()}}, upsert=True)
+
+
+async def _emit(client_id: str, host: str, severity: str, title: str, message: str, source_type: str, user: str = "", extra: Optional[dict] = None) -> None:
     if await db.alerts.find_one({"client_id": client_id, "title": title, "status": "active"}, {"_id": 1}):
         return
     from alert_filter import insert_alert_if_emit
     alert = {"id": str(uuid.uuid4()), "client_id": client_id, "device_ip": host, "device_name": host, "device_type": "server",
              "severity": severity, "source_type": source_type, "title": title, "message": message, "status": "active",
              "acknowledged_by": None, "acknowledged_at": None, "resolved_at": None, "created_at": _now().isoformat(),
-             "instant": severity == "critical", "force_telegram": severity in ("critical", "high")}
+             "instant": severity == "critical", "force_telegram": severity in ("critical", "high"), **(extra or {})}
     if await insert_alert_if_emit(db, alert):
         try:
             from alert_engine import notify_alert_telegram
@@ -267,3 +372,5 @@ async def ensure_indexes() -> None:
     await db.security_events.create_index([("client_id", 1), ("user", 1)])
     await db.security_events.create_index("expire_at", expireAfterSeconds=0)
     await db.security_chain_state.create_index("client_id", unique=True)
+    await db.security_login_profiles.create_index([("client_id", 1), ("user", 1)], unique=True)
+    await db.security_login_profiles.create_index("expire_at", expireAfterSeconds=0)

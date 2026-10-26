@@ -465,6 +465,8 @@ from routes.omada import router as omada_router
 app.include_router(omada_router)
 from routes.security_log import router as seclog_router
 app.include_router(seclog_router)
+from routes.alert_rules import router as alert_rules_router
+app.include_router(alert_rules_router)
 from routes.mobile_access import router as mobile_access_router
 app.include_router(mobile_access_router)
 from routes.path_trace_history import router as path_trace_history_router

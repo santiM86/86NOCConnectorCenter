@@ -1,6 +1,67 @@
 ## ⚠️ REGOLE PERMANENTI — leggere PRIMA di toccare qualsiasi file
 
 
+## 2026-06 ✅ BUG NAS01 duplicato senza alert cambio IP → fix mac_follow (ARP stantio, merge duplicati, alert multi-IP)
+**Causa**: `apply_mac_follow` saltava ogni MAC visto su >1 IP (ARP del vecchio IP ancora presente nella tabella
+dell'agent) e sul nuovo IP era stato auto-censito un duplicato (source ui_scan_button) → nessun follow, nessun alert.
+**Fix** `mac_follow.py`: `old_dead` = status offline o consecutive_ping_failures≥2 (proiezione estesa); se vecchio IP
+vivo e MAC visto altrove → `_emit_multi_ip_alert` (source_type `mac_follow_multi_ip`, high se vitale + Telegram, dedup
+titolo) e nessuno spostamento; se morto e 1 candidato → follow; se sul nuovo IP esiste managed_device con lo STESSO MAC →
+merge (duplicato eliminato, si tiene l'originale con profilo) + nota "Voce duplicata … unificata" nel messaggio.
+Test iter154 ora 10/10, repro testing agent iteration_157 100% (`tests/test_mac_dup_repro.py`).
+
+
+## 2026-06 ✅ MAC rescue vitali (scan ARP mirato prima dell'offline) + alert HIGH cambio IP vitale
+- `backend/mac_rescue.py`: `start_mac_rescue(conn, cid, md)` → run `lan_scan_runs` con `purpose:"mac_rescue"` + comando
+  agent `lan_scan` sulla /24 del device (cooldown 600s, stato `mac_rescue_state`); `rescue_pending(cid, ip)` (finestra
+  120s); `on_rescue_scan_event(kind, run, data)` chiamato da `lan_scanner.bridge_lan_scan_event` per result/done →
+  `apply_mac_follow(source="mac_rescue")`; se trovato: cancella `vital_offline_state`, risolve alert offline attivi
+  (corr_*/connector_offline/...) con nota "Falso offline: cambiato IP".
+- Hook: `agent_ws._bridge_ping_poll` al 2° ping fallito di vitale/infra con MAC → start_mac_rescue. Gate in
+  `alert_engine.run_vital_watchdog`: se `rescue_pending` e nessun alert ancora emesso → rinvia (continue).
+- `mac_follow`: alert cambio IP per device `is_vital` o source mac_rescue → severity **high**, titolo "VITALE IP cambiato:
+  …", `force_telegram`/`instant` + invio Telegram; non vitali restano medium "IP cambiato".
+- Test `tests/test_mac_rescue_iter159.py` 3/3, regressione iter154 8/8.
+
+
+## 2026-06 ✅ USB & anomalie accessi (modulo B Intrusa) + scadenza certificati SSL esposti
+- **Agent Go** `seclog_windows.go`: sorgenti con campo `Match` (regex PowerShell su Message): Security +6416 (PnP audit),
+  `Microsoft-Windows-Kernel-PnP/Configuration` 400 filtrato `USBSTOR|USB\VID_|WPDBUSENUM`, `DriverFrameworks-UserMode/
+  Operational` 2003/2100/2102. `enableUsbAuditLogs()` all'avvio: `wevtutil sl ... /e:true` + `auditpol` PnP success.
+- **Backend** `security_log.py`: EVENT_MAP usb_insert (6416/400/2003) / usb_remove (2100/2102) con guardia sul nome log
+  (`_USB_LOGS`, TerminalServices per 21/24/25), campo `device`; `_noise` esenta usb/power/log_cleared.
+  `get_settings(cid)` (global→cliente→default: retention, `work_hours{start,end,days[0-6],tz}` default 07-20 lun-sab
+  Europe/Rome, `usb_alerts`, `after_hours_alerts`, `new_origin_alerts`). `_evaluate_anomalies`: USB → medium
+  `seclog_usb_insert` (dedup 1h per device via `usb_key`, instant); accessi interattivi (4624 type 2/7/10/11, 1149)
+  fuori orario → medium `seclog_after_hours`; origine (src_ip o workstation) mai vista per (client,user) in
+  `security_login_profiles` (TTL 90gg, apprendimento 24h) → high se IP pubblico / medium interno `seclog_new_origin`.
+  API: `GET/PUT /api/seclog/settings/{cid}` (parziale, valida HH:MM). UI `SecurityLogPage` pannello `AnomalySettings`
+  (toggle, orario, giorni, retention) + KPI "USB inseriti" + categorie USB + colonna device.
+- **Certificati**: `osint_poller._tls_cert_info(ip,port,sni)` handshake TLS diretto (cryptography) → cn/issuer/sans/
+  not_after/days_left/self_signed; `_check_certificates` su porte esposte ∩ TLS_PORTS (443,8443,4443,10443,465,993,995,
+  636,8843): ≤30gg medium, ≤7gg/scaduto high (+Telegram, escalation), rinnovato → resolved. Salvato in
+  `osint_exposure.certs`; UI OSINT colonna "Certificati SSL" (`osint-certs-<ip>`). Funziona SENZA key Shodan.
+- Test `tests/test_anomalies_iter158.py` 5/5 + UI verificata (salvataggio orari persistente).
+
+
+## 2026-06 ✅ Shodan API completa come fonte OSINT (+ alert porte rischiose / nuove porte)
+- `services/osint_service.py`: provider `shodan` in KEYED_PROVIDERS (key cifrata come gli altri, UI OSINT → Chiavi API);
+  `_shodan_host(ip)` (GET api.shodan.io/shodan/host/{ip}, cache 24h `osint_ip_cache`) → found, ports, vulns, hostnames,
+  domains, tags, os, org, isp, asn, country, city, last_update, `services[]` (port/transport/module/product/version/
+  banner/cpe/vulns/ssl_expires/ssl_subject/http_title). `shodan_api_info()` (piano/crediti; 401 → "API key non valida").
+  `RISKY_PORTS` + `risky_ports(ports)`. `lookup_ip` include `shodan`, KEV cross-ref su InternetDB∪Shodan, `risky_ports`.
+- `services/osint_poller.osint_exposure_tick`: merge InternetDB + Shodan (se key) → `osint_exposure` con `risky_ports`,
+  `source`, `shodan{...}`, `new_ports` (diff vs scansione precedente); `_emit_port_alerts`: high `osint_exposed_service`
+  (dedup per titolo, auto-resolve quando spariscono, Telegram) + medium `osint_new_port`. Senza key: solo InternetDB
+  ma gli alert porte rischiose/nuove funzionano comunque.
+- API: `GET /api/osint/shodan/info`. UI `OsintPage.js`: riga chiave Shodan + crediti (`osint-shodan-info`), LookupCard
+  "Shodan (API)", tabella esposizione con badge "N rischiose" (`osint-risky-<ip>`), "+N nuove", org/prodotti.
+- Test `tests/test_shodan_iter157.py` 4/4 (mock HTTP) + curl reale (host lookup ok, api-info 401 su key finta).
+  NB: ipaddress considera 203.0.113.x non pubblico → nei test usare IP reali (8.8.4.4).
+- Aperto: LECS NDR (Cyber Evolution) — proposto Syslog CEF/LEEF via nuovo ricevitore syslog nell'Agent Go + parser
+  → ndr_events/alert; in attesa risposte utente (unità disponibile? CEF/LEEF? porta).
+
+
 ## 2026-06 ✅ Panoramica: fallback degradato (mai più "0 clienti"/HTTP 500) + indice managed_devices parziale
 **Segnalazione PROD**: "overview error: '<client_id>'" (KeyError) → Panoramica vuota. Nel repo attuale tutte le mappe
 per-cliente sono già guardate (defaultdict/get): il 500 in PROD indica codice backend NON aggiornato → serve Save to
@@ -9838,3 +9899,30 @@ Health null è normale HPE (usa i sottosistemi).
 - UI OmadaSettingsPage: "Aggiungi organizzazione" (form), tabella controller (Test/Sync/modifica/elimina, stato/errore), Siti→Clienti con colonna organizzazione, dispositivi. Guida adattata a Omada Cloud (entrare nell'organizzazione → Global View → Impostazioni → Integrazione piattaforma → Open API).
 - Testato con mock (tests/mock_omada_server.py): add/test/sync/link/discover + credenziali errate → "Omada -44106: Invalid client". Mock rimosso. IN ATTESA: l'utente crea le app Open API nelle 4 organizzazioni (prima Galvan) e le inserisce.
 - Dubbio aperto: disponibilità Open API su Omada Cloud-Based Controller piano Essentials — se manca la voce, chiedere screenshot.
+
+## 2026-06 Fix "Tipo macchina non mantenuto" (BLUEEDENSRV, 3 IP)
+- mac_follow: un doc con stesso MAC ma VIVO su altro IP (server 1 NIC multi-IP) non viene piu cancellato come duplicato (solo alert multi-IP).
+- mac_follow merge duplicato: le impostazioni del duplicato (virtualization, soglie, silence...) vengono fuse nel device seguito prima della cancellazione.
+- DeviceEditModal: dopo Salva/Applica ora rilegge dal backend e mostra errore se il Tipo macchina non coincide (niente piu falso verde).
+- Test: tests/test_mac_follow_iter154.py 12/12. Causa in produzione non confermata da dati (VM self-hosted non leggibile).
+
+## 2026-06 MAC condiviso + alert "Scheda di rete cambiata"
+- MAC condiviso (stesso MAC su piu device gestiti o piu IP, es. VM dietro la stessa NIC): nessuno spostamento/merge/cancellazione/alert; vecchi alert mac_follow_multi_ip chiusi automaticamente. Sostituisce la logica merge NAS01.
+- MAC-follow (cambio IP) solo per MAC esclusivi visti su un unico IP non gestito.
+- Nuovo alert source_type nic_changed: stesso IP con MAC diverso confermato su 2 rilevazioni; HIGH vitali / MEDIUM altri; aggiorna mac, mac_previous, mac_history. Ignora MAC di altri device gestiti (gateway/proxy ARP) e ARP momentanei.
+- MAC rescue vitali disattivato su MAC condiviso (mac_is_shared).
+- Test: test_mac_follow_iter154.py 13/13, test_mac_rescue_iter159.py 3/3, iteration_158.json 100%.
+
+## 2026-06 Server e sue VM + Storico MAC + Regole Alert Engine (P0 chiuso)
+- Server e sue VM: GET /api/clients/{cid}/nic-groups (gruppi MAC condiviso, host proposto: fisico > unico non-VM > nome piu frequente), POST .../nic-groups/host (host manuale, collezione nic_hosts). UI: blocco "Server e sue VM" in DevicesGroupedView (components/NicHostGroups.jsx), VM non duplicate nelle categorie.
+- Storico MAC: GET /api/devices/by-ip/{ip}/mac-history; sezione in DeviceInfoCard (components/MacHistorySection.jsx).
+- Regole su metrica (alert_rules.py, routes/alert_rules.py): packet_loss, latency, cpu, ram, disk, temperature; soglia + durata + gravita; scope all/client/device; dedup + auto-chiusura; valutate ad ogni tick Alert Engine; POST /api/alert-rules/run.
+- Dipendenze padre -> figli (alert_dependencies): manuali + proposte host -> VM; padre giu -> figli soppressi (gate in insert_alert_if_emit + vital watchdog) e aggiunti a impacted_devices del padre; padre su -> figli ancora giu alertano.
+- UI: Impostazioni -> Alert Engine (AlertRulesPanel.jsx, AlertDependenciesPanel.jsx).
+- Test: tests/test_alert_rules_iter160.py 4/4, test_alert_engine_api_iter160.py 8/8, iteration_160.json 100%.
+
+## 2026-06 Porte switch con piu dispositivi / host VM
+- port_memory: insieme port_devices (TTL 30gg) invece di un solo last_device; Dispositivo cambiato (port_device_change) solo se sparisce tutto l insieme e compare un MAC nuovo; VM nuova su porta host = alert low port_new_vm; alert falsi chiusi se il prev e ancora presente.
+- vm_port.py: OUI hypervisor (Hyper-V, VMware, KVM, VirtualBox, Xen, Parallels) + gruppi NIC -> vm_host {kind, host, vms} nel payload switch-ports (topology.py).
+- UI SwitchPortsPage: VmHostBlock (Connesso a = host, sotto le VM), badge in tabella.
+- Test: tests/test_vm_port_iter161.py 5/5, iteration_161.json 100%.

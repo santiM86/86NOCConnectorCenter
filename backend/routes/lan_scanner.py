@@ -614,3 +614,13 @@ async def bridge_lan_scan_event(kind: str, data: Dict[str, Any]) -> None:
         if data.get("error"):
             upd["error"] = str(data["error"])
         await db.lan_scan_runs.update_one({"scan_id": scan_id}, {"$set": upd})
+
+    # MAC rescue: run avviati dal watchdog vitali (purpose=mac_rescue) → prova il follow del MAC
+    if kind in ("lan_scan_result", "lan_scan_done"):
+        run = await db.lan_scan_runs.find_one({"scan_id": scan_id, "purpose": "mac_rescue"}, {"_id": 0, "client_id": 1, "rescue": 1, "results": 1})
+        if run:
+            try:
+                from mac_rescue import on_rescue_scan_event
+                await on_rescue_scan_event(kind, run, data.get("result") or {} if kind == "lan_scan_result" else data)
+            except Exception as _e_mr:  # noqa: BLE001
+                logger.warning("mac_rescue bridge scan=%s: %s", scan_id, _e_mr)

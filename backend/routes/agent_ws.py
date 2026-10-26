@@ -705,9 +705,10 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
         cursor = db.managed_devices.find(
             {"client_id": conn.client_id, "ip": target},
             {"_id": 0, "id": 1, "status": 1, "consecutive_ping_failures": 1,
-             "last_seen_at": 1, "is_vital": 1, "device_type": 1},
+             "last_seen_at": 1, "is_vital": 1, "device_type": 1, "mac": 1, "mac_address": 1, "follow_mac": 1, "name": 1},
         )
-        global_threshold = await _get_global_max_check_attempts(db)
+        failure_threshold = 5
+        rescue_candidates: list = []
         async for dev in cursor:
             failure_threshold = int(dev.get("max_check_attempts") or global_threshold)
             prev_failures = int(dev.get("consecutive_ping_failures") or 0)
@@ -789,6 +790,8 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                                              "gateway", "server", "nas", "hypervisor"))
                     if is_infra and new_failures == 2:
                         vital_just_down = True
+                        if dev.get("mac") or dev.get("mac_address"):
+                            rescue_candidates.append({**dev, "ip": target})
             # Use the unique `id` if present, otherwise match by (client_id, ip)
             # so devices indexed only by _id (no `id` field) are still handled.
             dev_id = dev.get("id")
@@ -801,6 +804,14 @@ async def _bridge_ping_poll(conn: _Connection, r: Dict[str, Any]) -> None:
                 logger.warning("ping_poll: managed_devices update failed ip=%s err=%s", target, e)
     except Exception as e:
         logger.warning("ping_poll: managed_devices reconcile failed ip=%s err=%s", target, e)
+        rescue_candidates = []
+    # MAC rescue: vitale/infra appena caduto con MAC noto → scan ARP mirato PRIMA dell'alert offline
+    for _rc in rescue_candidates:
+        try:
+            from mac_rescue import start_mac_rescue
+            await start_mac_rescue(conn, conn.client_id, _rc)
+        except Exception as _e_mr:  # noqa: BLE001
+            logger.warning("mac_rescue start failed ip=%s: %s", target, _e_mr)
     # v2026-06 SPEED: trigger event-driven del watchdog vitali (fuori dal try
     # del reconcile, throttled) quando un device vitale ha appena confermato il down.
     if vital_just_down:
