@@ -649,6 +649,7 @@ async def _refresh_sites_cache() -> dict:
                     "is_server": ("server" in dtype.lower() or "esxi" in dtype.lower()),
                     "online": (bool(online_raw) if online_raw is not None else None),
                     "datto_last_seen": last_seen_raw,
+                    "last_user": (dev.get("lastLoggedInUser") or "").strip(),
                     "raw_enc": _encrypt_blob(raw_blob),
                     "fetched_at": now,
                 }
@@ -831,10 +832,22 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
             ))
 
     # --- Enrichment scanner endpoints (datto_name) per la UI/topology ---
+    by_uid = {d["uid"]: d for d in datto_devices if d.get("uid")}
+    links = {lk["mac"]: lk.get("datto_uid") async for lk in db.datto_mac_links.find({"client_id": client_id}, {"_id": 0})}
+    new_links: list = []
     for ep in eps:
         ep_mac = _norm_mac(ep.get("mac"))
         ep_ip = ep.get("ip") or ""
-        d = (ep_mac and by_mac.get(ep_mac)) or (ep_ip and by_ip.get(ep_ip)) or None
+        how = "mac" if ep_mac and ep_mac in by_mac else None
+        d = by_mac.get(ep_mac) if how else None
+        if not d and ep_mac and links.get(ep_mac) in by_uid:
+            d, how = by_uid[links[ep_mac]], "mac_link"
+        if not d and ep_ip and ep_ip in by_ip:
+            d, how = by_ip[ep_ip], "ip"
+        if not d:
+            hs = _host_short(ep.get("hostname_scanner"))
+            if hs and hs in by_host:
+                d, how = by_host[hs], "hostname"
         if not d or not d.get("uid"):
             continue
         key = (ep.get("switch_ip"), ep.get("port"), ep.get("mac"))
@@ -842,13 +855,18 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
             continue
         matched_eps.add(key)
         matched_uids.add(d["uid"])
+        if ep_mac and how in ("ip", "hostname") and links.get(ep_mac) != d["uid"]:
+            links[ep_mac] = d["uid"]
+            new_links.append((ep_mac, d, how))
         ep_ops.append(UpdateOne(
             {"client_id": client_id, "switch_ip": ep.get("switch_ip"),
              "port": ep.get("port"), "mac": ep.get("mac")},
             {"$set": {"datto_name": d.get("name"),
-                      "datto_match": "mac" if ep_mac and ep_mac in by_mac else "ip",
+                      "datto_match": how,
                       "datto_matched_at": now}},
         ))
+    for mac_l, d_l, how_l in new_links:
+        await remember_mac_link(client_id, mac_l, d_l, how_l)
 
     if md_ops:
         await db.managed_devices.bulk_write(md_ops, ordered=False)
@@ -1803,7 +1821,8 @@ async def datto_device_info(
     m = _norm_mac(mac) if mac else ""
     nm = (name or "").strip()
     if m:
-        d = await _find({"$or": [{"mac": m}, {"mac_list": m}]})
+        d = await _linked_device(client_id, m, proj) or await _find({"$or": [{"mac": m}, {"mac_list": m}]})
+    found_direct = d is not None
     if d is None and ip and base:
         d = await _find({"$or": [{"ip": ip}, {"ip_list": ip}]}, allow_global=False)
     if d is None and nm:
@@ -1817,6 +1836,8 @@ async def datto_device_info(
             short = ep["datto_name"].strip().split(".")[0]
             rx = {"$regex": f"^{re.escape(short)}(\\..*)?$", "$options": "i"}
             d = await _find({"$or": [{"name": rx}, {"hostname_short": rx}, {"fqdn": rx}]}, allow_global=False)
+    if d and m and not found_direct:
+        await remember_mac_link(d.get("client_id") or client_id, m, d, "lookup")
     if not d:
         last = await db.datto_devices.find_one(base or {}, {"_id": 0, "fetched_at": 1}, sort=[("fetched_at", -1)])
         total = await db.datto_devices.count_documents(base) if base else None
@@ -1859,9 +1880,15 @@ async def datto_users_for(client_id: str, macs: set, ips: set, names: Optional[s
         ors += [{"ip": {"$in": list(ips)}}, {"ip_list": {"$in": list(ips)}}]
     if names:
         ors += [{"name": {"$in": list(names)}}]
+    link_by_uid: dict = {}
+    if macs:
+        async for lk in db.datto_mac_links.find({"client_id": client_id, "mac": {"$in": list(macs)}}, {"_id": 0, "mac": 1, "datto_uid": 1}):
+            link_by_uid.setdefault(lk["datto_uid"], []).append(lk["mac"])
+        if link_by_uid:
+            ors += [{"uid": {"$in": list(link_by_uid)}}]
     out: dict = {}
     async for d in db.datto_devices.find({"client_id": client_id, "$or": ors},
-                                         {"_id": 0, "raw_enc": 1, "mac_list": 1, "ip_list": 1, "mac": 1, "ip": 1, "online": 1, "datto_last_seen": 1, "name": 1}):
+                                         {"_id": 0, "raw_enc": 1, "mac_list": 1, "ip_list": 1, "mac": 1, "ip": 1, "online": 1, "datto_last_seen": 1, "name": 1, "uid": 1}):
         try:
             L = (json.loads(security_manager.decrypt_credential(d["raw_enc"])) or {}).get("list") or {} if d.get("raw_enc") else {}
         except Exception:
@@ -1870,9 +1897,32 @@ async def datto_users_for(client_id: str, macs: set, ips: set, names: Optional[s
         if not user:
             continue
         info = {"user": user, "online": d.get("online"), "last_seen": _epoch_iso(d.get("datto_last_seen") or L.get("lastSeen"))}
-        for k in set(d.get("mac_list") or []) | {d.get("mac")} | set(d.get("ip_list") or []) | {d.get("ip")}:
+        for k in set(d.get("mac_list") or []) | {d.get("mac")} | set(d.get("ip_list") or []) | {d.get("ip")} | set(link_by_uid.get(d.get("uid")) or []):
             if k:
                 out.setdefault(k, info)
         if d.get("name"):
             out.setdefault(f"name:{d['name'].upper()}", info)
     return out
+
+
+async def remember_mac_link(client_id: str, mac: str, d: dict, how: str) -> None:
+    """Ricorda il MAC virtuale (es. VM Hyper-V) di un device Datto trovato per IP/nome."""
+    m = _norm_mac(mac)
+    if not client_id or not m or not d.get("uid"):
+        return
+    try:
+        await db.datto_mac_links.update_one(
+            {"client_id": client_id, "mac": m},
+            {"$set": {"datto_uid": d["uid"], "datto_name": d.get("name") or "", "source": how,
+                      "linked_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("datto mac link %s %s: %s", client_id, m, e)
+
+
+async def _linked_device(client_id: Optional[str], mac: str, proj: dict) -> Optional[dict]:
+    q = {"mac": mac, **({"client_id": client_id} if client_id else {})}
+    lk = await db.datto_mac_links.find_one(q, {"_id": 0, "datto_uid": 1, "client_id": 1})
+    if not lk:
+        return None
+    return await db.datto_devices.find_one({"uid": lk["datto_uid"], "client_id": lk["client_id"]}, proj)

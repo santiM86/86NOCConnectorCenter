@@ -63,6 +63,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { VersionBadge } from "@/components/AppVersion";
+import UserSearch from "@/components/UserSearch";
 
 // ==================== NAV CONFIG ====================
 const navConfig = [
@@ -418,6 +419,9 @@ export default function Layout() {
           </div>
           <div className="w-8" />
         </header>
+        <div className="sticky top-0 md:top-0 z-40 flex justify-end px-3 md:px-6 pt-2 pointer-events-none" data-testid="topbar-user-search">
+          <div className="pointer-events-auto w-full md:w-auto flex justify-end"><UserSearch /></div>
+        </div>
         <Suspense fallback={<div className="flex items-center justify-center h-[60vh]" data-testid="page-loader"><div className="w-6 h-6 rounded-full border-2 border-indigo-500/30 border-t-indigo-400 animate-spin" /></div>}>
           <ErrorBoundary key={location.pathname} label="pagina" hint="La pagina ha incontrato un errore imprevisto. Premi Riprova o ricarica; se persiste, invia questo messaggio al supporto.">
             <Outlet />

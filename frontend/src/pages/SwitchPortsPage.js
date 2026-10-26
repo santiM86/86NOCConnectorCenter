@@ -587,6 +587,10 @@ export default function SwitchPortsPage() {
   const selectedRef = useRef(null);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [cableView, setCableView] = useState(null);
+  // Deep link da "Cerca utente": ?port=<idx>&cable=1 apre subito la porta / Vista Cavo
+  const deepPort = searchParams.get("port");
+  const deepCable = searchParams.get("cable") === "1";
+  const deepDone = useRef(false);
   // Ordinamento tabella (header cliccabili)
   const [sortBy, setSortBy] = useState("idx");     // idx|name|status|speed|rx|tx|poe|neighbor
   const [sortDir, setSortDir] = useState("asc");   // asc|desc
@@ -688,6 +692,11 @@ export default function SwitchPortsPage() {
       if (selectedRef.current) {
         const fresh = (r.data?.ports || []).find(x => x.idx === selectedRef.current.idx);
         if (fresh) setSelected(fresh);
+      }
+      if (deepPort && !deepDone.current) {
+        const hit = (r.data?.ports || []).find(x => String(x.idx) === String(deepPort));
+        if (hit) { setSelected(hit); if (deepCable) setCableView(hit); }
+        deepDone.current = true;
       }
     } catch (e) {
       // IP presente su piu' clienti senza clientId: NON mostriamo mai dati di altri
