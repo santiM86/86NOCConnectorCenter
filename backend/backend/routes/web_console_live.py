@@ -1,0 +1,834 @@
+"""
+Web Console LIVE catch-all proxy.
+Arch: browser iframe src -> catch-all endpoint -> connector long-poll -> device
+
+Il browser riceve HTML con <base> tag che punta a questo endpoint, quindi
+tutti i path relativi (CSS/JS/img/XHR) vengono proxati naturalmente.
+"""
+from fastapi import APIRouter, Request, HTTPException, Response, Depends
+import uuid
+import asyncio
+import base64
+import logging
+import re
+from datetime import datetime, timezone, timedelta
+
+from database import db
+from deps import get_current_user
+
+router = APIRouter(prefix="/api", tags=["web_console_live"])
+logger = logging.getLogger(__name__)
+audit = logging.getLogger("audit")
+
+# Event bus condiviso col router web_proxy esistente
+from routes.web_proxy import _get_response_event, _response_events  # noqa: E402
+
+LONG_POLL_SEC = 30
+VALID_METHODS = {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"}
+SESSION_TTL_HOURS = 8
+
+
+async def _authz_device(current_user: dict, device_ip: str) -> str:
+    """Verifica che l'utente possa accedere al device. Restituisce client_id."""
+    md = await db.managed_devices.find_one({"ip": device_ip}, {"_id": 0, "client_id": 1})
+    if md:
+        client_id = md["client_id"]
+    else:
+        ps = await db.device_poll_status.find_one({"device_ip": device_ip}, {"_id": 0, "client_id": 1})
+        if not ps:
+            raise HTTPException(status_code=403, detail="Device not authorized")
+        client_id = ps["client_id"]
+
+    role = current_user.get("role", "viewer")
+    if role == "viewer":
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    if role not in ("admin", "superadmin", "operator"):
+        allowed_clients = set(current_user.get("client_ids") or [])
+        if client_id not in allowed_clients:
+            raise HTTPException(status_code=403, detail="Access denied for this client")
+    return client_id
+
+
+@router.post("/web-console/session")
+async def create_web_console_session(request: Request, current_user: dict = Depends(get_current_user)):
+    """Crea una sessione web console bindata a (user, client, device, port).
+    Il session_id e' il capability token: chi possiede quel UUID puo' accedere al proxy.
+    """
+    body = await request.json()
+    device_ip = str(body.get("device_ip", "")).strip()
+    port = int(body.get("port", 0) or 0)
+    record = bool(body.get("record", False))
+    if not device_ip or not port:
+        raise HTTPException(status_code=400, detail="device_ip and port required")
+
+    client_id = await _authz_device(current_user, device_ip)
+    session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    await db.web_console_tokens.insert_one({
+        "session_id": session_id,
+        "user_email": current_user.get("email", ""),
+        "user_role": current_user.get("role", ""),
+        "client_id": client_id,
+        "device_ip": device_ip,
+        "port": port,
+        "recording": record,
+        "created_at": now,
+        "expires_at": now + timedelta(hours=SESSION_TTL_HOURS),
+    })
+    # History entry per Quick Access Recent + device audit
+    try:
+        await db.web_console_history.insert_one({
+            "session_id": session_id,
+            "user_email": current_user.get("email", ""),
+            "client_id": client_id,
+            "device_ip": device_ip,
+            "port": port,
+            "started_at": now,
+            "ended_at": None,
+            "requests_count": 0,
+            "recorded": record,
+            "last_path": "/",
+        })
+    except Exception as _e:
+        logger.warning(f"history insert failed: {_e}")
+    audit.info(f"[AUDIT] web_console_session_open | user={current_user.get('email')} | device={device_ip}:{port} | session={session_id} | record={record}")
+    return {
+        "session_id": session_id,
+        "iframe_url": f"/api/web-proxy/live/{session_id}/{device_ip}/{port}/",
+        "expires_in_seconds": SESSION_TTL_HOURS * 3600,
+        "recording": record,
+    }
+
+
+@router.delete("/web-console/session/{session_id}")
+async def revoke_web_console_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Revoca esplicita della sessione web console (best-effort: il TTL index la purgerebbe comunque)."""
+    res = await db.web_console_tokens.delete_one({
+        "session_id": session_id,
+        "user_email": current_user.get("email", ""),
+    })
+    # Segna ended_at nella history per il calcolo duration
+    try:
+        await db.web_console_history.update_many(
+            {"session_id": session_id, "ended_at": None},
+            {"$set": {"ended_at": datetime.now(timezone.utc)}}
+        )
+    except Exception:
+        pass
+    audit.info(f"[AUDIT] web_console_session_close | user={current_user.get('email')} | session={session_id} | deleted={res.deleted_count}")
+    return {"revoked": res.deleted_count > 0}
+
+
+@router.get("/web-console/probe")
+async def probe_device_path(
+    device_ip: str, port: int, path: str = "/",
+    current_user: dict = Depends(get_current_user)
+):
+    """CURL-like probe del device via connector (equivale a curl -k -I).
+    Apre sessione temporanea (5min), fa GET del path richiesto SENZA credenziali, torna:
+    http_status, content_type, www_authenticate, server, body_preview (512 byte),
+    diagnosis ragionato. Serve per il Task 'Check Locale' della checklist.
+    """
+    client_id = await _authz_device(current_user, device_ip)
+    if not path.startswith("/"):
+        path = "/" + path
+    session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    await db.web_console_tokens.insert_one({
+        "session_id": session_id,
+        "user_email": current_user.get("email", ""),
+        "user_role": current_user.get("role", ""),
+        "client_id": client_id,
+        "device_ip": device_ip,
+        "port": port,
+        "created_at": now,
+        "expires_at": now + timedelta(minutes=5),
+        "probe_only": True,
+    })
+    try:
+        scheme = "https" if port in (443, 8443, 4443) else "http"
+        status_code, content_type, body, resp_headers = await _proxy_via_connector(
+            client_id, device_ip, port, scheme, path, "GET", session_id, b"", {}
+        )
+        body = body or b""
+        preview = body[:512].decode("utf-8", "replace") if body else ""
+        rh_lower = {k.lower(): v for k, v in (resp_headers or {}).items()}
+        diagnosis = []
+        if status_code == 401:
+            diagnosis.append("Device richiede autenticazione HTTP. Dopo v3.3 il prompt appare direttamente nell'iframe.")
+        elif status_code == 404:
+            diagnosis.append(f"Path {path} NON esiste sul device. Prova: /, /login, /index.html, /cgi-bin/login.")
+        elif status_code == 200 and (not body or len(body) < 100):
+            diagnosis.append("Device risponde 200 ma body vuoto. Probabile redirect JS - guarda body_preview.")
+        elif status_code >= 500:
+            diagnosis.append(f"Device error {status_code}. Firmware bug o servizio web broken.")
+        elif status_code == 200:
+            diagnosis.append("Path OK. Device raggiungibile con contenuto valido.")
+        return {
+            "target": f"{scheme}://{device_ip}:{port}{path}",
+            "http_status": status_code,
+            "content_type": content_type,
+            "content_encoding": rh_lower.get("content-encoding"),
+            "www_authenticate": rh_lower.get("www-authenticate"),
+            "server": rh_lower.get("server"),
+            "set_cookie": rh_lower.get("set-cookie"),
+            "location": rh_lower.get("location"),
+            "body_size": len(body),
+            "body_preview_first_512": preview,
+            "all_response_headers": resp_headers or {},
+            "diagnosis": diagnosis,
+        }
+    finally:
+        await db.web_console_tokens.delete_one({"session_id": session_id})
+
+
+@router.get("/web-console/debug/{session_id}")
+async def web_console_debug(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Diagnostica live: ritorna gli ultimi 20 response del connector per questa sessione,
+    con content-type originale, status, size, primi 512 byte (esc). Utile per debug
+    iframe bianco / icona file rotto / contenuto strano.
+    """
+    tok = await db.web_console_tokens.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "user_email": 1, "device_ip": 1, "port": 1},
+    )
+    if not tok:
+        raise HTTPException(status_code=404, detail="Session not found")
+    # Authz: owner o admin/superadmin
+    if tok.get("user_email") != current_user.get("email") and current_user.get("role") not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Not session owner")
+
+    cursor = db.web_proxy_requests.find(
+        {"session_id": session_id},
+        {"_id": 0, "request_id": 1, "path": 1, "method": 1, "created_at": 1, "status": 1, "response": 1},
+    ).sort("created_at", -1).limit(20)
+    rows = []
+    async for r in cursor:
+        resp = r.get("response") or {}
+        body_preview = ""
+        body_b64 = resp.get("body_b64")
+        if body_b64:
+            try:
+                raw = base64.b64decode(body_b64)
+                body_preview = raw[:512].decode("utf-8", "replace")
+            except Exception:
+                body_preview = "<binary decode error>"
+        elif resp.get("body"):
+            body_preview = str(resp["body"])[:512]
+        rh = resp.get("response_headers") or {}
+        rows.append({
+            "request_id": r.get("request_id", "")[:8],
+            "method": r.get("method"),
+            "path": r.get("path"),
+            "status": r.get("status"),
+            "http_status": resp.get("status_code"),
+            "content_type": resp.get("content_type") or rh.get("Content-Type") or rh.get("content-type"),
+            "content_encoding": rh.get("Content-Encoding") or rh.get("content-encoding"),
+            "content_disposition": rh.get("Content-Disposition") or rh.get("content-disposition"),
+            "x_frame_options": rh.get("X-Frame-Options") or rh.get("x-frame-options"),
+            "body_size": len(base64.b64decode(body_b64)) if body_b64 else len(resp.get("body") or ""),
+            "body_preview_first_512": body_preview,
+            "created_at": r.get("created_at"),
+        })
+    return {"session": tok, "recent_requests": rows}
+
+
+async def _validate_session_token(session_id: str, device_ip: str, port: int) -> dict:
+    """Valida il session_id come capability token bindato al device_ip.
+    Il port NON e' piu' vincolante: un device puo' fare redirect verso port diversa
+    (es. iLO HP: 443 → 5001) e il token deve restare valido. L'authz e' a livello
+    di (user, client, device) e la porta e' solo un parametro della request."""
+    now = datetime.now(timezone.utc)
+    tok = await db.web_console_tokens.find_one(
+        {"session_id": session_id, "device_ip": device_ip},
+        {"_id": 0},
+    )
+    if not tok:
+        raise HTTPException(status_code=401, detail="Invalid or expired web console session")
+    exp = tok.get("expires_at")
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except Exception:
+            exp = None
+    if isinstance(exp, datetime) and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp is not None and exp < now:
+        raise HTTPException(status_code=401, detail="Web console session expired")
+    return tok
+
+
+def _build_base_href(session_id: str, device_ip: str, port: int) -> str:
+    return f"/api/web-proxy/live/{session_id}/{device_ip}/{port}/"
+
+
+def _rewrite_absolute_urls(text: str, session_id: str, device_ip: str) -> str:
+    """Riscrive URL assoluti verso il device (https://10.x.x.x:port/...) nel body
+    trasformandoli in path LIVE proxati. Supporta anche port diverse (iLO 443→5001)."""
+    # Pattern: http[s]://{device_ip}(:port)?/path
+    ip_esc = re.escape(device_ip)
+    pattern = re.compile(
+        rf"\bhttps?://{ip_esc}(?::(\d+))?(/[^\s\"'<>)]*)?",
+        re.IGNORECASE,
+    )
+
+    def _sub(m: re.Match) -> str:
+        port_part = m.group(1)
+        path_part = m.group(2) or "/"
+        if not port_part:
+            scheme_match = m.group(0).lower()
+            port_part = "443" if scheme_match.startswith("https") else "80"
+        return f"/api/web-proxy/live/{session_id}/{device_ip}/{port_part}{path_part}"
+
+    return pattern.sub(_sub, text)
+
+
+def _rewrite_root_paths(html: str, session_id: str, device_ip: str, port: int) -> str:
+    """Riscrive path assoluti root (che iniziano con /) negli attributi href/src/action
+    di HTML. Necessario perche' <base href> NON risolve path assoluti root — il browser
+    li risolve contro l'origine corrente (argus.86bit.it) invece che contro il device.
+
+    Trasforma:
+        href="/css/app.css"  ->  href="/api/web-proxy/live/{sid}/{ip}/{port}/css/app.css"
+        src='/img/logo.png'  ->  src='/api/web-proxy/live/{sid}/{ip}/{port}/img/logo.png'
+        action="/login"      ->  action="/api/web-proxy/live/{sid}/{ip}/{port}/login"
+
+    NON tocca: path gia' proxati, path relativi, URL assoluti http(s)://, //cdn, #, javascript:, mailto:, data:.
+    """
+    prefix = f"/api/web-proxy/live/{session_id}/{device_ip}/{port}"
+    # attributi: href, src, action, data-src, data-href, formaction, poster, srcset (solo single url — srcset complesso skip)
+    # Match: (attr=")(path)("/')  dove path inizia con / ma NON // NON /api/web-proxy/live
+    attrs = r"(?:href|src|action|formaction|poster|data-src|data-href|xlink:href)"
+    pattern = re.compile(
+        rf"""(\s{attrs}\s*=\s*)(["'])(/(?!/|api/web-proxy/live/)[^"']*?)\2""",
+        re.IGNORECASE,
+    )
+
+    def _sub(m: re.Match) -> str:
+        return f"{m.group(1)}{m.group(2)}{prefix}{m.group(3)}{m.group(2)}"
+
+    return pattern.sub(_sub, html)
+
+
+def _inject_html_support(body: bytes, base_href: str, session_id: str, device_ip: str, port: int) -> bytes:
+    """Sanifica HTML per architettura LIVE:
+    - Rimuove il `__ARGUS_PROXY__` marker iniettato dal connector (srcDoc-era)
+    - Rimuove il Click/Submit/Location interceptor del connector (sovrascrive window.location)
+    - Riscrive URL assoluti verso il device (https://{ip}:{port}/...) → path LIVE proxato
+    - Inserisce <base href=...> nel <head> per auto-proxy asset relativi
+    - Aggiunge interceptor MINIMAL (solo title propagation)
+    """
+    try:
+        html = body.decode("utf-8", "replace")
+    except Exception:
+        return body
+
+    # 1. Strip marker srcDoc-only
+    html = html.replace("__ARGUS_PROXY__", "")
+
+    # 2. Strip connector interceptor (firma: 'argus-proxy-navigate')
+    html = re.sub(
+        r"<script\b[^>]*>(?:(?!</script>).)*?argus-proxy-navigate(?:(?!</script>).)*?</script>",
+        "",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # 3. URL rewriting full: https://{device_ip}(:port)?/... → path LIVE proxato
+    html = _rewrite_absolute_urls(html, session_id, device_ip)
+
+    # 3b. Root-path rewriting: href="/css/..." → href="/api/web-proxy/live/.../css/..."
+    # (necessario perche' <base> NON risolve path assoluti root nel browser)
+    html = _rewrite_root_paths(html, session_id, device_ip, port)
+
+    # 4. Rimuovi <base> originali del device (conflitto con il nostro)
+    html = re.sub(r"<base\b[^>]*>", "", html, flags=re.IGNORECASE)
+    base_tag = f'<base href="{base_href}">'
+
+    # 5. Inject <base> nel <head>
+    if re.search(r"<head[^>]*>", html, re.IGNORECASE):
+        html = re.sub(r"(<head[^>]*>)", r"\1" + base_tag, html, count=1, flags=re.IGNORECASE)
+    elif re.search(r"<html[^>]*>", html, re.IGNORECASE):
+        html = re.sub(r"(<html[^>]*>)", r"\1<head>" + base_tag + "</head>", html, count=1, flags=re.IGNORECASE)
+    else:
+        html = base_tag + html
+
+    # 6. Interceptor MINIMAL (solo title)
+    interceptor = """
+<script>
+(function(){
+  try {
+    if (document.title) window.parent.postMessage({type:'argus-title', title: document.title}, '*');
+    var ob = new MutationObserver(function(){
+      window.parent.postMessage({type:'argus-title', title: document.title}, '*');
+    });
+    var t = document.querySelector('title');
+    if (t) ob.observe(t, {childList:true, subtree:true, characterData:true});
+  } catch(e){}
+})();
+</script>
+"""
+    if re.search(r"</body>", html, re.IGNORECASE):
+        html = re.sub(r"</body>", interceptor + "</body>", html, count=1, flags=re.IGNORECASE)
+    else:
+        html = html + interceptor
+
+    return html.encode("utf-8", "replace")
+
+
+# ============================================================================
+# v3.5.22+ — Routing intelligente: WireGuard direct vs Connector long-poll
+# ============================================================================
+# Quando un tunnel WireGuard e' attivo verso il device target, il backend Linux
+# (che ospita anche il server WG) puo' raggiungere DIRETTAMENTE il device via
+# routing kernel attraverso wg0. Risparmio: 2 hop e ~250ms di latenza media
+# (no Mongo queue, no long-poll connector). Quando il tunnel non e' disponibile
+# o fallisce, il sistema ricade automaticamente sul transport legacy via
+# connector long-poll (_proxy_via_connector).
+#
+# La logica e' totalmente trasparente all'iframe del browser: URL rewriting,
+# base href injection, header filtering, cookie handling restano invariati.
+# Cambia solo il "trasporto" interno backend->device.
+# ============================================================================
+
+import os as _os
+import time as _time
+
+# Cache 60s del flag "WG server pronto" (evita check env vars su ogni request)
+_WG_SERVER_READY_CACHE = {"value": None, "checked_at": 0.0}
+
+
+def _wg_server_ready() -> bool:
+    """True se il server WireGuard del Center e' configurato (env vars presenti).
+    Cache 60s per evitare overhead. Senza queste env vars il backend non ha rotte
+    verso le subnet dei clienti tramite WG, quindi il transport diretto e' inutile."""
+    now = _time.time()
+    if _WG_SERVER_READY_CACHE["value"] is not None and (now - _WG_SERVER_READY_CACHE["checked_at"]) < 60.0:
+        return _WG_SERVER_READY_CACHE["value"]
+    ready = bool(
+        _os.environ.get("WG_SERVER_PUBKEY")
+        and _os.environ.get("WG_SERVER_ENDPOINT")
+    )
+    _WG_SERVER_READY_CACHE["value"] = ready
+    _WG_SERVER_READY_CACHE["checked_at"] = now
+    return ready
+
+
+async def _wg_session_active_for_device(client_id: str, device_ip: str) -> bool:
+    """True se esiste una sessione WireGuard ATTIVA (non scaduta) verso il
+    device target per questo cliente. Premessa per usare _proxy_via_wireguard.
+
+    Nota: la sessione e' creata da POST /api/admin/wireguard/session/start (vedi
+    routes/wireguard.py); il connector la attiva via long-poll su /api/connector/
+    wireguard/session ed alza il tunnel kernel. Questo helper si limita a
+    interrogare il DB, non verifica la salute del kernel route (gia' garantita
+    dal lifecycle WG)."""
+    if not _wg_server_ready():
+        return False
+    now = datetime.now(timezone.utc)
+    doc = await db.wireguard_sessions.find_one(
+        {
+            "client_id": client_id,
+            "target_device_ip": device_ip,
+            "status": "active",
+            "expires_at": {"$gt": now},
+        },
+        {"_id": 0, "session_id": 1},
+    )
+    return doc is not None
+
+
+async def _proxy_via_wireguard(
+    device_ip: str,
+    port: int,
+    scheme: str,
+    path: str,
+    method: str,
+    body_bytes: bytes,
+    req_headers: dict,
+) -> tuple[int, str, bytes, dict]:
+    """[FAST TRANSPORT] Proxy diretto verso il device tramite tunnel WireGuard.
+
+    Il backend Linux ha gia' il route kernel verso la subnet del cliente via
+    interfaccia wg0 (configurato da setup-wireguard-server.sh). Una semplice
+    httpx.request() viene quindi instradata trasparentemente attraverso il
+    tunnel verso il device finale. Latenza tipica: 30-80ms (vs 300-800ms del
+    transport via connector long-poll).
+
+    Solleva httpx.HTTPError / httpx.RequestError in caso di errore — il caller
+    (live_proxy) cattura e fa fallback automatico al transport via connector.
+
+    Restituisce (status_code, content_type, body_bytes, resp_headers) con la
+    stessa shape di _proxy_via_connector, mantenendo trasparenza al chiamante.
+    """
+    import httpx
+
+    url = f"{scheme}://{device_ip}:{port}{path}"
+    timeout = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
+
+    # follow_redirects=False: i redirect vengono passati al browser via Location
+    # rewriting (gia' gestito da live_proxy chiamante), come nel flusso connector.
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=timeout,
+        follow_redirects=False,
+        http2=False,  # alcuni device legacy fallano con HTTP/2 nego
+    ) as client:
+        resp = await client.request(
+            method,
+            url,
+            headers=req_headers or {},
+            content=body_bytes if body_bytes else None,
+        )
+
+    content_type = resp.headers.get("content-type") or "application/octet-stream"
+    # httpx Headers e' case-insensitive multi-dict. Convertilo in dict semplice
+    # mantenendo i casing originali (importante per Set-Cookie, WWW-Authenticate).
+    resp_headers: dict = {}
+    for hk, hv in resp.headers.items():
+        # Per multi-value (es. Set-Cookie multiplo) httpx fa join con ", " — ok
+        # per il caller che fa pass-through.
+        resp_headers[hk] = hv
+
+    return resp.status_code, content_type, resp.content, resp_headers
+
+
+async def _proxy_via_connector(
+    client_id: str,
+    device_ip: str,
+    port: int,
+    scheme: str,
+    path: str,
+    method: str,
+    session_id: str,
+    body_bytes: bytes,
+    req_headers: dict,
+) -> tuple[int, str, bytes, dict]:
+    """Crea request per connector, long-poll response, restituisce (status_code, content_type, body_bytes, resp_headers).
+
+    [LEGACY TRANSPORT] Usato come fallback quando il tunnel WireGuard non e' disponibile
+    per il device target. Path: backend -> Mongo queue -> connector long-poll -> device.
+    Latenza tipica 300-800ms. Da v3.5.22 il transport preferito e' _proxy_via_wireguard
+    (vedi sotto), che bypassa il connector quando un tunnel WG e' attivo per il device."""
+    jar_doc = await db.web_proxy_sessions.find_one(
+        {"session_id": session_id, "client_id": client_id, "device_ip": device_ip},
+        {"_id": 0, "cookies": 1},
+    )
+    session_cookies = (jar_doc or {}).get("cookies") or {}
+
+    req_id = str(uuid.uuid4())
+    req_body_encoding = "text"
+    req_body_payload = ""
+    if body_bytes:
+        try:
+            req_body_payload = body_bytes.decode("utf-8")
+            req_body_encoding = "text"
+        except UnicodeDecodeError:
+            req_body_payload = base64.b64encode(body_bytes).decode("ascii")
+            req_body_encoding = "base64"
+
+    await db.web_proxy_requests.insert_one({
+        "request_id": req_id,
+        "session_id": session_id,
+        "client_id": client_id,
+        "device_ip": device_ip,
+        "port": port,
+        "scheme": scheme or "",
+        "path": path,
+        "method": method,
+        "request_body": req_body_payload,
+        "request_body_encoding": req_body_encoding,
+        "request_headers": req_headers,
+        "session_cookies": session_cookies,
+        "status": "pending",
+        "requested_by": "live_proxy",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "response": None,
+    })
+    # Trigger connector waiter
+    from routes.web_proxy import _request_events
+    ev_req = _request_events.get(client_id)
+    if ev_req is not None:
+        ev_req.set()
+
+    # Long-poll response
+    ev = _get_response_event(req_id)
+    try:
+        await asyncio.wait_for(ev.wait(), timeout=LONG_POLL_SEC)
+    except asyncio.TimeoutError:
+        pass
+
+    doc = await db.web_proxy_requests.find_one({"request_id": req_id}, {"_id": 0})
+    _response_events.pop(req_id, None)
+    if not doc:
+        raise HTTPException(status_code=504, detail="Request lost")
+
+    if doc.get("status") != "completed":
+        raise HTTPException(status_code=504, detail="Connector timeout")
+
+    resp = doc.get("response") or {}
+    status_code = int(resp.get("status_code") or 200)
+    content_type = resp.get("content_type") or "application/octet-stream"
+    resp_headers = resp.get("response_headers") or {}
+
+    if resp.get("is_binary") and resp.get("body_b64"):
+        body = base64.b64decode(resp["body_b64"])
+    elif resp.get("body"):
+        body = resp["body"].encode("utf-8", "replace")
+    elif resp.get("body_b64"):
+        body = base64.b64decode(resp["body_b64"])
+    else:
+        body = b""
+
+    return status_code, content_type, body, resp_headers
+
+
+@router.api_route(
+    "/web-proxy/live/{session_id}/{device_ip}/{port}",
+    methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+)
+@router.api_route(
+    "/web-proxy/live/{session_id}/{device_ip}/{port}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+)
+async def live_proxy(
+    session_id: str,
+    device_ip: str,
+    port: int,
+    request: Request,
+    path: str = "",
+):
+    """Catch-all endpoint per Web Console LIVE. Auth via session_id (capability token)."""
+    if request.method not in VALID_METHODS:
+        raise HTTPException(status_code=405, detail="Method not allowed")
+
+    # Valida session token (no Bearer auth, capability-based)
+    tok = await _validate_session_token(session_id, device_ip, port)
+    client_id = tok["client_id"]
+
+    # Costruisci path completo. Stripping del cache-buster `_t=<ts>` del frontend
+    # che serve solo al browser per forzare no-cache, e NON deve arrivare al device
+    # (alcuni switch legacy come HP 5130 sono paranoici sui query param sconosciuti).
+    full_path = "/" + path
+    qs = request.url.query
+    if qs:
+        # Rimuove SOLO _t se presente; preserva tutti gli altri parametri
+        parts = [p for p in qs.split("&") if p and not p.startswith("_t=")]
+        filtered_qs = "&".join(parts)
+        if filtered_qs:
+            full_path = f"{full_path}?{filtered_qs}"
+
+    scheme = "https" if port in (443, 8443, 4443) else "http"
+
+    body_bytes = await request.body()
+    # Header da NON inoltrare al device:
+    # - host/connection/content-length/accept-encoding: ricostruiti dal connector
+    # - origin/referer: contengono argus.86bit.it, confonderebbero il device
+    # - sec-fetch-*: meta browser moderni, rumore
+    # NON droppiamo piu' 'authorization': il browser puo' rispondere a HTTP Basic/Digest
+    # challenge del device, le credenziali DEVONO raggiungerlo. Se rimangono, fine del
+    # prompt login ricorsivo e del "404 con body vuoto".
+    # NON droppiamo piu' 'cookie': ma filtriamo i cookie di ARGUS (vedi sotto).
+    dropped_headers = {
+        "host", "connection", "content-length", "accept-encoding",
+        "origin", "referer", "sec-fetch-site",
+        "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user",
+    }
+    # Cookie ARGUS da rimuovere (non devono mai raggiungere il device)
+    ARGUS_COOKIE_NAMES = {"jwt_token", "refresh_token", "session", "session_id", "XSRF-TOKEN", "csrftoken"}
+
+    req_headers = {}
+    for k, v in request.headers.items():
+        kl = k.lower()
+        if kl in dropped_headers:
+            continue
+        if kl == "cookie":
+            # Parse cookie header e filtra quelli di ARGUS
+            parts = [c.strip() for c in v.split(";") if c.strip()]
+            kept = []
+            for part in parts:
+                name = part.split("=", 1)[0].strip()
+                if name in ARGUS_COOKIE_NAMES:
+                    continue
+                kept.append(part)
+            if kept:
+                req_headers[k] = "; ".join(kept)
+            continue
+        req_headers[k] = v
+
+    audit.info(
+        f"[AUDIT] web_console_live | user={tok.get('user_email')} | "
+        f"{request.method} {device_ip}:{port}{full_path} | session={session_id}"
+    )
+
+    # === Routing intelligente: WireGuard direct se disponibile, altrimenti long-poll ===
+    # Il transport WG e' ~10x piu' veloce (no Mongo queue, no connector hop) ma
+    # richiede: (1) server WG configurato sul Center, (2) sessione WG attiva per
+    # il device target. Se una di queste non e' soddisfatta, fallback automatico
+    # al transport legacy via connector. Se WG fallisce a runtime (es. tunnel
+    # appena scaduto), fallback automatico — zero rottura per il browser.
+    transport_used = "connector"
+    status_code = content_type = body = resp_headers = None
+    if await _wg_session_active_for_device(client_id, device_ip):
+        try:
+            status_code, content_type, body, resp_headers = await _proxy_via_wireguard(
+                device_ip, port, scheme, full_path, request.method,
+                body_bytes, req_headers,
+            )
+            transport_used = "wireguard"
+        except Exception as e:
+            logger.warning(
+                f"WG transport failed for {device_ip}:{port}{full_path}: "
+                f"{type(e).__name__}: {e} — fallback to connector long-poll"
+            )
+            status_code = content_type = body = resp_headers = None  # forza fallback
+
+    if status_code is None:
+        status_code, content_type, body, resp_headers = await _proxy_via_connector(
+            client_id, device_ip, port, scheme, full_path, request.method,
+            session_id, body_bytes, req_headers,
+        )
+
+    # Update history: incrementa requests_count e traccia ultimo path visitato
+    try:
+        is_nav = request.method == "GET" and (
+            not content_type or "text/html" in (content_type or "").lower()
+        )
+        update_fields = {"last_activity_at": datetime.now(timezone.utc)}
+        if is_nav:
+            update_fields["last_path"] = full_path
+        await db.web_console_history.update_many(
+            {"session_id": session_id},
+            {"$inc": {"requests_count": 1}, "$set": update_fields}
+        )
+    except Exception:
+        pass
+
+    # === FALLBACK: device risponde con body vuoto o troppo piccolo ===
+    # Se il device risponde 4xx/5xx con body <50 bytes, l'iframe apparirebbe bianco.
+    # Mostriamo invece un placeholder HTML informativo.
+    # ECCEZIONE: status 401/407 con header WWW-Authenticate/Proxy-Authenticate
+    # DEVE arrivare al browser cosi com'e', altrimenti non parte il prompt login Basic/Digest.
+    has_auth_challenge = any(
+        k.lower() in ("www-authenticate", "proxy-authenticate")
+        for k in (resp_headers or {})
+    )
+    is_doc_request = request.method == "GET" and (
+        "text/html" in (content_type or "").lower()
+        or not content_type
+        or path in ("", "/")
+    )
+    if (
+        is_doc_request
+        and (not body or len(body) < 50)
+        and status_code >= 400
+        and not has_auth_challenge
+    ):
+        placeholder = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>Risposta vuota dal device {device_ip}</title>'
+            '<style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0d0d12;color:#c9c9d1;margin:0;padding:0;}'
+            '.wrap{max-width:640px;margin:80px auto;padding:32px;background:#12121a;border:1px solid #1e1e2e;border-radius:12px;}'
+            'h1{color:#fbbf24;margin:0 0 12px 0;font-size:18px;}.detail{color:#8a8a9a;font-size:13px;line-height:1.6;margin:14px 0;}'
+            '.target{background:#0f0f17;padding:10px 14px;border-radius:8px;font-family:monospace;font-size:12px;color:#a78bfa;border:1px solid #1e1e2e;}'
+            '.hint{background:#1a1a2e;padding:12px 14px;border-left:3px solid #6366f1;margin-top:18px;font-size:12px;line-height:1.6;color:#b0b0c0;border-radius:0 6px 6px 0;}'
+            '</style></head><body><div class="wrap">'
+            f'<h1>⚠️ Device ha risposto HTTP {status_code} con body vuoto</h1>'
+            f'<div class="target">{request.method} {device_ip}:{port}{full_path}</div>'
+            f'<p class="detail">Il device <b>{device_ip}</b> ha risposto con HTTP <b>{status_code}</b> e nessun contenuto. '
+            'Questa e\' una risposta del device stesso, non del proxy ARGUS.</p>'
+            '<div class="hint"><b>Cosa fare:</b><br>'
+            '&bull; Se il path e\' <code>/frame/login.html</code> o simile: il device richiede un cookie di sessione '
+            'non ancora stabilito. Torna alla home (icona &#127968; in alto) e rifai.<br>'
+            '&bull; Il device potrebbe richiedere autenticazione basic/digest non gestita dal proxy.<br>'
+            '&bull; Prova a usare <b>"Apri in nuova tab"</b> per fare un test diretto del LIVE proxy.'
+            '</div></div></body></html>'
+        )
+        body = placeholder.encode("utf-8")
+        content_type = "text/html; charset=utf-8"
+        status_code = 200
+
+    # === CONTENT-TYPE SNIFFING (fix "icona file rotto") ===
+    # Alcuni device (iLO vecchi, HP 5130, firewall legacy) rispondono con Content-Type
+    # errato (application/octet-stream, application/x-binary, vuoto) anche se il body
+    # e' HTML. Il browser vede MIME non renderizzabile -> iframe mostra placeholder
+    # "file rotto". Sniffiamo i primi 512 byte per determinare il MIME reale.
+    ct_lower = (content_type or "").lower()
+    needs_sniff = (
+        not content_type
+        or "octet-stream" in ct_lower
+        or "application/x-binary" in ct_lower
+        or "application/unknown" in ct_lower
+        or ct_lower.strip() == "application/force-download"
+    )
+    if needs_sniff and body:
+        sniff = body[:512].lstrip()
+        sniff_str = sniff[:200].decode("utf-8", "replace").lower()
+        if sniff.startswith(b"<!doctype") or sniff.startswith(b"<html") or "<html" in sniff_str or "<!doctype html" in sniff_str:
+            content_type = "text/html; charset=utf-8"
+        elif sniff.startswith(b"{") or sniff.startswith(b"["):
+            content_type = "application/json; charset=utf-8"
+        elif sniff.startswith(b"<?xml") or sniff.startswith(b"<svg"):
+            content_type = "application/xml; charset=utf-8" if sniff.startswith(b"<?xml") else "image/svg+xml"
+
+    # Inject <base> tag + sanitize + URL rewrite solo se HTML
+    ct_lower = (content_type or "").lower()
+    if ct_lower and ("text/html" in ct_lower or "xhtml" in ct_lower):
+        base_href = _build_base_href(session_id, device_ip, port)
+        body = _inject_html_support(body, base_href, session_id, device_ip, port)
+    elif ct_lower and ("javascript" in ct_lower or "text/css" in ct_lower or "application/json" in ct_lower):
+        # Riscrivi anche dentro JS/CSS/JSON per catturare XHR endpoint assoluti
+        try:
+            text = body.decode("utf-8", "replace")
+            rewritten = _rewrite_absolute_urls(text, session_id, device_ip)
+            if rewritten != text:
+                body = rewritten.encode("utf-8", "replace")
+        except Exception:
+            pass
+
+    # === STRIP HEADER CHE FORZANO DOWNLOAD O BLOCCANO IFRAME ===
+    # Content-Disposition: attachment -> browser scarica invece di renderizzare
+    # X-Frame-Options / Content-Security-Policy frame-ancestors -> blocco iframe
+    # Content-Encoding -> body gia' decompresso dal connector, non re-indicare gzip
+    drop_resp_headers = {
+        "content-disposition", "x-frame-options", "content-security-policy",
+        "content-encoding", "transfer-encoding", "content-length",
+        "strict-transport-security",
+    }
+
+    # Headers da propagare al browser (bianco-listati + debug)
+    pass_headers = {}
+    # CRITICAL: NON propaghiamo ETag/Last-Modified del device, altrimenti il browser
+    # ricade sul If-None-Match della cache precedente (es. pre-fix X-Frame-Options).
+    # La Web Console e' sempre live — no cache, sempre rete.
+    # DOBBIAMO pero' propagare:
+    # - www-authenticate: altrimenti il browser non mostra il prompt Basic/Digest login
+    # - set-cookie: altrimenti lo stato di sessione del device si perde fra richieste
+    safe_to_pass = {"vary", "www-authenticate", "proxy-authenticate", "set-cookie"}
+    for k, v in (resp_headers or {}).items():
+        kl = k.lower()
+        if kl in drop_resp_headers:
+            continue
+        if kl == "location":
+            # Rewrite Location header per redirect HTTP 3xx verso URL assoluti del device
+            new_loc = _rewrite_absolute_urls(str(v), session_id, device_ip)
+            pass_headers["Location"] = new_loc
+            continue
+        if kl in safe_to_pass:
+            pass_headers[k] = v
+    # Force no-cache: ogni load ri-fetcha dal device via connector (stato fresco)
+    pass_headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    pass_headers["Pragma"] = "no-cache"
+    pass_headers["Expires"] = "0"
+    pass_headers["X-Argus-Proxy"] = "v3"
+    pass_headers["X-Argus-Transport"] = transport_used  # v3.5.22+ : 'wireguard' | 'connector'
+    pass_headers["X-Argus-Sniff"] = "1" if needs_sniff else "0"
+    pass_headers["X-Argus-CT-Orig"] = (resp_headers or {}).get("Content-Type", (resp_headers or {}).get("content-type", ""))[:120]
+
+    return Response(
+        content=body,
+        status_code=status_code,
+        media_type=content_type,
+        headers=pass_headers,
+    )

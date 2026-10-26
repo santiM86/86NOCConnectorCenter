@@ -43,3 +43,27 @@ async def update_redfish_settings(poll_interval: int = 5, current_user: dict = D
         upsert=True
     )
     return {"message": "Redfish settings updated"}
+
+
+
+# ==================== MONITORING STATE CONFIG (Soft/Hard, stile Nagios) ====================
+# max_check_attempts = quanti poll consecutivi falliti servono per confermare
+# lo stato OFFLINE (HARD). Sotto la soglia il device e' in stato SOFT (in
+# verifica) e NON genera alert: e' il modello di Nagios per evitare falsi
+# allarmi su packet-loss transitorio.
+@router.get("/settings/monitoring")
+async def get_monitoring_settings(current_user: dict = Depends(get_current_user)):
+    setting = await db.settings.find_one({"key": "max_check_attempts"}, {"_id": 0})
+    val = int(setting.get("value")) if setting and setting.get("value") else 5
+    return {"max_check_attempts": val, "default": 5, "min": 1, "max": 20}
+
+
+@router.post("/settings/monitoring")
+async def update_monitoring_settings(max_check_attempts: int, current_user: dict = Depends(get_current_user)):
+    n = max(1, min(20, int(max_check_attempts)))
+    await db.settings.update_one(
+        {"key": "max_check_attempts"},
+        {"$set": {"key": "max_check_attempts", "value": n}},
+        upsert=True,
+    )
+    return {"message": "Soglia tentativi aggiornata", "max_check_attempts": n}

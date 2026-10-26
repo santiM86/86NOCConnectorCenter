@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from database import db
 from deps import get_current_user, validate_api_key
+from alert_filter import invalidate_maintenance_cache
 
 logger = logging.getLogger("advanced_features")
 router = APIRouter(prefix="/api", tags=["advanced"])
