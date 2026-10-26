@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import axios from "axios";
 import { toast } from "sonner";
 import PortFlapHistory from "./PortFlapHistory";
+import PortAttachedTree from "./PortAttachedTree";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -232,7 +233,11 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                     <SourceBadge source={n.match_source} />
                   </div>
                   <div className="font-semibold text-sm truncate">
-                    {(p.uplink_to?.peer_ip || n.remote_ip) ? (
+                    {p.vm_host?.host_name ? (
+                      p.vm_host.host_ip
+                        ? <Link to={`/devices/${encodeURIComponent(p.vm_host.host_ip)}`} className="hover:underline" style={{ color: remote.color }}>{p.vm_host.host_name}</Link>
+                        : <span style={{ color: remote.color }}>{p.vm_host.host_name}</span>
+                    ) : (p.uplink_to?.peer_ip || n.remote_ip) ? (
                       <Link to={`/devices/${encodeURIComponent(p.uplink_to?.peer_ip || n.remote_ip)}`} className="hover:underline" style={{ color: remote.color }}>
                         {p.uplink_to?.peer_name || n.remote_device_name || n.remote_sys_name || n.remote_ip}
                       </Link>
@@ -241,10 +246,13 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                     )}
                   </div>
                   <div className="text-[10px] font-mono text-[var(--text-muted)] break-all">
+                    {p.vm_host?.host_name && <span>{p.vm_host.host_ip} · host {p.vm_host.kind}</span>}
+                    {!p.vm_host?.host_name && <>
                     {(p.uplink_to?.remote_port || n.remote_port_desc) && <span>porta {p.uplink_to?.remote_port || n.remote_port_desc} </span>}
                     {n.remote_port_id && !n.remote_port_desc && !p.uplink_to?.remote_port && <span>{n.remote_port_id} </span>}
                     {(p.uplink_to?.peer_ip || n.remote_ip) && <span>· {p.uplink_to?.peer_ip || n.remote_ip} </span>}
                     {!(p.uplink_to?.peer_ip || n.remote_ip) && n.remote_chassis_id && <span>· {n.remote_chassis_id}</span>}
+                    </>}
                   </div>
                   {n.remote_sys_desc && (
                     <div className="text-[9px] text-[var(--text-muted)] italic truncate mt-0.5">{n.remote_sys_desc}</div>
@@ -266,6 +274,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                 </div>
               </div>
             )}
+            {isUp && <PortAttachedTree p={p} />}
           </div>
         </div>
 

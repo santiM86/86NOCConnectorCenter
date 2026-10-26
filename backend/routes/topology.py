@@ -559,7 +559,7 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
                     _nm, _src = (f"{_ven} device" if _ven else "Sconosciuto"), ("mac_oui" if _ven else "mac_unknown")
                 attached.append({"mac": _mac, "ip": _ip, "name": _nm, "source": _src, "vendor": _ven or "",
                                  "device_type": _md.get("device_type") or "", "is_managed": bool(_md) or bool(e.get("is_managed")),
-                                 "last_seen_at": e.get("last_seen_at")})
+                                 "last_seen_at": e.get("last_seen_at"), "first_seen_at": e.get("first_seen_at")})
             attached.sort(key=lambda a: (not a["is_managed"], a["source"] not in ("datto_rmm", "mac_manual"), a["name"].lower()))
         from vm_port import build_vm_host
         vm_host = build_vm_host(attached, _nic, md_by_ip) if attached else None
@@ -700,6 +700,9 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
                     o["habit"]["schedule"] = schedule_summary(m)
             else:
                 o["habit"] = None
+            if m and m.get("port_devices"):
+                o["port_devices"] = [{"mac": d.get("mac"), "first_seen": d.get("first_seen"), "last_seen": d.get("last_seen")}
+                                     for d in m["port_devices"]]
     except Exception as _me:  # noqa: BLE001
         logger.warning("port memory enrich %s: %s", device_ip, _me)
 
