@@ -887,6 +887,15 @@ async def _match_with_center(client_id: str, datto_devices: list[dict]) -> int:
         await db.managed_devices.bulk_write(md_ops, ordered=False)
     if ep_ops:
         await db.discovered_endpoints.bulk_write(ep_ops, ordered=False)
+    # Endpoint con datto_name STANTIO (device non piu' nell'ultima sync Datto) → tolto, cosi' la UI
+    # non dice "Identificato via Datto RMM" per un device che Datto non ha piu'.
+    try:
+        await db.discovered_endpoints.update_many(
+            {"client_id": client_id, "datto_name": {"$nin": [None, ""]},
+             "mac": {"$nin": [k[2] for k in matched_eps if k[2]]}},
+            {"$unset": {"datto_name": "", "datto_match": "", "datto_matched_at": ""}})
+    except Exception as e:  # noqa: BLE001
+        logger.debug("datto stale endpoint cleanup %s: %s", client_id, e)
 
     # Pulisci link Datto ORFANI: managed devices che prima erano agganciati ma
     # ora non matchano piu' nessun device Datto (evita link stantii/errati).
@@ -1910,23 +1919,44 @@ async def datto_device_info(
     base = {"client_id": client_id} if client_id else {}
     if not client_id and not mac and not name:
         raise HTTPException(400, "Senza cliente serve il MAC o il nome")
-    proj = {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1, "client_id": 1}
+    proj = {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1, "client_id": 1, "uid": 1}
+
+    def _pick(hits: list) -> Optional[dict]:
+        # stesso device Datto (uid) eventualmente censito sotto piu' clienti → ok; uid diversi → ambiguo
+        if hits and len({h.get("uid") or h.get("name") for h in hits}) == 1:
+            return hits[0]
+        return None
+
+    async def _find(q: dict, allow_global: bool = True) -> Optional[dict]:
+        hits = await db.datto_devices.find({**base, **q}, proj).to_list(20)
+        if not hits and base and allow_global:  # sito Datto collegato a un altro cliente: riprova globale (solo se univoco)
+            hits = await db.datto_devices.find(q, proj).to_list(20)
+        return _pick(hits)
+
     d = None
     m = _norm_mac(mac) if mac else ""
+    nm = (name or "").strip()
     if m:
-        hits = await db.datto_devices.find({**base, "$or": [{"mac": m}, {"mac_list": m}]}, proj).to_list(20)
-        if len({h.get("client_id") for h in hits}) == 1:
-            d = hits[0]
-    if d is None and ip and client_id:
-        d = await db.datto_devices.find_one({**base, "$or": [{"ip": ip}, {"ip_list": ip}]}, proj)
-    if d is None and name and name.strip():
-        # neighbor 'Identificato via Datto RMM' per nome (es. VM il cui MAC virtuale non e' nell'elenco Datto)
-        rx = {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"}
-        hits = await db.datto_devices.find({**base, "name": rx}, proj).to_list(20)
-        if len({h.get("client_id") for h in hits}) == 1:
-            d = hits[0]
+        d = await _find({"$or": [{"mac": m}, {"mac_list": m}]})
+    if d is None and ip and base:
+        d = await _find({"$or": [{"ip": ip}, {"ip_list": ip}]}, allow_global=False)
+    if d is None and nm:
+        short = nm.split(".")[0]
+        rx = {"$regex": f"^{re.escape(short)}(\\..*)?$", "$options": "i"}
+        d = await _find({"$or": [{"name": rx}, {"hostname_short": rx}, {"fqdn": rx}]}, allow_global=False)
+    if d is None and m:
+        # nome Datto noto dallo scanner (endpoint arricchito alla sync) → cerca per quel nome
+        ep = await db.discovered_endpoints.find_one({**base, "mac": m, "datto_name": {"$nin": [None, ""]}}, {"_id": 0, "datto_name": 1})
+        if ep and ep["datto_name"].strip().lower() != nm.lower():
+            short = ep["datto_name"].strip().split(".")[0]
+            rx = {"$regex": f"^{re.escape(short)}(\\..*)?$", "$options": "i"}
+            d = await _find({"$or": [{"name": rx}, {"hostname_short": rx}, {"fqdn": rx}]}, allow_global=False)
     if not d:
-        return {"found": False}
+        last = await db.datto_devices.find_one(base or {}, {"_id": 0, "fetched_at": 1}, sort=[("fetched_at", -1)])
+        total = await db.datto_devices.count_documents(base) if base else None
+        return {"found": False, "searched": {"mac": m or None, "ip": ip or None, "name": nm or None},
+                "client_datto_devices": total, "last_sync": (last or {}).get("fetched_at"),
+                "reason": "no_datto_sync" if base and not total else "not_in_last_sync"}
     try:
         blob = json.loads(security_manager.decrypt_credential(d.get("raw_enc") or "")) if d.get("raw_enc") else {}
     except Exception:

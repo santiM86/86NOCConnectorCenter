@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+import { toast } from "sonner";
 import { CaretDown, CaretRight, WindowsLogo } from "@phosphor-icons/react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -19,7 +20,20 @@ const Item = ({ label, value, tid, warn }) => (
 export default function DattoInfoPanel({ clientId, ip, mac, name, defaultOpen = false, testIdSuffix = "" }) {
   const [open, setOpen] = useState(defaultOpen);
   const [d, setD] = useState(null);
+  const [syncing, setSyncing] = useState(false);
   const sfx = testIdSuffix || ip || mac;
+  const resync = async () => {
+    setSyncing(true);
+    try {
+      await axios.post(`${API}/admin/datto/sync-client/${clientId}`);
+      toast.success("Sync Datto completata");
+      setD(null);
+    } catch (e) {
+      toast.error(e.response?.data?.detail?.toString?.() || "Sync Datto non riuscita");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   useEffect(() => {
     if (!open || d || (!ip && !mac && !name)) return;
@@ -42,7 +56,24 @@ export default function DattoInfoPanel({ clientId, ip, mac, name, defaultOpen = 
           {!d ? (
             <p className="text-[10px] text-[var(--text-muted)]">Caricamento…</p>
           ) : !d.found ? (
-            <p className="text-[10px] text-[var(--text-muted)]" data-testid={`datto-info-notfound-${sfx}`}>Nessun dato Datto trovato per questo MAC/IP/nome: verifica che il dispositivo sia nel sito Datto collegato al cliente e che la sync sia aggiornata.</p>
+            <div className="text-[10px] text-[var(--text-muted)] space-y-0.5" data-testid={`datto-info-notfound-${sfx}`}>
+              <p className="text-amber-200/90">
+                {d.reason === "no_datto_sync"
+                  ? "Nessuna sincronizzazione Datto per questo cliente: collega il sito Datto e avvia la sync."
+                  : "Questo dispositivo non è presente nell'ultima sincronizzazione Datto del cliente (rinominato, rimosso dal sito Datto o agent Datto non installato)."}
+              </p>
+              <p className="font-mono text-[9px]">
+                Cercato: {[d.searched?.name && `nome ${d.searched.name}`, d.searched?.mac && `MAC ${d.searched.mac.toUpperCase()}`, d.searched?.ip && `IP ${d.searched.ip}`].filter(Boolean).join(" · ") || "—"}
+              </p>
+              {d.last_sync && <p className="text-[9px]">Ultima sync Datto: {fmt(d.last_sync)}{d.client_datto_devices != null ? ` · ${d.client_datto_devices} dispositivi del cliente` : ""}</p>}
+              {clientId && (
+                <button onClick={resync} disabled={syncing}
+                  className="mt-1 px-2 py-0.5 rounded border border-fuchsia-500/40 text-[9px] text-fuchsia-200 hover:bg-fuchsia-500/10 transition-colors disabled:opacity-50"
+                  data-testid={`datto-info-resync-${sfx}`}>
+                  {syncing ? "Sincronizzazione…" : "Risincronizza Datto per questo cliente"}
+                </button>
+              )}
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
               <div className="col-span-2"><Item label="Sistema operativo" value={[d.operating_system, d.os_version && `(${d.os_version})`, d.os_architecture].filter(Boolean).join(" ")} tid={`datto-os-${sfx}`} /></div>
