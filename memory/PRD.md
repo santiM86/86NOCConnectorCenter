@@ -9943,3 +9943,7 @@ Health null è normale HPE (usa i sottosistemi).
 
 ## 2026-06 Porta multi-dispositivo: "Connesso a N dispositivi"
 - Porte UP con >=2 dispositivi (non uplink LLDP): un unico blocco PortMultiDevices (dettaglio, Vista Cavo), cella tabella "N dispositivi", tooltip tile, niente singolo "Connesso a"/utente singolo. Backend: prev_device soppresso se ancora collegato, changed_7d ricalcolato. iteration_165.
+
+## 2026-06 Datto device-info robusto
+- Resolver: MAC (anche globale se uid univoco) > IP (solo nel cliente) > nome/hostname_short/fqdn (solo nel cliente, mai globale: nomi tipo SRVDC si ripetono tra clienti) > nome Datto dello scanner. Not found ritorna reason (no_datto_sync/not_in_last_sync), searched, last_sync, client_datto_devices; UI mostra motivo + pulsante Risincronizza (POST /api/admin/datto/sync-client/{cid}).
+- Sync: datto_name stantio sugli endpoint rimosso se il device non e piu nella sync.
