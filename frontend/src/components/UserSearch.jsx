@@ -41,12 +41,13 @@ export default function UserSearch() {
 
   useEffect(() => {
     if (q.trim().length < 2) { setRes(null); return; }
+    let alive = true;
     const t = setTimeout(() => {
       setLoading(true);
       axios.get(`${API}/datto/user-search`, { params: { q: q.trim() } })
-        .then(({ data }) => setRes(data.results || [])).catch(() => setRes([])).finally(() => setLoading(false));
+        .then(({ data }) => alive && setRes(data.results || [])).catch(() => alive && setRes([])).finally(() => alive && setLoading(false));
     }, 350);
-    return () => clearTimeout(t);
+    return () => { alive = false; clearTimeout(t); };
   }, [q]);
 
   useEffect(() => {
@@ -71,6 +72,9 @@ export default function UserSearch() {
       </div>
       {open && q.trim().length >= 2 && (
         <div className="absolute right-0 mt-1.5 w-[420px] max-w-[92vw] max-h-[70vh] overflow-y-auto rounded-xl border border-[var(--bg-border)] bg-[var(--bg-app)] shadow-2xl z-50" data-testid="user-search-dropdown">
+          {loading && (
+            <div className="h-0.5 w-full bg-sky-500/20 overflow-hidden" data-testid="user-search-loading"><div className="h-full w-1/3 bg-sky-400 animate-pulse" /></div>
+          )}
           {loading && !res ? (
             <p className="px-3 py-3 text-[11px] text-[var(--text-muted)]">Ricerca…</p>
           ) : res && res.length === 0 ? (

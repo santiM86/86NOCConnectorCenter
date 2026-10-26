@@ -9947,3 +9947,8 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-06 Datto device-info robusto
 - Resolver: MAC (anche globale se uid univoco) > IP (solo nel cliente) > nome/hostname_short/fqdn (solo nel cliente, mai globale: nomi tipo SRVDC si ripetono tra clienti) > nome Datto dello scanner. Not found ritorna reason (no_datto_sync/not_in_last_sync), searched, last_sync, client_datto_devices; UI mostra motivo + pulsante Risincronizza (POST /api/admin/datto/sync-client/{cid}).
 - Sync: datto_name stantio sugli endpoint rimosso se il device non e piu nella sync.
+
+## 2026-06 MAC virtuali collegati + Cerca utente
+- datto_mac_links {client_id, mac, datto_uid, datto_name, source}: creati alla sync (endpoint trovato per IP/hostname) e al lookup device-info; usati in sync enrichment (mac_link), device-info (primo tentativo) e datto_users_for.
+- datto_devices.last_user (sync + backfill da blob cifrato). GET /api/datto/user-search?q= (solo clienti esistenti, MAC in tutti i formati) -> PC, IP, online, cliente, switch/porta.
+- UI: barra "Cerca utente" in alto (components/UserSearch.jsx in Layout), link a /switch-ports/<ip>?clientId&port&cable=1 che apre la Vista Cavo. iteration_166 (fix post-test: clienti orfani, formati MAC, race risposte).

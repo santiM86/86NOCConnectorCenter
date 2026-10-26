@@ -29,7 +29,11 @@ async def _backfill_last_user(limit: int = 3000) -> None:
 async def _locate(client_id: str, macs: set, ips: set) -> Optional[dict]:
     ors = []
     if macs:
-        ors.append({"mac": {"$in": list(macs)}})
+        variants = set()
+        for m in macs:
+            u = str(m).upper().replace("-", ":")
+            variants |= {u, u.lower(), u.replace(":", ""), u.replace(":", "").lower(), u.replace(":", "-"), u.replace(":", "-").lower()}
+        ors.append({"mac": {"$in": list(variants)}})
     if ips:
         ors.append({"ip": {"$in": list(ips)}})
     if not ors:
@@ -57,11 +61,14 @@ async def user_search(q: str, current_user: dict = Depends(get_current_user)):
         raise HTTPException(400, "Scrivi almeno 2 caratteri")
     await _backfill_last_user()
     rx = {"$regex": re.escape(q), "$options": "i"}
-    devs = await db.datto_devices.find({"last_user": rx}, {"_id": 0, "client_id": 1, "uid": 1, "name": 1, "ip": 1, "ip_list": 1, "mac": 1,
+    existing = [c["id"] async for c in db.clients.find({}, {"_id": 0, "id": 1})]
+    devs = await db.datto_devices.find({"last_user": rx, "client_id": {"$in": existing}}, {"_id": 0, "client_id": 1, "uid": 1, "name": 1, "ip": 1, "ip_list": 1, "mac": 1,
                                                           "mac_list": 1, "online": 1, "last_user": 1}).limit(50).to_list(50)
     client_names = {c["id"]: c.get("name") async for c in db.clients.find({"id": {"$in": list({d["client_id"] for d in devs})}}, {"_id": 0, "id": 1, "name": 1})}
     out = []
     for d in devs:
+        if d["client_id"] not in client_names:
+            continue  # device Datto di un cliente non piu' esistente
         macs = {m for m in (d.get("mac_list") or []) + [d.get("mac")] if m}
         async for lk in db.datto_mac_links.find({"client_id": d["client_id"], "datto_uid": d.get("uid")}, {"_id": 0, "mac": 1}):
             macs.add(lk["mac"])
