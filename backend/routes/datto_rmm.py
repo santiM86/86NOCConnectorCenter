@@ -1771,19 +1771,18 @@ async def datto_device_info(
     """Info 'Sistema e utente' di Datto RMM per un device (match MAC, poi IP). Solo campi non hardware."""
     if not ip and not mac:
         raise HTTPException(400, "Specificare ip o mac")
-    ors = []
-    if mac:
-        m = mac.upper().replace("-", ":")
-        ors += [{"mac": m}, {"mac_list": m}]
-    if ip:
-        ors += [{"ip": ip}, {"ip_list": ip}]
-    q = {"$or": ors}
-    if client_id:
-        q["client_id"] = client_id
-    elif not mac:
+    base = {"client_id": client_id} if client_id else {}
+    if not client_id and not mac:
         raise HTTPException(400, "Senza cliente serve il MAC")
-    d = await db.datto_devices.find_one(q,
-                                        {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1})
+    proj = {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1, "client_id": 1}
+    d = None
+    m = _norm_mac(mac) if mac else ""
+    if m:
+        hits = await db.datto_devices.find({**base, "$or": [{"mac": m}, {"mac_list": m}]}, proj).to_list(20)
+        if len({h.get("client_id") for h in hits}) == 1:
+            d = hits[0]
+    if d is None and ip:
+        d = await db.datto_devices.find_one({**base, "$or": [{"ip": ip}, {"ip_list": ip}]}, proj)
     if not d:
         return {"found": False}
     try:

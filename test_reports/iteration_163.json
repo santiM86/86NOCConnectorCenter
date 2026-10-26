@@ -1,0 +1,37 @@
+{
+  "summary": "Datto RMM 'Sistema e utente' feature tested end-to-end. Backend GET /api/datto/device-info: 11/11 pytest pass (client+ip, ip_list secondary, mac-only, lowercase/dash mac, mac_list secondary, 400 no params, 400 ip w/o client & mac, found:false unknown/wrong client, 401/403 unauth, switch-ports neighbor match_source=datto_rmm with seeded endpoint). Response has all 13 expected fields and no serial/bios/memory/disks/antivirus/raw_enc/uid/mac_list/ip_list. Frontend: DattoInfoPanel verified collapsed-by-default + toggle in SwitchPortsPage port detail (datto-*-port-3), in Vista Cavo modal (datto-*-cable-3), and open-by-default in DeviceInfoCard Identity (datto-*-card-10.10.1.10) on SRVDATI86B. Values: Windows Server 2019 Datacenter (1809) 64bit, SRVDATI86B\\Administrator, WORKGROUP, reboot 14/10/26, reboot required No, Online. Non-Datto device shows 'Dispositivo non presente in Datto RMM.'. No hardware words leaked in UI.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/datto/device-info", "issue": "Docstring says 'match MAC, poi IP' but a single find_one with $or [mac, mac_list, ip, ip_list] returns an arbitrary match - if mac and ip both given and the IP is reused by a different Datto device, the wrong device can be returned. Do two queries (MAC first, then IP)."},
+      {"endpoint": "GET /api/datto/device-info", "issue": "MAC-only lookup (no client_id) is not tenant-scoped; duplicate/virtual MACs exist across clients (e.g. 54:50:49:00:00:31 in 13 devices across 4 clients) -> returns arbitrary device of possibly another client. Frontend always passes clientId so impact is low; consider requiring client_id or returning found:false when MAC is ambiguous across clients."},
+      {"endpoint": "GET /api/datto/device-info", "issue": "MAC normalization only uppercases and replaces '-'; a bare MAC '00155D01790D' or Cisco dotted form returns found:false. Reuse existing _norm_mac() helper in the same file."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "DattoInfoPanel fetch", "issue": "Each panel open triggers the /api/datto/device-info request twice (likely React StrictMode double effect in dev, d still null). Harmless; could be guarded with an AbortController/ref.", "affected_selectors": ["[data-testid^='datto-info-']"]}
+    ],
+    "design_issues": [
+      {"screen": "DattoInfoPanel", "issues": ["Labels at 8px and values at 10px are very small/hard to read, especially in the narrow DeviceInfoCard Identity column where OS string is truncated ('...64...' - only tooltip shows full)", "In DeviceInfoCard the panel is shown (open, with API call) for every device even when not in Datto / client not linked to Datto, showing 'Dispositivo non presente in Datto RMM.' - consider hiding when found:false"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_datto_device_info_iter163.py", "/app/test_reports/pytest/pytest_iter163.xml"],
+  "action_items": [
+    "Optional: device-info lookup MAC-first then IP (two queries) to honor documented priority",
+    "Optional: use _norm_mac() for mac param; scope/disambiguate mac-only lookups across tenants",
+    "Optional: hide DattoInfoPanel in DeviceInfoCard when found:false; increase label font size"
+  ],
+  "critical_code_review_comments": [
+    "datto_device_info: $or mixes MAC and IP criteria in a single find_one -> no priority",
+    "PortCableView hides Datto panel when p.vm_host?.host_name present (intentional?) - SwitchPortsPage detail has no such guard",
+    "datto_rmm.py is ~1800 lines - should be split (config/sync/audit/device-info)"
+  ],
+  "updated_files": ["/app/backend/tests/test_datto_device_info_iter163.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Temporarily inserted discovered_endpoints {TEST_seed:true, mac 00:15:5d:01:79:0d, ip 10.10.1.10, switch_ip 10.10.41.222, port 3, datto_name SRVDATI86B, client da3d6e40...}; deleted after test (deleteMany TEST_seed:true -> 1).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Login: info@86bit.it + TOTP via pyotp (secret in /app/memory/test_credentials.md); in Playwright use press_sequentially for email after networkidle (fill sometimes not registered). Client page device card: set localStorage client-devices-vital-filter-v2='all' and client-devices-view='table', click tab-devices then device-info-10.10.1.10. Switch port Datto neighbor requires seeding a discovered_endpoints doc with datto_name on switch 10.10.41.222 port 3 (test_switch_ports_datto_neighbor will fail without seed)."
+}

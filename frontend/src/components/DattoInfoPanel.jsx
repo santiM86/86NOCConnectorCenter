@@ -11,8 +11,8 @@ const fmt = (iso) => {
 
 const Item = ({ label, value, tid, warn }) => (
   <div className="min-w-0">
-    <div className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">{label}</div>
-    <div className={`text-[10px] font-medium truncate ${warn ? "text-amber-300" : "text-neutral-100"}`} title={value || ""} data-testid={tid}>{value || "—"}</div>
+    <div className="text-[9px] uppercase tracking-wider text-[var(--text-muted)]">{label}</div>
+    <div className={`text-[11px] font-medium break-words ${warn ? "text-amber-300" : "text-neutral-100"}`} title={value || ""} data-testid={tid}>{value || "—"}</div>
   </div>
 );
 
@@ -23,11 +23,14 @@ export default function DattoInfoPanel({ clientId, ip, mac, defaultOpen = false,
 
   useEffect(() => {
     if (!open || d || (!ip && !mac)) return;
+    let alive = true;
     axios.get(`${API}/datto/device-info`, { params: { client_id: clientId || undefined, ip: ip || undefined, mac: mac || undefined } })
-      .then(({ data }) => setD(data)).catch(() => setD({ found: false }));
+      .then(({ data }) => alive && setD(data)).catch(() => alive && setD({ found: false }));
+    return () => { alive = false; };
   }, [open, d, clientId, ip, mac]);
 
   if ((!clientId && !mac) || (!ip && !mac)) return null;
+  if (defaultOpen && d && !d.found) return null;
   return (
     <div className="mt-1.5 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/[0.04]" data-testid={`datto-info-${sfx}`}>
       <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-1.5 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-fuchsia-300 hover:text-fuchsia-200 transition-colors" data-testid={`datto-info-toggle-${sfx}`}>
