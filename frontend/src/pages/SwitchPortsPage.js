@@ -380,7 +380,7 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
             )}
             <PortUserLine u={p.datto_user} idx={`detail-${p.idx}`} />
             {p.neighbor.match_source === "datto_rmm" && (
-              <DattoInfoPanel clientId={clientId} ip={p.neighbor.remote_ip} mac={p.neighbor.remote_chassis_id} testIdSuffix={`port-${p.idx}`} />
+              <DattoInfoPanel clientId={clientId} ip={p.neighbor.remote_ip} mac={p.neighbor.remote_chassis_id} name={p.neighbor.remote_device_name} testIdSuffix={`port-${p.idx}`} />
             )}
           </div>
         </div>

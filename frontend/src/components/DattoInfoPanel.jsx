@@ -16,20 +16,20 @@ const Item = ({ label, value, tid, warn }) => (
   </div>
 );
 
-export default function DattoInfoPanel({ clientId, ip, mac, defaultOpen = false, testIdSuffix = "" }) {
+export default function DattoInfoPanel({ clientId, ip, mac, name, defaultOpen = false, testIdSuffix = "" }) {
   const [open, setOpen] = useState(defaultOpen);
   const [d, setD] = useState(null);
   const sfx = testIdSuffix || ip || mac;
 
   useEffect(() => {
-    if (!open || d || (!ip && !mac)) return;
+    if (!open || d || (!ip && !mac && !name)) return;
     let alive = true;
-    axios.get(`${API}/datto/device-info`, { params: { client_id: clientId || undefined, ip: ip || undefined, mac: mac || undefined } })
+    axios.get(`${API}/datto/device-info`, { params: { client_id: clientId || undefined, ip: ip || undefined, mac: mac || undefined, name: name || undefined } })
       .then(({ data }) => alive && setD(data)).catch(() => alive && setD({ found: false }));
     return () => { alive = false; };
-  }, [open, d, clientId, ip, mac]);
+  }, [open, d, clientId, ip, mac, name]);
 
-  if ((!clientId && !mac) || (!ip && !mac)) return null;
+  if (!ip && !mac && !name) return null;
   if (defaultOpen && d && !d.found) return null;
   return (
     <div className="mt-1.5 rounded-md border border-fuchsia-500/25 bg-fuchsia-500/[0.04]" data-testid={`datto-info-${sfx}`}>
@@ -42,7 +42,7 @@ export default function DattoInfoPanel({ clientId, ip, mac, defaultOpen = false,
           {!d ? (
             <p className="text-[10px] text-[var(--text-muted)]">Caricamento…</p>
           ) : !d.found ? (
-            <p className="text-[10px] text-[var(--text-muted)]" data-testid={`datto-info-notfound-${sfx}`}>Dispositivo non presente in Datto RMM.</p>
+            <p className="text-[10px] text-[var(--text-muted)]" data-testid={`datto-info-notfound-${sfx}`}>Nessun dato Datto trovato per questo MAC/IP/nome: verifica che il dispositivo sia nel sito Datto collegato al cliente e che la sync sia aggiornata.</p>
           ) : (
             <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
               <div className="col-span-2"><Item label="Sistema operativo" value={[d.operating_system, d.os_version && `(${d.os_version})`, d.os_architecture].filter(Boolean).join(" ")} tid={`datto-os-${sfx}`} /></div>

@@ -710,31 +710,37 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
     try:
         from routes.datto_rmm import datto_users_for
         from mac_follow import norm_mac as _nm
-        _macs, _ips = set(), set()
+        _macs, _ips, _names = set(), set(), set()
         for o in out:
             n = o.get("neighbor") or {}
             if n.get("remote_chassis_id"):
                 _macs.add(_nm(n["remote_chassis_id"]).upper())
             if n.get("remote_ip"):
                 _ips.add(n["remote_ip"])
+            if n.get("match_source") == "datto_rmm" and n.get("remote_device_name"):
+                _names.add(n["remote_device_name"])
             for a in o.get("attached") or []:
+                if a.get("source") == "datto_rmm" and a.get("name"):
+                    _names.add(a["name"])
                 _macs.add(a["mac"])
                 if a.get("ip"):
                     _ips.add(a["ip"])
-        _users = await datto_users_for(client_id, _macs, _ips)
+        _users = await datto_users_for(client_id, _macs, _ips, _names)
+        _byname = lambda nm: _users.get(f"name:{str(nm or '').upper()}") if nm else None  # noqa: E731
         if _users:
             for o in out:
                 n = o.get("neighbor") or {}
-                u = _users.get(_nm(n.get("remote_chassis_id")).upper()) or _users.get(n.get("remote_ip") or "")
+                u = _users.get(_nm(n.get("remote_chassis_id")).upper()) or _users.get(n.get("remote_ip") or "") \
+                    or (_byname(n.get("remote_device_name")) if n.get("match_source") == "datto_rmm" else None)
                 if u and o.get("oper") == 1:
                     o["datto_user"] = u
                 for a in o.get("attached") or []:
-                    au = _users.get(a["mac"]) or _users.get(a.get("ip") or "")
+                    au = _users.get(a["mac"]) or _users.get(a.get("ip") or "") or (_byname(a.get("name")) if a.get("source") == "datto_rmm" else None)
                     if au:
                         a["datto_user"] = au["user"]
                 vh = o.get("vm_host") or {}
                 for v in vh.get("vms") or []:
-                    vu = _users.get(v["mac"]) or _users.get(v.get("ip") or "")
+                    vu = _users.get(v["mac"]) or _users.get(v.get("ip") or "") or _byname(v.get("name"))
                     if vu:
                         v["datto_user"] = vu["user"]
                 if not o.get("datto_user") and o.get("oper") == 1 and not o.get("neighbor") and len(o.get("attached") or []) == 1:

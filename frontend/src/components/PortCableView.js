@@ -261,7 +261,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                   )}
                   <PortUserLine u={p.datto_user} idx={`cable-${p.idx}`} />
                   {n.match_source === "datto_rmm" && !p.vm_host?.host_name && (
-                    <DattoInfoPanel clientId={clientId} ip={n.remote_ip} mac={n.remote_chassis_id} testIdSuffix={`cable-${p.idx}`} />
+                    <DattoInfoPanel clientId={clientId} ip={n.remote_ip} mac={n.remote_chassis_id} name={n.remote_device_name} testIdSuffix={`cable-${p.idx}`} />
                   )}
                 </div>
               </div>

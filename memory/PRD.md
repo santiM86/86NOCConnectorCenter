@@ -9937,3 +9937,6 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-06 Utente sulla porta (Datto)
 - switch-ports: datto_user {user, online, last_seen} per porta (neighbor o unico device), attached[].datto_user, vm_host.vms[].datto_user (datto_users_for in datto_rmm.py).
 - UI: nome utente sotto la tile, in Connesso a (dettaglio, tabella), Vista Cavo, elenco dispositivi/VM (components/PortUser.jsx). iteration_164.
+
+## 2026-06 Fix Info Datto "non presente" su neighbor identificato via Datto
+- Causa: neighbor Datto abbinato per NOME (MAC virtuale VM non in mac_list Datto) ma device-info cercava solo MAC/IP. Ora /api/datto/device-info accetta name (match esatto case-insensitive, univoco per cliente); datto_users_for accetta names; UI passa remote_device_name.

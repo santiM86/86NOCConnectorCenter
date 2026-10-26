@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -1766,14 +1767,15 @@ def _epoch_iso(v: Any) -> Optional[str]:
 @router.get("/datto/device-info")
 async def datto_device_info(
     client_id: Optional[str] = None, ip: Optional[str] = None, mac: Optional[str] = None,
+    name: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """Info 'Sistema e utente' di Datto RMM per un device (match MAC, poi IP). Solo campi non hardware."""
-    if not ip and not mac:
-        raise HTTPException(400, "Specificare ip o mac")
+    """Info 'Sistema e utente' di Datto RMM per un device (match MAC, poi IP, poi nome Datto). Solo campi non hardware."""
+    if not ip and not mac and not name:
+        raise HTTPException(400, "Specificare ip, mac o nome")
     base = {"client_id": client_id} if client_id else {}
-    if not client_id and not mac:
-        raise HTTPException(400, "Senza cliente serve il MAC")
+    if not client_id and not mac and not name:
+        raise HTTPException(400, "Senza cliente serve il MAC o il nome")
     proj = {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1, "client_id": 1}
     d = None
     m = _norm_mac(mac) if mac else ""
@@ -1781,8 +1783,14 @@ async def datto_device_info(
         hits = await db.datto_devices.find({**base, "$or": [{"mac": m}, {"mac_list": m}]}, proj).to_list(20)
         if len({h.get("client_id") for h in hits}) == 1:
             d = hits[0]
-    if d is None and ip:
+    if d is None and ip and client_id:
         d = await db.datto_devices.find_one({**base, "$or": [{"ip": ip}, {"ip_list": ip}]}, proj)
+    if d is None and name and name.strip():
+        # neighbor 'Identificato via Datto RMM' per nome (es. VM il cui MAC virtuale non e' nell'elenco Datto)
+        rx = {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"}
+        hits = await db.datto_devices.find({**base, "name": rx}, proj).to_list(20)
+        if len({h.get("client_id") for h in hits}) == 1:
+            d = hits[0]
     if not d:
         return {"found": False}
     try:
@@ -1810,18 +1818,20 @@ async def datto_device_info(
     }
 
 
-async def datto_users_for(client_id: str, macs: set, ips: set) -> dict:
+async def datto_users_for(client_id: str, macs: set, ips: set, names: Optional[set] = None) -> dict:
     """{MAC|IP: {user, online, last_seen}} dall'ultimo sync Datto (lastLoggedInUser) per la mappa porte."""
-    if not client_id or (not macs and not ips):
+    if not client_id or (not macs and not ips and not names):
         return {}
     ors = []
     if macs:
         ors += [{"mac": {"$in": list(macs)}}, {"mac_list": {"$in": list(macs)}}]
     if ips:
         ors += [{"ip": {"$in": list(ips)}}, {"ip_list": {"$in": list(ips)}}]
+    if names:
+        ors += [{"name": {"$in": list(names)}}]
     out: dict = {}
     async for d in db.datto_devices.find({"client_id": client_id, "$or": ors},
-                                         {"_id": 0, "raw_enc": 1, "mac_list": 1, "ip_list": 1, "mac": 1, "ip": 1, "online": 1, "datto_last_seen": 1}):
+                                         {"_id": 0, "raw_enc": 1, "mac_list": 1, "ip_list": 1, "mac": 1, "ip": 1, "online": 1, "datto_last_seen": 1, "name": 1}):
         try:
             L = (json.loads(security_manager.decrypt_credential(d["raw_enc"])) or {}).get("list") or {} if d.get("raw_enc") else {}
         except Exception:
@@ -1833,4 +1843,6 @@ async def datto_users_for(client_id: str, macs: set, ips: set) -> dict:
         for k in set(d.get("mac_list") or []) | {d.get("mac")} | set(d.get("ip_list") or []) | {d.get("ip")}:
             if k:
                 out.setdefault(k, info)
+        if d.get("name"):
+            out.setdefault(f"name:{d['name'].upper()}", info)
     return out
