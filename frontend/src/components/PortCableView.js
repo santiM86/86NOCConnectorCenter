@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import PortFlapHistory from "./PortFlapHistory";
 import PortAttachedTree from "./PortAttachedTree";
 import DattoInfoPanel from "./DattoInfoPanel";
+import { PortUserLine } from "./PortUser";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -258,6 +259,7 @@ export default function PortCableView({ p, switchIp, switchName, onClose, client
                   {n.remote_sys_desc && (
                     <div className="text-[9px] text-[var(--text-muted)] italic truncate mt-0.5">{n.remote_sys_desc}</div>
                   )}
+                  <PortUserLine u={p.datto_user} idx={`cable-${p.idx}`} />
                   {n.match_source === "datto_rmm" && !p.vm_host?.host_name && (
                     <DattoInfoPanel clientId={clientId} ip={n.remote_ip} mac={n.remote_chassis_id} testIdSuffix={`cable-${p.idx}`} />
                   )}

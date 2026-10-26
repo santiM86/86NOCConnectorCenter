@@ -1808,3 +1808,29 @@ async def datto_device_info(
         "description": L.get("description") or "",
         "fetched_at": d.get("fetched_at"),
     }
+
+
+async def datto_users_for(client_id: str, macs: set, ips: set) -> dict:
+    """{MAC|IP: {user, online, last_seen}} dall'ultimo sync Datto (lastLoggedInUser) per la mappa porte."""
+    if not client_id or (not macs and not ips):
+        return {}
+    ors = []
+    if macs:
+        ors += [{"mac": {"$in": list(macs)}}, {"mac_list": {"$in": list(macs)}}]
+    if ips:
+        ors += [{"ip": {"$in": list(ips)}}, {"ip_list": {"$in": list(ips)}}]
+    out: dict = {}
+    async for d in db.datto_devices.find({"client_id": client_id, "$or": ors},
+                                         {"_id": 0, "raw_enc": 1, "mac_list": 1, "ip_list": 1, "mac": 1, "ip": 1, "online": 1, "datto_last_seen": 1}):
+        try:
+            L = (json.loads(security_manager.decrypt_credential(d["raw_enc"])) or {}).get("list") or {} if d.get("raw_enc") else {}
+        except Exception:
+            L = {}
+        user = (L.get("lastLoggedInUser") or "").strip()
+        if not user:
+            continue
+        info = {"user": user, "online": d.get("online"), "last_seen": _epoch_iso(d.get("datto_last_seen") or L.get("lastSeen"))}
+        for k in set(d.get("mac_list") or []) | {d.get("mac")} | set(d.get("ip_list") or []) | {d.get("ip")}:
+            if k:
+                out.setdefault(k, info)
+    return out
