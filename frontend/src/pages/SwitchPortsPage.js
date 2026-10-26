@@ -23,6 +23,7 @@ import PortFlapHistory from "@/components/PortFlapHistory";
 import PortAiExplain from "@/components/PortAiExplain";
 import SwitchAiAudit from "@/components/SwitchAiAudit";
 import VmHostBlock, { VmHostBadge } from "@/components/VmHostBlock";
+import DattoInfoPanel from "@/components/DattoInfoPanel";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -374,6 +375,9 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
             )}
             {p.neighbor.remote_sys_desc && (
               <div className="text-[10px] text-[var(--text-muted)] italic truncate">{p.neighbor.remote_sys_desc}</div>
+            )}
+            {p.neighbor.match_source === "datto_rmm" && (
+              <DattoInfoPanel clientId={clientId} ip={p.neighbor.remote_ip} mac={p.neighbor.remote_chassis_id} testIdSuffix={`port-${p.idx}`} />
             )}
           </div>
         </div>

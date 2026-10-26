@@ -25,6 +25,8 @@ Endpoints:
 - PUT    /api/clients/{client_id}/datto/link
 - DELETE /api/clients/{client_id}/datto/link
 - GET    /api/clients/{client_id}/datto/devices  (ritorna SOLO name/mac/ip/matched)
+- GET    /api/datto/device-info  (scelta utente 2026-06: espone SOLO 'sistema e utente' — OS, ultimo utente,
+  dominio, ultimo riavvio, riavvio necessario, stato; hardware/seriali/antivirus restano cifrati)
 """
 from __future__ import annotations
 
@@ -1748,3 +1750,62 @@ async def browse_datto_sites(
         "has_next": page + 1 < total_pages,
     }
 
+
+
+def _epoch_iso(v: Any) -> Optional[str]:
+    try:
+        if isinstance(v, (int, float)) and v > 0:
+            return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc).isoformat()
+        if isinstance(v, str) and v:
+            return v
+    except Exception:
+        pass
+    return None
+
+
+@router.get("/datto/device-info")
+async def datto_device_info(
+    client_id: Optional[str] = None, ip: Optional[str] = None, mac: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Info 'Sistema e utente' di Datto RMM per un device (match MAC, poi IP). Solo campi non hardware."""
+    if not ip and not mac:
+        raise HTTPException(400, "Specificare ip o mac")
+    ors = []
+    if mac:
+        m = mac.upper().replace("-", ":")
+        ors += [{"mac": m}, {"mac_list": m}]
+    if ip:
+        ors += [{"ip": ip}, {"ip_list": ip}]
+    q = {"$or": ors}
+    if client_id:
+        q["client_id"] = client_id
+    elif not mac:
+        raise HTTPException(400, "Senza cliente serve il MAC")
+    d = await db.datto_devices.find_one(q,
+                                        {"_id": 0, "name": 1, "raw_enc": 1, "online": 1, "datto_last_seen": 1, "device_type": 1, "fetched_at": 1})
+    if not d:
+        return {"found": False}
+    try:
+        blob = json.loads(security_manager.decrypt_credential(d.get("raw_enc") or "")) if d.get("raw_enc") else {}
+    except Exception:
+        blob = {}
+    L = blob.get("list") or {}
+    os_info = ((blob.get("audit") or {}).get("osInfo") or {}) if isinstance(blob.get("audit"), dict) else {}
+    return {
+        "found": True,
+        "name": d.get("name") or L.get("hostname") or "",
+        "operating_system": L.get("operatingSystem") or os_info.get("osName") or "",
+        "os_version": os_info.get("osDisplayVersion") or L.get("displayVersion") or os_info.get("osVersion") or "",
+        "os_architecture": os_info.get("osArchitecture") or ("64 bit" if L.get("a64Bit") else ""),
+        "last_logged_user": L.get("lastLoggedInUser") or "",
+        "domain": L.get("domain") or "",
+        "last_reboot": _epoch_iso(L.get("lastReboot")),
+        "reboot_required": L.get("rebootRequired"),
+        "online": d.get("online"),
+        "last_seen": _epoch_iso(d.get("datto_last_seen") or L.get("lastSeen")),
+        "device_type": d.get("device_type") or "",
+        "site_name": L.get("siteName") or "",
+        "description": L.get("description") or "",
+        "fetched_at": d.get("fetched_at"),
+    }
