@@ -9926,3 +9926,6 @@ Health null è normale HPE (usa i sottosistemi).
 - vm_port.py: OUI hypervisor (Hyper-V, VMware, KVM, VirtualBox, Xen, Parallels) + gruppi NIC -> vm_host {kind, host, vms} nel payload switch-ports (topology.py).
 - UI SwitchPortsPage: VmHostBlock (Connesso a = host, sotto le VM), badge in tabella.
 - Test: tests/test_vm_port_iter161.py 5/5, iteration_161.json 100%.
+
+## 2026-06 Vista Cavo: collegati sotto con data aggancio
+- switch-ports payload: port_devices (first_seen/last_seen) + attached.first_seen_at. PortCableView: box remoto = host VM se presente; PortAttachedTree.jsx elenca host + VM con "agganciato dal". iteration_162.

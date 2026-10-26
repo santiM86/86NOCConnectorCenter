@@ -1,0 +1,32 @@
+{
+  "summary": "Iter162: tested the Cable View 'Collegati sotto' tree, which shows the devices attached below a port with the date each was first attached. Backend: the new pytest file test_cable_attached_iter162.py passed 5/5, and the regression file test_vm_host_api_iter161.py passed 3/3. switch-ports returns port_devices as [{mac, first_seen, last_seen}] taken from port_memory, and each attached[] item has first_seen_at taken from discovered_endpoints (null when the endpoint has none). Frontend (Playwright, admin + TOTP): on port 52 (Hyper-V host plus 2 VMs) the remote box shows TEST_HYPERV02 with '10.162.0.10 · host Hyper-V'. Below it, cable-attached-tree-52 is titled 'COLLEGATI SOTTO · HOST HYPER-V · 2 VM' and lists the host row plus 2 indented VM rows. Dates: host 03/11/25 09:15 comes from port_devices and is used instead of the endpoint first_seen_at. VM1 01/12/25 comes from port_devices. VM2 20/12/25 08:30 comes from the attached.first_seen_at fallback. On port 20 (2 PCs, no VMs) the tree is titled 'COLLEGATI SOTTO · 2 DISPOSITIVI'; pc-uno shows '10/10/25, 07:00' and pc-due shows 'data non disponibile'. All seed data was cleaned up: count is 0 in every collection.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PortCableView / PortAttachedTree", "issues": [
+        "When no date is known the label reads 'agganciato dal data non disponibile', which is clumsy Italian. Use 'data di aggancio non disponibile' when since is null.",
+        "On a single-device port the tree renders 'Collegati sotto · 1 dispositivi': the plural is wrong and the entry repeats the remote box. Consider hiding the tree when attached.length===1 and showing only the date, or else fix the singular/plural.",
+        "On a non-VM multi-device port every row uses host styling (cyan, no indent). This is acceptable, but the rows look like several hosts."
+      ]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_cable_attached_iter162.py", "/app/test_reports/pytest/pytest_iter162.xml"],
+  "action_items": [
+    "Fix the wording 'agganciato dal data non disponibile' and the plural in '1 dispositivi' (cosmetic)",
+    "Optional: in PortAttachedTree, uppercase d.mac in the lookup (seen[String(d.mac).toUpperCase()]). The keys are uppercased but the lookup is not, so lowercase MACs would miss their date.",
+    "Optional: in PortCableView, the host-name override only renders when p.neighbor exists. If vm_host is set but there is no neighbor, the remote box says 'Dispositivo non identificato' while the tree below shows the host."
+  ],
+  "critical_code_review_comments": [
+    "PortAttachedTree.since(): the seen map keys are uppercased but the lookup uses the raw d.mac, so a case mismatch silently falls back to the endpoint date or no date.",
+    "In PortCableView, the vm_host host-name display sits inside the `n && remote` branch, so it is not shown on vm_host ports that have no neighbor.",
+    "routes/topology.py is still about 2450 lines; split it up."
+  ],
+  "updated_files": ["/app/backend/tests/test_cable_attached_iter162.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Seeded and then removed: client TEST_CAB162, switch 10.162.0.1, ports 52 (vm_host) and 20 (2 PCs), with port_memory port_devices first_seen. Set KEEP_SEED=1 to keep the seed for UI testing.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with: cd backend; set -a; . ./.env; . ../frontend/.env; set +a; pytest tests/test_cable_attached_iter162.py. UI route: /switch-ports/10.162.0.1?clientId=TEST_CAB162. Click switch-port-tile-<idx>, then switch-port-cable-view-<idx> (the button is in the detail panel), then check cable-attached-tree-<idx>."
+}
