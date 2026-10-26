@@ -703,6 +703,12 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
             if m and m.get("port_devices"):
                 o["port_devices"] = [{"mac": d.get("mac"), "first_seen": d.get("first_seen"), "last_seen": d.get("last_seen")}
                                      for d in m["port_devices"]]
+            _hb = o.get("habit") or {}
+            _pm = str((_hb.get("prev_device") or {}).get("mac") or "").upper()
+            if _pm and _pm in {a["mac"] for a in o.get("attached") or []}:
+                # porta multi-dispositivo: il "precedente" e' ancora collegato → non e' un cambio
+                _hb.pop("prev_device", None)
+                _hb.pop("device_changed_at", None)
     except Exception as _me:  # noqa: BLE001
         logger.warning("port memory enrich %s: %s", device_ip, _me)
 

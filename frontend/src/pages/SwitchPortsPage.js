@@ -25,6 +25,8 @@ import SwitchAiAudit from "@/components/SwitchAiAudit";
 import VmHostBlock, { VmHostBadge } from "@/components/VmHostBlock";
 import DattoInfoPanel from "@/components/DattoInfoPanel";
 import { PortUserLine, TileUserLabel } from "@/components/PortUser";
+import PortMultiDevices from "@/components/PortMultiDevices";
+import { isMultiDevicePort } from "@/components/portMulti";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -152,12 +154,13 @@ function PortTile({ p, onClick, active }) {
           </span>
         )}
       </div>
-      <TileUserLabel p={p} show />
+      <TileUserLabel p={p} show={!isMultiDevicePort(p)} />
     </button>
   );
 }
 
 function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload }) {
+  const multi = (p.oper === 1) && isMultiDevicePort(p);
   const [authBusy, setAuthBusy] = useState(false);
   const authorizeDevice = async () => {
     setAuthBusy(true);
@@ -238,7 +241,7 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
         </div>
       )}
       {deviceIp && p.admin !== 2 && <PortAiExplain deviceIp={deviceIp} idx={p.idx} clientId={clientId} />}
-      {!p.vm_host && (p.attached || []).some(a => a.mac !== (p.neighbor?.remote_chassis_id || "").toUpperCase()) && (
+      {!multi && !p.vm_host && (p.attached || []).some(a => a.mac !== (p.neighbor?.remote_chassis_id || "").toUpperCase()) && (
         <div className="text-[11px]" data-testid={`switch-port-attached-detail-${p.idx}`}>
           <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Dispositivi visti sulla porta · {p.attached_count}</span>
           <AttachedList p={p} full />
@@ -324,10 +327,10 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
         </div>
       )}
 
-      <VmHostBlock p={p} />
+      {multi ? <PortMultiDevices p={p} clientId={clientId} /> : <VmHostBlock p={p} />}
 
       {/* Neighbor */}
-      {p.neighbor && !p.vm_host && (
+      {p.neighbor && !p.vm_host && !multi && (
         <div className="flex items-start gap-2 text-[11px] border-t border-[var(--bg-border)] pt-2">
           <PortIcon p={p} size={16} />
           <div className="flex-1 min-w-0">
@@ -1224,7 +1227,14 @@ export default function SwitchPortsPage() {
                       ) : <span className="text-[10px] text-[var(--text-muted)]">—</span>}
                     </td>
                     <td>
-                      {!p.neighbor && p.habit?.last_device?.mac ? (
+                      {isUp && isMultiDevicePort(p) ? (
+                        <div className="flex flex-col leading-tight text-[10px]" data-testid={`port-multi-cell-${p.idx}`}>
+                          <span className="font-bold text-indigo-200">{p.attached_count || p.attached.length} dispositivi{p.vm_host ? ` · ${p.vm_host.vms.length} VM ${p.vm_host.kind}` : ""}</span>
+                          <span className="text-[9px] text-[var(--text-secondary)] truncate max-w-[260px]" title={p.attached.map(a => a.name || a.mac).join(", ")}>
+                            {p.attached.map(a => a.name || a.mac).join(", ")}
+                          </span>
+                        </div>
+                      ) : !p.neighbor && p.habit?.last_device?.mac ? (
                         <div className="flex flex-col leading-tight text-[10px]" data-testid={`port-last-device-${p.idx}`}>
                           <span className="text-[var(--text-muted)] italic">ultimo: <span className="text-neutral-200 not-italic font-semibold">{p.habit.last_device.name || p.habit.last_device.ip || "device"}</span></span>
                           <span className="font-mono text-[9px] text-[var(--text-muted)]">{p.habit.last_device.mac}{p.habit.last_device.seen_at ? ` · visto ${new Date(p.habit.last_device.seen_at).toLocaleDateString("it-IT")}` : ""}</span>
