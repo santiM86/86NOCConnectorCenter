@@ -1,0 +1,33 @@
+{
+  "summary": "Iter 164 - Datto 'Utente sulla porta'. Backend: seeded a switch (10.250.250.1, client da3d6e40) with 5 ports plus 2 extra edge-case ports added by hand (discovered_endpoints matched by datto mac, mac_list secondary mac, ip_list only, a DOWN port, and an unknown device). The 7 pytest cases all pass: datto_user {user, online, last_seen} on UP ports, datto_user string on attached items and VMs, nothing on DOWN or unmatched ports, no leak to another client, 401 without auth. Frontend: tile label 'Administrator' (port-tile-user-N), tooltip contains 'Utente: SRVDATI86B\\Administrator', table port-user-xs-N, detail port-user-sm-detail-N, Vista Cavo port-user-sm-cable-N, attached port-attached-user-N-MAC, VmHostBlock port-vmhost-vm-user all render correctly. One misattribution edge case found (see below). Seeded data cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/{ip}/switch-ports", "issue": "Fallback in topology.py ~L739-742 sets port.datto_user from the only attached device that has a user, even when that device is NOT the neighbor shown in 'Connesso a'. Reproduced on a port with neighbor AA:BB:CC:00:77:01 (no user) plus a second device AA:BB:CC:00:77:02 at 10.10.1.139 (Datto user). The UI shows 'SRVDATI86B\\Administrator' under the wrong device in 'Connesso a' and on the tile. This only happens on ports with several devices (dumb switch, hub or phone pass-through)."},
+      {"endpoint": "datto_users_for", "issue": "Matching depends on the MAC being exactly 'XX:XX:XX:XX:XX:XX' uppercase (only .upper() is applied). LLDP remote_chassis_id or other endpoint sources in different formats (no separators, '-', '.') will not match. Consider normalising with mac_follow.norm_mac(...).upper() on both sides."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "SwitchPortsPage tile grid", "issues": ["TileUserLabel max-w-[50px] at 8px font truncates 'Administrator' to 'Administr…'. The full name is only in the tooltip. Consider max-w ~60px or a smaller label."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_port_datto_user_iter164.py", "/app/test_reports/pytest/pytest_iter164.xml"],
+  "action_items": [
+    "In the topology.py datto_user fallback, only give the port a user when the device with the user is the displayed neighbor (or when there is no neighbor). Otherwise show it on the attached item only, or label it as 'su <name>'.",
+    "Optional: normalise MACs (norm_mac) in datto_users_for keys and lookups.",
+    "Optional: widen the tile username label."
+  ],
+  "critical_code_review_comments": [
+    "datto_users_for decrypts raw_enc for every matching datto device on each switch-ports request. That is fine for small sets, but consider caching or persisting lastLoggedInUser as a plain field during sync.",
+    "Enrichment is wrapped in try/except with logger.warning, so it fails safely."
+  ],
+  "updated_files": ["/app/backend/tests/test_port_datto_user_iter164.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% of requested testids verified; 1 semantic misattribution edge case"},
+  "seed_data_creation": "Temporary switch_ports and discovered_endpoints for switch 10.250.250.1 / client da3d6e40-b3e5-4d46-9787-dde328a3aa36. All removed (7 ports, 10 endpoints). The test file seeds and cleans up by itself (set KEEP_SEED=1 to keep the data for UI checks).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "UI auth: get a token via /api/auth/login then /api/auth/verify-2fa (pyotp secret in test_credentials), set localStorage noc_token and noc_refresh_token, then open /switch-ports/<ip>?clientId=<cid>. 00:15:5D MACs trigger the vm_host block (port detail then shows VmHostBlock instead of the attached list). The attached list in the detail panel excludes the primary neighbor."
+}

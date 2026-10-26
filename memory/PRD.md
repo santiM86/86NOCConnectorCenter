@@ -9933,3 +9933,7 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-06 Info Datto RMM sistema e utente
 - GET /api/datto/device-info (client_id opz., ip/mac): OS, versione, architettura, ultimo utente, dominio, ultimo riavvio, riavvio necessario, stato/ultimo contatto, tipo, sito, descrizione. Visibile a tutti gli utenti (scelta utente). Hardware/seriali/antivirus restano cifrati.
 - UI DattoInfoPanel.jsx: porta switch (Connesso a), Vista Cavo, scheda dispositivo. iteration_163.
+
+## 2026-06 Utente sulla porta (Datto)
+- switch-ports: datto_user {user, online, last_seen} per porta (neighbor o unico device), attached[].datto_user, vm_host.vms[].datto_user (datto_users_for in datto_rmm.py).
+- UI: nome utente sotto la tile, in Connesso a (dettaglio, tabella), Vista Cavo, elenco dispositivi/VM (components/PortUser.jsx). iteration_164.

@@ -22,7 +22,7 @@ export function PortUserLine({ u, idx, size = "sm" }) {
 export function TileUserLabel({ p, show }) {
   if (!show || !p.datto_user?.user) return null;
   return (
-    <span className="mt-0.5 max-w-[50px] truncate text-[8px] font-mono text-sky-200 leading-none" title={p.datto_user.user} data-testid={`port-tile-user-${p.idx}`}>
+    <span className="mt-0.5 max-w-[62px] truncate text-[8px] font-mono text-sky-200 leading-none" title={p.datto_user.user} data-testid={`port-tile-user-${p.idx}`}>
       {shortUser(p.datto_user.user)}
     </span>
   );
