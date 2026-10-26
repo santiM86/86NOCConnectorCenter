@@ -1,0 +1,36 @@
+{
+  "summary": "Iter 165 - Multi-device ports ('Connesso a N dispositivi'). Backend: seeded client TEST_MULTI165 with switch 10.165.0.1 and 5 ports: 52 (3 Hyper-V VMs, no host, SRVDC found via datto_name, port_memory prev=SRVDATI still attached), 20 (physical host + 2 VMs), 30 (2 plain PCs, prev device gone), 10 (one device, prev gone) and 40 (LLDP AP + 2 clients). All 6 pytest cases pass. On port 52, habit.prev_device and device_changed_at are removed. On ports 30 and 10 they are kept, because the previous device is really gone. Frontend: port 52 shows port-multi-52 'Connesso a 3 dispositivi · 3 VM Hyper-V', the nohost hint, 3 rows with VM/DATTO badges, IP, MAC and since dates, and datto-info-multi on SRVDC. The single 'Connesso a' block, the 'Dispositivi visti' list and the changed banner are not shown. Port 20 shows the host row first with the 'Server host' badge and the VMs indented. Port 30 shows the multi block and keeps the changed banner, which is correct. Ports 10 and 40 keep the normal 'Connesso a' block (LLDP on 40). The table shows port-multi-cell for 52, 20 and 30 with the correct counts. The CAMBIATO badge is gone for 52 and still there for 10 and 30. In Vista Cavo, port 52 shows port-multi-52 with no cable-attached-tree; port 40 still shows the tree and port 10 the single device. Real-client Datto check (da3d6e40, switch 10.250.250.1): the tile user label is hidden on the multi port and shown on the single port. On the multi port, port-user-xs-multi-1-<MAC> shows 'SRVDATI86B\\Administrator', and the Datto info panel expands with OS, user, domain and other fields. All seeded data was cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/{ip}/switch-ports (port_memory.changed_7d)", "issue": "The header summary still counts the suppressed multi-device port. It showed '3 dispositivi cambiati (7gg)' while only 2 ports (10 and 30) show a change. memory_summary counts device_changed_at from the raw port_memory docs. The count corrects itself after the next poll, because port_memory.py L272 unsets prev_device when the device is still present. Until then the number is inconsistent."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SwitchPortsPage table 'Connesso a' cell (L1318)", "issue": "On multi-device ports the cell still renders AttachedList (or VmHostBadge) under the port-multi-cell. Port 30 shows '2 dispositivi · PC-A, PC-B' and then also 'Sulla stessa porta anche 1: PC-B ...', which is redundant. Fix: wrap it as {!(isUp && isMultiDevicePort(p)) && (p.vm_host ? <VmHostBadge/> : <AttachedList/>)} (keeping VmHostBadge is optional).", "selector": "[data-testid=port-multi-cell-30]", "priority": "LOW"},
+      {"component": "SwitchPortTile tooltip (L128)", "issue": "On multi-device ports the title still shows '→ <single neighbor>' and 'Utente: ...'. This contradicts the hidden tile label and the request that a multi port is not connected to a single device. Consider '→ N dispositivi' instead.", "selector": "[data-testid=switch-port-tile-52]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PortMultiDevices", "issues": ["The title is always plural, but this is fine because the block only renders for 2 or more devices.", "'· 3 VM Hyper-V' uses h?.kind. If there is no vm_host but the MACs are VMware/KVM, it shows '· 2 VM ' with an empty kind. The table uses vm_host.vms.length while the block counts by OUI, so with a host present both show 2. This is consistent in the tested cases."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_port_multi_iter165.py", "/app/test_reports/pytest/pytest_iter165.xml"],
+  "action_items": [
+    "Optional: in the table 'Connesso a' cell, hide AttachedList (and possibly VmHostBadge) when the port-multi-cell is rendered.",
+    "Optional: on multi ports, show '→ N dispositivi' in the tile tooltip instead of the single neighbor or user.",
+    "Optional: have memory_summary.changed_7d exclude ports whose prev_device is currently attached, or accept that it corrects itself on the next poll."
+  ],
+  "critical_code_review_comments": [
+    "isMultiDevicePort does not check oper. The detail panel and table guard it with oper/isUp, but TileUserLabel uses show={!isMultiDevicePort(p)} without that check. This is harmless because attached is empty on down ports (the backend only builds attached when oper==1).",
+    "Backend suppression only edits the response. Persistence is cleaned by port_memory.py L272 on the next sample, which is good.",
+    "PortMultiDevices DeviceRow does a linear find over port_devices for each row. This is fine for 24 or fewer rows."
+  ],
+  "updated_files": ["/app/backend/tests/test_port_multi_iter165.py"],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% of requested testids/flows verified; 2 low-priority cosmetic issues"},
+  "seed_data_creation": "TEST_MULTI165 / 10.165.0.1 (switch_ports, managed_devices, discovered_endpoints, port_memory, lldp_neighbors), seeded by the test file (KEEP_SEED=1 keeps it). Also temporary ports 1 and 2 on da3d6e40 / 10.250.250.1 for the Datto user check. All removed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "UI auth: wait 31s, then /api/auth/login followed by /api/auth/verify-2fa (pyotp). Set localStorage noc_token and noc_refresh_token, then open /switch-ports/<ip>?clientId=<cid>. Run test_port_multi_iter165.py with KEEP_SEED=1 to get the UI seed. The real Datto device SRVDATI86B has MAC 00:15:5D:01:79:0D and IP 10.10.1.10 on client da3d6e40."
+}

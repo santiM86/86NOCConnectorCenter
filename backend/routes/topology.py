@@ -712,6 +712,11 @@ async def get_switch_ports(device_ip: str, client_id: str | None = None,
     except Exception as _me:  # noqa: BLE001
         logger.warning("port memory enrich %s: %s", device_ip, _me)
 
+    # Conteggio cambi coerente con le porte mostrate (multi-dispositivo soppresse)
+    if isinstance(port_memory_summary, dict) and "changed_7d" in port_memory_summary:
+        _c7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        port_memory_summary["changed_7d"] = sum(1 for o in out if ((o.get("habit") or {}).get("device_changed_at") or "") >= _c7)
+
     # Utente collegato (ultimo login Datto RMM) per ogni PC sulla porta
     try:
         from routes.datto_rmm import datto_users_for

@@ -40,7 +40,7 @@ export default function PortMultiDevices({ p, clientId }) {
       <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-200 mb-1">
         <Devices size={14} weight="bold" />
         Connesso a {total} dispositivi
-        {vmCount > 0 && <span className="text-indigo-300 normal-case font-semibold">· {vmCount} VM {h?.kind || ""}</span>}
+        {vmCount > 0 && <span className="text-indigo-300 normal-case font-semibold">· {vmCount} VM {h?.kind || [...new Set(list.map((a) => vmKindOf(a.mac)).filter(Boolean))].join("/")}</span>}
       </div>
       {h && !host && (
         <p className="text-[9px] text-[var(--text-muted)] mb-1" data-testid={`port-multi-nohost-${p.idx}`}>

@@ -125,7 +125,7 @@ function PortTile({ p, onClick, active }) {
     <button
       onClick={onClick}
       data-testid={`switch-port-tile-${p.idx}`}
-      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.loop_suspect ? "\n⚠ POSSIBILE LOOP" : ""}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}${p.datto_user?.user ? "\nUtente: " + p.datto_user.user : ""}`}
+      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.loop_suspect ? "\n⚠ POSSIBILE LOOP" : ""}${(p.oper === 1 && isMultiDevicePort(p)) ? `\n→ ${p.attached_count || p.attached.length} dispositivi: ${p.attached.map(a => a.name || a.mac).join(", ")}` : `${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}${p.datto_user?.user ? "\nUtente: " + p.datto_user.user : ""}`}`}
       className={`relative flex flex-col items-center group`}
     >
       {/* Numero porta sopra (chip nero) - label fisica invece di ifIndex SNMP */}
@@ -1317,7 +1317,7 @@ export default function SwitchPortsPage() {
                       ) : (
                         <span className="text-[10px] text-[var(--text-muted)] italic">—</span>
                       )}
-                      {p.vm_host ? <VmHostBadge p={p} /> : <AttachedList p={p} />}
+                      {!(isUp && isMultiDevicePort(p)) && (p.vm_host ? <VmHostBadge p={p} /> : <AttachedList p={p} />)}
                     </td>
                   </tr>
                 );

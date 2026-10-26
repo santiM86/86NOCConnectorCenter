@@ -9940,3 +9940,6 @@ Health null è normale HPE (usa i sottosistemi).
 
 ## 2026-06 Fix Info Datto "non presente" su neighbor identificato via Datto
 - Causa: neighbor Datto abbinato per NOME (MAC virtuale VM non in mac_list Datto) ma device-info cercava solo MAC/IP. Ora /api/datto/device-info accetta name (match esatto case-insensitive, univoco per cliente); datto_users_for accetta names; UI passa remote_device_name.
+
+## 2026-06 Porta multi-dispositivo: "Connesso a N dispositivi"
+- Porte UP con >=2 dispositivi (non uplink LLDP): un unico blocco PortMultiDevices (dettaglio, Vista Cavo), cella tabella "N dispositivi", tooltip tile, niente singolo "Connesso a"/utente singolo. Backend: prev_device soppresso se ancora collegato, changed_7d ricalcolato. iteration_165.
