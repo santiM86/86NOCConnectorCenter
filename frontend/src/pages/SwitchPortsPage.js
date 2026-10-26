@@ -23,6 +23,8 @@ import PortFlapHistory from "@/components/PortFlapHistory";
 import PortAiExplain from "@/components/PortAiExplain";
 import SwitchAiAudit from "@/components/SwitchAiAudit";
 import VmHostBlock, { VmHostBadge } from "@/components/VmHostBlock";
+import DattoInfoPanel from "@/components/DattoInfoPanel";
+import { PortUserLine, TileUserLabel } from "@/components/PortUser";
 
 // ----- formatters -----
 function fmtSpeed(mbps) {
@@ -121,7 +123,7 @@ function PortTile({ p, onClick, active }) {
     <button
       onClick={onClick}
       data-testid={`switch-port-tile-${p.idx}`}
-      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.loop_suspect ? "\n⚠ POSSIBILE LOOP" : ""}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}`}
+      title={`Porta ${p.idx} · ${p.name} · ${p.oper_status}/${p.admin_status}${p.loop_suspect ? "\n⚠ POSSIBILE LOOP" : ""}${p.neighbor?.remote_sys_name ? "\n→ " + p.neighbor.remote_sys_name : ""}${p.datto_user?.user ? "\nUtente: " + p.datto_user.user : ""}`}
       className={`relative flex flex-col items-center group`}
     >
       {/* Numero porta sopra (chip nero) - label fisica invece di ifIndex SNMP */}
@@ -150,6 +152,7 @@ function PortTile({ p, onClick, active }) {
           </span>
         )}
       </div>
+      <TileUserLabel p={p} show />
     </button>
   );
 }
@@ -375,6 +378,10 @@ function PortDetailPanel({ p, onClose, onOpenCable, deviceIp, clientId, onReload
             {p.neighbor.remote_sys_desc && (
               <div className="text-[10px] text-[var(--text-muted)] italic truncate">{p.neighbor.remote_sys_desc}</div>
             )}
+            <PortUserLine u={p.datto_user} idx={`detail-${p.idx}`} />
+            {p.neighbor.match_source === "datto_rmm" && (
+              <DattoInfoPanel clientId={clientId} ip={p.neighbor.remote_ip} mac={p.neighbor.remote_chassis_id} testIdSuffix={`port-${p.idx}`} />
+            )}
           </div>
         </div>
       )}
@@ -528,6 +535,7 @@ function AttachedList({ p, full = false }) {
               ) : <span className="font-semibold text-neutral-200 truncate max-w-[180px]">{a.name}</span>}
               {a.ip && <span className="font-mono text-[9px] text-[var(--text-secondary)]">{a.ip}</span>}
               <span className="font-mono text-[9px] text-[var(--text-muted)]">{a.mac}</span>
+              {a.datto_user && <span className="font-mono text-[9px] text-sky-200" title="Ultimo utente (Datto RMM)" data-testid={`port-attached-user-${p.idx}-${a.mac}`}>· {a.datto_user}</span>}
             </li>
           );
         })}
@@ -1276,6 +1284,7 @@ export default function SwitchPortsPage() {
                               </span>
                             )}
                             {/* Riga 2: IP */}
+                            <PortUserLine u={p.datto_user} idx={p.idx} size="xs" />
                             {p.neighbor.remote_ip && (
                               <span className="text-[9px] font-mono text-[var(--text-secondary)]">
                                 IP: <span className="text-cyan-300">{p.neighbor.remote_ip}</span>

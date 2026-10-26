@@ -13,6 +13,7 @@ import { VendorDetailsPanel } from "@/components/VendorDetailsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import ShutdownDiagnosis from "@/components/ShutdownDiagnosis";
 import { MacHistorySection } from "@/components/MacHistorySection";
+import DattoInfoPanel from "@/components/DattoInfoPanel";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -729,6 +730,7 @@ export default function DeviceInfoCard({ deviceIp, clientId = null, onClose = nu
             <Field label="OS Family" value={id.os_family} />
             <div className="pt-2">
               <MacHistorySection deviceIp={deviceIp} clientId={clientId} />
+              <DattoInfoPanel clientId={clientId} ip={deviceIp} defaultOpen testIdSuffix={`card-${deviceIp}`} />
             </div>
           </Section>
 

@@ -41,6 +41,7 @@ export default function VmHostBlock({ p }) {
               : <span className="font-semibold text-neutral-100">{v.name}</span>}
             {v.ip && <span className="font-mono text-[9px] text-[var(--text-secondary)]">{v.ip}</span>}
             <span className="font-mono text-[9px] text-[var(--text-muted)]">{v.mac}</span>
+            {v.datto_user && <span className="font-mono text-[9px] text-sky-200" data-testid={`port-vmhost-vm-user-${p.idx}-${v.mac}`}>· {v.datto_user}</span>}
           </li>
         ))}
       </ul>
