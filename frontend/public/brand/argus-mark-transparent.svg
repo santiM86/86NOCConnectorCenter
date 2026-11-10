@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="argusGrad" x1="120" y1="130" x2="400" y2="385" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34D6A8"/>
+      <stop offset="0.55" stop-color="#22BCD0"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <filter id="argusGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feColorMatrix in="b" type="matrix" values="0 0 0 0 0.16  0 0 0 0 0.75  0 0 0 0 0.85  0 0 0 0.55 0" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  
+  <g fill="url(#argusGrad)" filter="url(#argusGlow)">
+    <polygon points="118,382 228,128 280,128 178,382"/>
+    <polygon points="292,148 347,270 270,270 270,203"/>
+    <polygon points="230,285 358,285 400,382 340,382 320,332 210,332"/>
+  </g>
+</svg>
