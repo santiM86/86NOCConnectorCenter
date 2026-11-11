@@ -98,6 +98,7 @@ const navConfig = [
       { path: "/server-metrics", icon: Desktop, label: "Server con Agent", roles: ["admin", "operator"] },
       { path: "/syslog", icon: ListChecks, label: "Syslog Viewer", roles: ["admin", "operator"] },
       { path: "/security-log", icon: Lock, label: "Registro Accessi AdS", roles: ["admin", "operator"] },
+      { path: "/executive", icon: ChartLineUp, label: "Dashboard Direzione", roles: ["admin", "operator", "viewer"] },
       { path: "/snmp-traps", icon: Pulse, label: "SNMP Traps", roles: ["admin", "operator"] },
       { path: "/remediation", icon: Robot, label: "Auto Remediation", roles: ["admin", "operator"] },
       { path: "/intelligence", icon: Brain, label: "NOC Intelligence", roles: ["admin", "operator"] },

@@ -2014,6 +2014,11 @@ class AlertEngine:
             await run_metric_rules()
         except Exception as e:  # noqa: BLE001
             logger.warning("metric rules error: %s", e, exc_info=True)
+        try:
+            from incident_engine import correlate
+            await correlate()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("incident correlation error: %s", e, exc_info=True)
         self.last_run = {
             "at": datetime.now(timezone.utc).isoformat(),
             "vital_actions": vital,
