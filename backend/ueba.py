@@ -10,6 +10,7 @@ Anomalie (source_type):
 from __future__ import annotations
 
 import ipaddress
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -61,10 +62,14 @@ async def evaluate_event(client_id: str, host: str, d: dict, tz: str, emit) -> N
                    f"{label} non aveva mai effettuato accessi su {host} (host abituali: {', '.join(sorted(hosts)[:6]).replace('_', '.')}). "
                    f"Se non previsto può indicare un movimento laterale con credenziali rubate.", "ueba_new_host")
     src = d.get("src_ip")
+    try:
+        ev_t = datetime.fromisoformat(str(d.get("ts")).replace("Z", "+00:00"))
+    except Exception:
+        ev_t = now
     lp = prof.get("last_public") or {}
     if _public(src) and lp.get("ip") and lp["ip"] != src:
         try:
-            gap = (now - datetime.fromisoformat(lp["ts"])).total_seconds()
+            gap = abs((ev_t - datetime.fromisoformat(lp["ts"])).total_seconds())
         except Exception:
             gap = 1e9
         if gap < 1800:
@@ -73,7 +78,7 @@ async def evaluate_event(client_id: str, host: str, d: dict, tz: str, emit) -> N
                        f"Due connessioni pubbliche diverse così ravvicinate indicano spesso credenziali usate da terzi.", "ueba_impossible")
     since = (now - timedelta(minutes=15)).isoformat()
     fails = await db.security_events.count_documents({"client_id": client_id, "category": "logon_failed", "ts": {"$gte": since},
-                                                      "user": {"$regex": f"^{d['user']}$", "$options": "i"}})
+                                                      "user": {"$regex": f"^{re.escape(d['user'])}$", "$options": "i"}})
     if fails >= FAIL_THRESHOLD:
         await emit(client_id, host, "high", f"UEBA: {d['user']} entra dopo {fails} tentativi falliti su {host}",
                    f"Negli ultimi 15 minuti {label} ha avuto {fails} accessi falliti e poi un accesso riuscito"
@@ -85,7 +90,7 @@ async def evaluate_event(client_id: str, host: str, d: dict, tz: str, emit) -> N
             upd["$setOnInsert"]["hours"] = [0] * 24
             upd["$inc"].pop(f"hours.{hr}")
     if _public(src):
-        upd["$set"]["last_public"] = {"ip": src, "ts": now.isoformat()}
+        upd["$set"]["last_public"] = {"ip": src, "ts": ev_t.isoformat()}
     await db.ueba_profiles.update_one({"client_id": client_id, "user": user}, upd, upsert=True)
     if not prof and hr is not None:
         await db.ueba_profiles.update_one({"client_id": client_id, "user": user}, {"$inc": {f"hours.{hr}": 1}})

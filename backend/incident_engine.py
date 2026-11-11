@@ -1,6 +1,7 @@
 """Incidenti investigati: correlazione automatica alert → incidente + indagine AI (cronologia, prove, azioni)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -77,7 +78,7 @@ async def correlate(now: Optional[datetime] = None) -> int:
 async def _open_incident(client_id: str, alerts: list[dict], entity: str, kind: str) -> dict:
     alerts = sorted(alerts, key=lambda a: a.get("created_at") or "")
     top = max(SEV_RANK.get(a.get("severity") or "low", 0) for a in alerts)
-    existing = await db.incidents.find_one({"client_id": client_id, "auto_entity": entity, "status": {"$in": ["open", "investigating"]},
+    existing = await db.incidents.find_one({"client_id": client_id, "auto_entity": entity, "status": {"$in": ["open", "in_progress"]},
                                             "updated_at": {"$gte": (_now() - timedelta(hours=6)).isoformat()}}, {"_id": 0})
     ids = [a["id"] for a in alerts]
     now = _now().isoformat()
@@ -101,11 +102,21 @@ async def _open_incident(client_id: str, alerts: list[dict], entity: str, kind: 
         await db.incidents.insert_one(doc)
     await db.alerts.update_many({"id": {"$in": ids}}, {"$set": {"incident_id": inc_id}})
     if top >= 2 and not existing and os.environ.get("EMERGENT_LLM_KEY"):
-        try:
-            await investigate(inc_id, "ARGUS (auto)")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"auto investigate {inc_id}: {e}")
+        _bg.add(asyncio.create_task(_auto_investigate(inc_id)))
     return {"id": inc_id}
+
+
+_bg: set = set()
+
+
+async def _auto_investigate(inc_id: str) -> None:
+    """Indagine AI in background: non blocca il tick dell'Alert Engine."""
+    try:
+        await investigate(inc_id, "ARGUS (auto)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"auto investigate {inc_id}: {e}")
+    finally:
+        _bg.difference_update({t for t in _bg if t.done()})
 
 
 def _parse_json(raw: str) -> dict:
@@ -136,7 +147,7 @@ async def investigate(incident_id: str, user: str) -> dict:
     now = _now().isoformat()
     inv = {"result": result, "at": now, "by": user, "model": f"{MODEL[0]}/{MODEL[1]}", "alerts_analyzed": len(alerts)}
     await db.incidents.update_one({"id": incident_id}, {"$set": {"ai_investigation": inv, "updated_at": now,
-                                                                 **({"status": "investigating"} if inc.get("status") == "open" else {})},
+                                                                 **({"status": "in_progress"} if inc.get("status") == "open" else {})},
                                                         "$push": {"timeline": {"action": "ai_investigation", "user": user, "timestamp": now,
                                                                                "note": f"Indagine AI: {result.get('headline', '')}"}}})
     return inv

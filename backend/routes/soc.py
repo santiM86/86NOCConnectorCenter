@@ -54,7 +54,7 @@ async def _compliance(client_id: Optional[str], since7: str, active: list, mtta:
     q = {"client_id": client_id} if client_id else {}
     monitored = await db.device_poll_status.count_documents(q)
     seclog = await db.security_events.count_documents({**q, "ts": {"$gte": since7}})
-    stale_inc = await db.incidents.count_documents({**q, "status": {"$in": ["open", "investigating"]},
+    stale_inc = await db.incidents.count_documents({**q, "status": {"$in": ["open", "in_progress"]},
                                                     "created_at": {"$lt": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()}})
     cert = [a for a in active if "cert" in (a.get("source_type") or "")]
     expo = [a for a in active if any(k in (a.get("source_type") or "") for k in ("shodan", "osint", "exposed"))]
@@ -91,6 +91,10 @@ async def executive_summary(client_id: Optional[str] = None, days: int = 30, cur
     mtta = sum(acks) / len(acks) if acks else None
     mttr = sum(ress) / len(ress) if ress else None
     users = await user_risk(client_id, days)
+    _cn = {c["id"]: c.get("name") async for c in db.clients.find({}, {"_id": 0, "id": 1, "name": 1})}
+    for u in users[:5]:
+        u["client_name"] = _cn.get(u["client_id"], u["client_id"])
+    active_by_sev = {s: sum(1 for a in active if a.get("severity") == s) for s in ("critical", "high", "medium", "low")}
     alert_risk = min(60, sum(SEV_W.get(a.get("severity") or "low", 1) for a in active) / 2)
     user_r = min(25, (users[0]["score"] / 4) if users else 0)
     comp = await _compliance(client_id, (now - timedelta(days=7)).isoformat(), active, mtta)
@@ -101,9 +105,9 @@ async def executive_summary(client_id: Optional[str] = None, days: int = 30, cur
     return {
         "client_id": client_id, "days": days, "generated_at": now.isoformat(),
         "risk_score": risk, "risk_level": "alto" if risk >= 60 else "medio" if risk >= 30 else "basso",
-        "active_alerts": len(active), "alerts_period": len(period), "alerts_by_severity": by_sev,
+        "active_alerts": len(active), "active_by_severity": active_by_sev, "alerts_period": len(period), "alerts_by_severity": by_sev,
         "incidents_period": await db.incidents.count_documents(inc_q),
-        "incidents_open": await db.incidents.count_documents({**q, "status": {"$in": ["open", "investigating"]}}),
+        "incidents_open": await db.incidents.count_documents({**q, "status": {"$in": ["open", "in_progress"]}}),
         "incidents_auto": await db.incidents.count_documents({**inc_q, "source": "auto_correlation"}),
         "mtta_min": round(mtta, 1) if mtta is not None else None, "mttr_min": round(mttr, 1) if mttr is not None else None,
         "top_risky_users": users[:5], "compliance": comp, "compliance_score": comp_score,

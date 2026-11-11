@@ -1,0 +1,47 @@
+{
+  "summary": "Tested the Adlumin-style SOC features. Backend: auto-correlation into incidents, AI incident investigation with the real LLM (openai/gpt-5.4), unit tests of ueba.evaluate_event, GET /api/ueba/users and GET /api/executive/summary. Frontend: the AI panel on /incidents with the AUTO badge, and the /executive dashboard with its client and period filters. On the first run POST /api/incidents/{id}/investigate and POST /api/incidents/correlate-now both returned 504, because the default 20s request timeout killed the LLM call. I fixed this in middleware/request_timeout.py by giving these two paths 120s. After the fix, 11/11 backend tests pass and both UI flows work end to end. One HIGH logic bug remains: the incident engine uses the status 'investigating', but the incidents module and UI only know 'open', 'in_progress', 'resolved' and 'closed'.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/incidents/{id}/investigate, POST /api/incidents/correlate-now", "issue": "FIXED BY TESTER. RequestTimeoutMiddleware applied DEFAULT_TIMEOUT=20s to /api/incidents/*. The LLM call takes about 20-40s, so the API returned 504 'Timeout della richiesta' even though the result was saved afterwards. In the UI this means 'Indaga con AI' would show an error toast. correlate-now also hit 504 because it waits for the auto-investigation of each new high/critical incident. I added a rule in _get_timeout: paths under /api/incidents/ ending in /investigate or /correlate-now now get 120s.", "priority": "CRITICAL"},
+      {"endpoint": "incident_engine.investigate / _open_incident, routes/soc.py executive_summary/_compliance", "issue": "The status value does not match the rest of the app. The engine sets status='investigating' and queries status in ['open','investigating']. The incidents module (routes/incidents.py stats/summary) and IncidentsPage STATUS_MAP only use open / in_progress / resolved / closed. Results: (a) after an AI investigation, the list badge falls back to 'Aperto' (verified in the UI); (b) the status Select in the detail view shows no value; (c) the incident is counted in neither 'Aperti' nor 'In Corso' (the stats showed 2 + 1 out of 4 total); (d) incidents an operator set to 'in_progress' are left out of incidents_open, the stale_inc compliance check and the merge lookup in _open_incident, so a duplicate auto incident can be created. Fix: use 'in_progress' everywhere, or add 'investigating' to STATUS_MAP and the stats.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "alert_engine tick → incident_engine.correlate", "issue": "_open_incident awaits investigate() inline, one LLM call of about 20-40s for each new high/critical incident. This blocks the alert-engine tick, and correlate-now could go over 120s when several incidents are created at once. Run the auto-investigation in the background with asyncio.create_task."},
+      {"endpoint": "ueba.evaluate_event (bruteforce check)", "issue": "The regex is built as f\"^{d['user']}$\" without re.escape. A username containing regex special characters either matches wrongly or raises an error. The error is silently swallowed in security_log, which then skips the UEBA profile update. Use re.escape."},
+      {"endpoint": "ueba.evaluate_event (ueba_impossible)", "issue": "The gap is computed from the server's current time, not the event timestamp. Logs that arrive in batches or late can cause false positives or missed detections. Compare d['ts'] with last_public.ts instead."},
+      {"endpoint": "GET /api/executive/summary, GET /api/ueba/users", "issue": "There is no client scoping by user role. Without client_id, any authenticated user gets data for every client. Check that this is intended for the operator and viewer roles."},
+      {"endpoint": "GET /api/clients", "issue": "Returns 500 (ClientResponse ValidationError) if a single clients document lacks description, contact_email or created_at. I triggered this with my own minimal TEST client, and it emptied the client selects across the app. It is fragile, but the cause was my seed, which I corrected."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "IncidentsPage list and detail status", "issue": "An incident in status 'investigating' after the AI run shows the 'Aperto' badge, and the status Select is blank because STATUS_MAP has no 'investigating' key.", "selector": "[data-testid=incident-item-<id>], [data-testid=incident-status-update]", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/executive", "issues": ["The Alert attivi KPI subtitle mixes data sources: the main value counts active alerts, but the subtitle counts severities in the period. With all clients selected it read '0 critici', while the compliance item said '7 alert critici attivi'.", "In the global view, the risky users list does not show the client name, so the same username at different clients cannot be told apart."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_soc_incidents_ueba_exec_iter167.py", "/app/test_reports/pytest/iter167.xml"],
+  "action_items": [
+    "Make the incident status consistent: 'investigating' vs 'in_progress' in incident_engine, soc.py, incidents.py stats and the IncidentsPage STATUS_MAP.",
+    "Keep the request_timeout rule for /api/incidents/*/investigate and /correlate-now, which the tester added.",
+    "Run the auto AI investigation in correlate() as a background task.",
+    "Use re.escape on the username in the UEBA bruteforce regex.",
+    "Compute ueba_impossible from event timestamps.",
+    "Optionally: show the client name on executive risky users and clarify the KPI subtitle."
+  ],
+  "critical_code_review_comments": [
+    "incident_engine: the 'existing' merge lookup only matches status open/investigating, so in_progress incidents are missed.",
+    "incident_engine.investigate is awaited synchronously inside the correlation loop.",
+    "ueba: there is no re.escape, and the impossible check uses server time.",
+    "soc.py: no role or client scoping."
+  ],
+  "updated_files": ["/app/backend/middleware/request_timeout.py", "/app/backend/tests/test_soc_incidents_ueba_exec_iter167.py"],
+  "success_rate": {"backend": "100% (11/11) after the timeout fix; 64% before it", "frontend": "90%: all flows work, but the status badge is wrong"},
+  "test_credentials": "info@86bit.it + TOTP from /app/memory/test_credentials.md. One login; the token is cached in /tmp/argus_tok.",
+  "seed_data_creation": "Created client TEST_cli_iter167, 5 TEST_ alerts, the auto incident, ueba_profiles luigi/newbie and 5 security_events. All removed by client_id/ids, and cleanup was verified (0 left).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with: cd /app/backend && python -m pytest tests/test_soc_incidents_ueba_exec_iter167.py -o addopts=\"\" -p no:cacheprovider. The run makes 2 real LLM calls and takes about 50s. Setting KEEP_TEST167=1 keeps the data for UI checks; then clean up with the delete-by-client_id script (clients needs description, contact_email and created_at, or /api/clients returns 500). Retest the status consistency fix: after 'Indaga con AI', the badge should read In Corso and the stats should include the incident."
+}

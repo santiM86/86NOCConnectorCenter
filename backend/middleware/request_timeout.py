@@ -35,6 +35,9 @@ def _get_timeout(path: str) -> int:
     # "Timeout della richiesta" (Diagnosi Percorso su sede DOWN sempre fallita).
     if path.startswith("/api/agents/") and path.endswith("/command"):
         return 105
+    # Indagine AI incidenti (LLM ~20-40s) e correlazione manuale (può lanciare l'indagine AI automatica)
+    if path.startswith("/api/incidents/") and (path.endswith("/investigate") or path.endswith("/correlate-now")):
+        return 120
     for prefixes, timeout in TIMEOUT_RULES:
         if any(path.startswith(p) for p in prefixes):
             return timeout

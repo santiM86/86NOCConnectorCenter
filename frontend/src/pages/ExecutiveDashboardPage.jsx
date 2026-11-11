@@ -71,7 +71,7 @@ export default function ExecutiveDashboardPage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <RiskGauge score={d.risk_score} level={d.risk_level} />
             <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Kpi icon={Siren} label="Alert attivi" value={d.active_alerts} sub={`${d.alerts_by_severity.critical} critici · ${d.alerts_by_severity.high} alti nel periodo`} tid="exec-kpi-alerts" />
+              <Kpi icon={Siren} label="Alert attivi" value={d.active_alerts} sub={`${d.active_by_severity.critical} critici · ${d.active_by_severity.high} alti attivi · ${d.alerts_period} nel periodo`} tid="exec-kpi-alerts" />
               <Kpi icon={ShieldCheck} label="Incidenti" value={d.incidents_period} sub={`${d.incidents_open} aperti · ${d.incidents_auto} correlati in automatico`} tid="exec-kpi-incidents" />
               <Kpi icon={Timer} label="Presa in carico" value={fmtMin(d.mtta_min)} sub="tempo medio (MTTA)" tid="exec-kpi-mtta" />
               <Kpi icon={Gauge} label="Risoluzione" value={fmtMin(d.mttr_min)} sub="tempo medio (MTTR)" tid="exec-kpi-mttr" />
@@ -109,7 +109,7 @@ export default function ExecutiveDashboardPage() {
                     <li key={`${u.client_id}-${u.user}`} className="flex items-center gap-2" data-testid={`exec-risky-user-${i}`}>
                       <UserCircle size={18} className="text-sky-300" />
                       <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-mono text-white truncate">{u.user}</div>
+                        <div className="text-[12px] font-mono text-white truncate">{u.user}{!clientId && <span className="ml-1.5 font-sans text-[10px] text-[var(--text-muted)]">· {u.client_name}</span>}</div>
                         <div className="text-[10px] text-[var(--text-muted)] truncate">{Object.entries(u.types).map(([k, v]) => `${UEBA_LABEL[k] || k} ×${v}`).join(" · ")}</div>
                       </div>
                       <div className="w-24 h-1.5 rounded bg-white/5 overflow-hidden"><div className="h-full" style={{ width: `${u.score}%`, background: u.score >= 60 ? "#F87171" : u.score >= 30 ? "#FBBF24" : "#34D399" }} /></div>
