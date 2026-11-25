@@ -161,6 +161,29 @@ async def set_nic_host(client_id: str, body: NicHostIn, current_user: dict = Dep
     return {"ok": True, "mac": mac, "host_ip": body.host_ip}
 
 
+@router.get("/devices/by-ip/{device_ip}/nic-ports")
+async def nic_ports(device_ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    from routes.user_search import _locate
+    q = {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]}
+    if client_id:
+        q["client_id"] = client_id
+    md = await db.managed_devices.find_one(q, {"_id": 0, "client_id": 1, "mac": 1, "mac_address": 1, "nic_macs": 1,
+                                               "nic_seen": 1, "nic_active_mac": 1})
+    if not md:
+        return {"ports": [], "active_mac": None}
+    cur = norm_mac(md.get("mac") or md.get("mac_address"))
+    macs = sorted({norm_mac(m) for m in (md.get("nic_macs") or [])} | ({cur} if cur else set()) - {""})
+    seen = md.get("nic_seen") or {}
+    active = norm_mac(md.get("nic_active_mac")) or cur
+    ports = []
+    for m in macs:
+        loc = await _locate(md["client_id"], {m}, set())
+        ports.append({"mac": m, "active": m == active, "last_seen": seen.get(m) or (loc or {}).get("seen_at"),
+                      "switch_ip": (loc or {}).get("switch_ip"), "switch_name": (loc or {}).get("switch_name"),
+                      "port": (loc or {}).get("port"), "port_name": (loc or {}).get("port_name")})
+    return {"ports": ports, "active_mac": active}
+
+
 @router.get("/devices/by-ip/{device_ip}/mac-history")
 async def mac_history(device_ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     q = {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]}

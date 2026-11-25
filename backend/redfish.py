@@ -505,10 +505,13 @@ class RedfishPoller:
                                     continue
                                 rtype = (s.get("ReadingType") or "").lower()
                                 if rtype == "temperature":
+                                    _th = s.get("Thresholds") or {}
                                     merged["Temperatures"].append({
                                         "Name": s.get("Name", "Sensor"),
                                         "ReadingCelsius": s.get("Reading"),
                                         "Status": s.get("Status", {}),
+                                        "UpperThresholdCritical": (_th.get("UpperCaution") or {}).get("Reading"),
+                                        "UpperThresholdFatal": (_th.get("UpperCritical") or {}).get("Reading"),
                                     })
                         thermal = merged
                         logger.info(f"Redfish {device_ip}: ThermalSubsystem fallback found {len(merged['Temperatures'])} temp, {len(merged['Fans'])} fans")
@@ -528,6 +531,8 @@ class RedfishPoller:
                             "locale": t.get("Name", "Sensor"),
                             "value": reading,
                             "condition": (t.get("Status", {}).get("Health") or "OK").lower(),
+                            "upper_critical": t.get("UpperThresholdCritical"),
+                            "upper_fatal": t.get("UpperThresholdFatal"),
                         })
                     for f in thermal.get("Fans", []):
                         state = (f.get("Status", {}).get("State") or "Enabled")
@@ -836,7 +841,8 @@ class RedfishPoller:
                         if age_min < 30:
                             if not result.get("temperatures") and last.get("temperatures"):
                                 result["temperatures"] = [
-                                    {"locale": t.get("name"), "value": t.get("celsius"), "condition": t.get("health") or "OK", "stale": True}
+                                    {"locale": t.get("name"), "value": t.get("celsius"), "condition": t.get("health") or "OK", "stale": True,
+                                     "upper_critical": t.get("upper_critical"), "upper_fatal": t.get("upper_fatal")}
                                     for t in last["temperatures"] if t.get("celsius") is not None
                                 ]
                                 logger.info(f"Redfish {device_ip}: Thermal stale-fallback applied ({len(result['temperatures'])} sensors, age {age_min:.1f}min)")
@@ -1010,7 +1016,8 @@ class RedfishPoller:
                     "power_watts": result.get("power_watts"),
                     "health_status": result.get("health_status"),
                     "temperatures": [
-                        {"name": t.get("locale"), "celsius": t.get("value"), "health": t.get("condition"), "stale": bool(t.get("stale"))}
+                        {"name": t.get("locale"), "celsius": t.get("value"), "health": t.get("condition"), "stale": bool(t.get("stale")),
+                         "upper_critical": t.get("upper_critical"), "upper_fatal": t.get("upper_fatal")}
                         for t in temp_src if t.get("value") is not None
                     ],
                     "fans": [
@@ -1130,6 +1137,7 @@ class RedfishPoller:
         # Soglie: override device (inlet per i sensori di aria in ingresso, altrimenti
         # generale) > cliente-per-tipo > profilo iLO > default 65/75.
         _tw_gen, _tc_gen, _tw_in, _tc_in = 65.0, 75.0, 65.0, 75.0
+        _has_dev_override = False
         try:
             from hardware_alerts import resolve_temp_thresholds as _rtt
             _md = await self.db.managed_devices.find_one(
@@ -1137,6 +1145,7 @@ class RedfishPoller:
                  "$or": [{"ip": device_ip}, {"ip_address": device_ip}]},
                 {"_id": 0, "temp_warn_c": 1, "temp_crit_c": 1,
                  "inlet_temp_warn_c": 1, "inlet_temp_crit_c": 1, "device_type": 1}) or {}
+            _has_dev_override = isinstance(_md.get("temp_warn_c"), (int, float))
             _dt = _md.get("device_type") or "ilo"
             _dov = {"warn": _md.get("temp_warn_c"), "crit": _md.get("temp_crit_c"),
                     "inlet_warn": _md.get("inlet_temp_warn_c"), "inlet_crit": _md.get("inlet_temp_crit_c")}
@@ -1154,17 +1163,25 @@ class RedfishPoller:
             _is_inlet = any(k in _loc for k in ("inlet", "intake", "ambient", "ingress"))
             _tw = _tw_in if _is_inlet else _tw_gen
             _tc = _tc_in if _is_inlet else _tc_gen
+            _src = ""
+            # Sensori interni (CPU, chipset, controller, PCI…): l'iLO conosce la soglia vera
+            # di ogni componente → usala al posto della soglia generica, salvo override manuale.
+            _uc, _uf = t.get("upper_critical"), t.get("upper_fatal")
+            if not _is_inlet and not _has_dev_override and isinstance(_uc, (int, float)) and _uc > 0:
+                _tw = float(_uc)
+                _tc = float(_uf) if isinstance(_uf, (int, float)) and _uf > _uc else _tw + 10
+                _src = "iLO "
             if _tc is not None and t["value"] > _tc:
                 alerts.append({
                     "severity": "critical",
                     "title": "Temperatura critica",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia critica {_tc:.0f}C)",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia {_src}critica {_tc:.0f}C)",
                 })
             elif _tw is not None and t["value"] > _tw:
                 alerts.append({
                     "severity": "high",
                     "title": "Temperatura elevata",
-                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia {_tw:.0f}C)",
+                    "message": f"{t['locale']} su {device_name} ({device_ip}): {t['value']}C (soglia {_src}{_tw:.0f}C)",
                 })
 
         # Fans

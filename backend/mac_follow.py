@@ -131,7 +131,11 @@ async def _check_nic_change(client_id: str, md: dict, mac: str, cur_ip: str, ip_
     if not observed:
         return
     known = {mac} | {norm_mac(m) for m in (md.get("nic_macs") or [])}
-    if observed & known or len(observed) != 1:
+    live = observed & known
+    if live and md.get("nic_macs"):
+        await db.managed_devices.update_one(
+            {"id": md["id"]}, {"$set": {"nic_active_mac": sorted(live)[0], **{f"nic_seen.{m}": now for m in live}}})
+    if live or len(observed) != 1:
         if pending:
             await db.managed_devices.update_one({"id": md["id"]}, {"$unset": {"mac_change_pending": ""}})
         return
@@ -139,7 +143,8 @@ async def _check_nic_change(client_id: str, md: dict, mac: str, cur_ip: str, ip_
     # Seconda porta dello stesso apparato (NAS/server multi-NIC, bond/failover): stesso MAC base → nessun alert
     if is_sibling_nic(mac, new_mac):
         await db.managed_devices.update_one(
-            {"id": md["id"]}, {"$addToSet": {"nic_macs": {"$each": [mac, new_mac]}}, "$unset": {"mac_change_pending": ""}})
+            {"id": md["id"]}, {"$addToSet": {"nic_macs": {"$each": [mac, new_mac]}}, "$unset": {"mac_change_pending": ""},
+                               "$set": {"nic_active_mac": new_mac, f"nic_seen.{new_mac}": now}})
         await db.alerts.update_many(
             {"client_id": client_id, "device_ip": cur_ip, "source_type": NIC_CHANGE_TYPE, "status": {"$ne": "resolved"}},
             {"$set": {"status": "resolved", "resolved_at": now, "resolved_by_system": True,
