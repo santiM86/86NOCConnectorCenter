@@ -9963,3 +9963,4 @@ Health null è normale HPE (usa i sottosistemi).
 ## 2026-06 Anti-flood Telegram
 - telegram_notifier._flood_allow: max 5 msg/ora per dispositivo, poi 1 avviso e silenzio (collezione telegram_flood)
 - hardware_alerts: alert richiuso da <30 min si riapre in silenzio (flapping), senza rientro Telegram
+- mac_follow.is_sibling_nic: MAC con stessi primi 5 byte (ultimo byte +-8) = porte dello stesso apparato (NAS bond/failover) → salvati in nic_macs, nessun alert nic_changed, vecchi alert chiusi
