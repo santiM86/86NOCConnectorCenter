@@ -9952,3 +9952,17 @@ Health null è normale HPE (usa i sottosistemi).
 - datto_mac_links {client_id, mac, datto_uid, datto_name, source}: creati alla sync (endpoint trovato per IP/hostname) e al lookup device-info; usati in sync enrichment (mac_link), device-info (primo tentativo) e datto_users_for.
 - datto_devices.last_user (sync + backfill da blob cifrato). GET /api/datto/user-search?q= (solo clienti esistenti, MAC in tutti i formati) -> PC, IP, online, cliente, switch/porta.
 - UI: barra "Cerca utente" in alto (components/UserSearch.jsx in Layout), link a /switch-ports/<ip>?clientId&port&cable=1 che apre la Vista Cavo. iteration_166 (fix post-test: clienti orfani, formati MAC, race risposte).
+
+## 2026-06 Fase 1 da Adlumin MDR: Incidenti AI, UEBA, Dashboard Direzione
+- incident_engine.py: correlazione nel tick (3+ alert stesso device/utente in 30 min, 2+ alert sicurezza, 6+ alert cliente=ondata) -> incidente auto (source auto_correlation, alert_ids, incident_id sugli alert, merge entro 6h). Indagine AI GPT-5.4 (verdict, causa, cronologia, prove, azioni) auto in background per high/critical + POST /api/incidents/{id}/investigate. Stato in_progress.
+- ueba.py: profili ueba_profiles (ore, host, ultimo IP pubblico) dal Registro AdS; anomalie ueba_unusual_hour, ueba_new_host, ueba_impossible, ueba_bruteforce_ok (apprendimento 7gg/40 accessi); alert con ueba_user; rischio utente (GET /api/ueba/users).
+- GET /api/executive/summary: rischio 0-100, KPI, MTTA/MTTR, checklist NIS2/GDPR (8 voci), utenti a rischio. Pagina /executive "Dashboard Direzione".
+- middleware/request_timeout: 120s per investigate/correlate-now (fix tester). iteration_167 + fix (stato, background, re.escape, gap su ora evento, KPI attivi, nome cliente).
+- Prossima fase: Honeypot esca nel Go Agent, Playbook risposta automatica, Darknet (HIBP key).
+
+## 2026-06 Anti-flood Telegram
+- telegram_notifier._flood_allow: max 5 msg/ora per dispositivo, poi 1 avviso e silenzio (collezione telegram_flood)
+- hardware_alerts: alert richiuso da <30 min si riapre in silenzio (flapping), senza rientro Telegram
+- mac_follow.is_sibling_nic: MAC con stessi primi 5 byte (ultimo byte +-8) = porte dello stesso apparato (NAS bond/failover) → salvati in nic_macs, nessun alert nic_changed, vecchi alert chiusi
+- Scheda dispositivo: sezione "Porte di rete dell apparato" (NicPortsSection, GET /api/devices/by-ip/{ip}/nic-ports) con porta che risponde ora (nic_active_mac/nic_seen) e switch/porta
+- iLO Redfish: soglie temperatura per sensore dall iLO (UpperThresholdCritical/Fatal) per sensori interni, salvo override manuale del device

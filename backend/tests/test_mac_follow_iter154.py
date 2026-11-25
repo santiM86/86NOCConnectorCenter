@@ -132,13 +132,19 @@ async def main():
         pc = await db.managed_devices.find_one({"id": f"{CID}-pc"}, {"_id": 0})
         assert pc["mac"] == "00:1b:21:00:00:50" and "mac_change_pending" not in pc, pc
         for _ in range(2):
-            await apply_mac_follow(CID, [{"ip": "10.1.1.50", "mac": "00:1b:21:00:00:52"}], "test")
+            await apply_mac_follow(CID, [{"ip": "10.1.1.50", "mac": "00:1b:21:00:00:51"}], "test")
+        pc = await db.managed_devices.find_one({"id": f"{CID}-pc"}, {"_id": 0})
+        assert pc["mac"] == "00:1b:21:00:00:50" and "00:1b:21:00:00:51" in pc["nic_macs"], pc
+        assert not await db.alerts.find_one({"client_id": CID, "source_type": "nic_changed", "device_ip": "10.1.1.50"})
+        print("12b. Seconda porta stesso apparato (bond/multi-NIC) → nessun alert OK")
+        for _ in range(2):
+            await apply_mac_follow(CID, [{"ip": "10.1.1.50", "mac": "00:1b:21:00:00:52"[:9] + "99:00:52"}], "test")
         al = await db.alerts.find_one({"client_id": CID, "source_type": "nic_changed", "device_ip": "10.1.1.50"}, {"_id": 0})
         assert al and al["severity"] == "medium", al
         # MAC di un ALTRO device gestito (gateway/proxy ARP) sull'IP → non e' una NIC nuova
         await apply_mac_follow(CID, [{"ip": "10.1.1.50", "mac": NEW}], "test")
         await apply_mac_follow(CID, [{"ip": "10.1.1.50", "mac": NEW}], "test")
-        assert (await db.managed_devices.find_one({"id": f"{CID}-pc"}))["mac"] == "00:1b:21:00:00:52"
+        assert (await db.managed_devices.find_one({"id": f"{CID}-pc"}))["mac"] == "00:1b:21:99:00:52"
         ok += 1
         print("12. ARP momentaneo ignorato, non vitale = medium, MAC di altro device ignorato OK")
 

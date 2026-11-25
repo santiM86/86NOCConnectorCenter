@@ -132,6 +132,38 @@ async def delete_telegram_message(db, chat_id: str, message_id: int, token: Opti
         return False
 
 
+FLOOD_MAX_PER_WINDOW = 5
+FLOOD_WINDOW_MIN = 60
+
+
+async def _flood_allow(db, client_name, device_name, chat_id, token) -> bool:
+    """Anti-flood: max N messaggi per dispositivo/ora; oltre, 1 avviso e silenzio."""
+    from datetime import datetime, timedelta, timezone
+    key = f"{client_name or ''}|{device_name}".lower()
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(minutes=FLOOD_WINDOW_MIN)).isoformat()
+    try:
+        doc = await db.telegram_flood.find_one_and_update(
+            {"key": key},
+            {"$push": {"ts": {"$each": [now.isoformat()], "$slice": -50}}},
+            upsert=True, return_document=True, projection={"_id": 0})
+        recent = [t for t in (doc or {}).get("ts", []) if t >= since]
+        if len(recent) <= FLOOD_MAX_PER_WINDOW:
+            return True
+        if (doc or {}).get("muted_notice_at", "") < since:
+            await db.telegram_flood.update_one({"key": key}, {"$set": {"muted_notice_at": now.isoformat()}})
+            await send_telegram_text(
+                db, (f"🔇 <b>Troppi avvisi da {html.escape(str(device_name))}</b>"
+                     f"{' (' + html.escape(str(client_name)) + ')' if client_name else ''}\n"
+                     f"Oltre {FLOOD_MAX_PER_WINDOW} messaggi in {FLOOD_WINDOW_MIN} min: "
+                     f"silenzio i successivi per questo dispositivo. Gli alert restano visibili in console."),
+                chat_id=chat_id, token=token)
+        return False
+    except Exception as e:  # noqa: BLE001
+        logger.debug("flood check failed: %s", e)
+        return True
+
+
 async def send_alert_telegram(
     db,
     title: str,
@@ -143,6 +175,8 @@ async def send_alert_telegram(
     device_name: Optional[str] = None,
 ) -> dict:
     """Invia un alert formattato su Telegram (sempre con NOME CLIENTE in testa)."""
+    if device_name and not await _flood_allow(db, client_name, device_name, chat_id, token):
+        return {"success": False, "error": "flood_suppressed"}
     return await send_telegram_text(
         db, _fmt(title, message, severity, client_name, device_name),
         chat_id=chat_id, token=token)

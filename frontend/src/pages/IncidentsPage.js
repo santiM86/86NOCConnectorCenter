@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import IncidentAiPanel from "@/components/IncidentAiPanel";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -178,6 +179,8 @@ export default function IncidentsPage() {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-medium text-[var(--text-primary)] truncate">{inc.title}</p>
+                        {inc.source === "auto_correlation" && <span className="text-[8px] font-bold px-1 rounded bg-violet-500/20 text-violet-200 shrink-0" data-testid={`incident-auto-badge-${inc.id}`}>AUTO</span>}
+                        {inc.ai_investigation && <span className="text-[8px] font-bold px-1 rounded bg-fuchsia-500/20 text-fuchsia-200 shrink-0">AI</span>}
                         <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{inc.client_name || "-"} | {fmtDate(inc.created_at)}</p>
                       </div>
                       <div className="flex items-center gap-1">
@@ -217,6 +220,10 @@ export default function IncidentsPage() {
               {selected.description && (
                 <p className="text-xs text-[var(--text-secondary)] bg-[var(--bg-deep)] rounded p-2.5">{selected.description}</p>
               )}
+              <IncidentAiPanel incident={selected} onUpdated={async () => {
+                const r = await axios.get(`${API}/incidents/${selected.id}`);
+                setSelected(r.data); fetchIncidents();
+              }} />
 
               <div className="flex gap-2 flex-wrap">
                 <Select value={selected.status} onValueChange={v => updateIncident(selected.id, { status: v })}>

@@ -367,7 +367,7 @@ async def _resolve_alert(db, cfg, dedup_key: str, recovery_msg: str) -> None:
     # notificata su Telegram (mantiene 1 apertura + 1 rientro, chat non intasata).
     # Passa per notify_recovery_telegram che bypassa la soglia severità (il rientro
     # è "low" ma va comunque inviato) e riporta la durata del disservizio.
-    if active.get("telegram_notified"):
+    if active.get("telegram_notified") and not active.get("flapping"):
         try:
             _act = dict(active)
             _act["resolved_at"] = now
@@ -407,6 +407,19 @@ async def _emit_or_update(db, cfg, *, client_id: str, client_name: str,
                 await _dispatch_notification(db, cfg, upd)
             except Exception:  # noqa: BLE001
                 pass
+        return
+    # Anti-flapping: se lo stesso problema si era chiuso da <30 min, lo riapre in silenzio.
+    from datetime import timedelta
+    _since = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    recent = await db.alerts.find_one(
+        {"dedup_key": dedup_key, "status": "resolved", "resolved_at": {"$gte": _since}},
+        {"_id": 0, "id": 1}, sort=[("resolved_at", -1)])
+    if recent:
+        await db.alerts.update_one(
+            {"id": recent["id"]},
+            {"$set": {"status": "active", "severity": severity, "title": title, "message": message,
+                      "last_seen_at": datetime.now(timezone.utc).isoformat(), "flapping": True},
+             "$unset": {"resolved_at": "", "resolution_reason": ""}, "$inc": {"flap_count": 1}})
         return
     alert = _mk_alert(client_id, client_name, device_name, device_ip,
                       device_type, severity, source_type, title, message)

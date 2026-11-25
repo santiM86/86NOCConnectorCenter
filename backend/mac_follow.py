@@ -75,6 +75,17 @@ async def resolve_ip_from_discovery(client_id: str, mac: str, max_age_h: int = 4
 
 
 NIC_CHANGE_TYPE = "nic_changed"
+
+
+def is_sibling_nic(a: str, b: str) -> bool:
+    """Due MAC dello stesso apparato multi-porta: stessi primi 5 byte, ultimo byte vicino (≤8)."""
+    a, b = norm_mac(a), norm_mac(b)
+    if not a or not b or a == b or a[:14] != b[:14]:
+        return False
+    try:
+        return abs(int(a[15:17], 16) - int(b[15:17], 16)) <= 8
+    except ValueError:
+        return False
 NIC_CONFIRM_COUNT = 2
 
 
@@ -119,11 +130,26 @@ async def _check_nic_change(client_id: str, md: dict, mac: str, cur_ip: str, ip_
     pending = md.get("mac_change_pending") or {}
     if not observed:
         return
-    if mac in observed or len(observed) != 1:
+    known = {mac} | {norm_mac(m) for m in (md.get("nic_macs") or [])}
+    live = observed & known
+    if live and md.get("nic_macs"):
+        await db.managed_devices.update_one(
+            {"id": md["id"]}, {"$set": {"nic_active_mac": sorted(live)[0], **{f"nic_seen.{m}": now for m in live}}})
+    if live or len(observed) != 1:
         if pending:
             await db.managed_devices.update_one({"id": md["id"]}, {"$unset": {"mac_change_pending": ""}})
         return
     new_mac = next(iter(observed))
+    # Seconda porta dello stesso apparato (NAS/server multi-NIC, bond/failover): stesso MAC base → nessun alert
+    if is_sibling_nic(mac, new_mac):
+        await db.managed_devices.update_one(
+            {"id": md["id"]}, {"$addToSet": {"nic_macs": {"$each": [mac, new_mac]}}, "$unset": {"mac_change_pending": ""},
+                               "$set": {"nic_active_mac": new_mac, f"nic_seen.{new_mac}": now}})
+        await db.alerts.update_many(
+            {"client_id": client_id, "device_ip": cur_ip, "source_type": NIC_CHANGE_TYPE, "status": {"$ne": "resolved"}},
+            {"$set": {"status": "resolved", "resolved_at": now, "resolved_by_system": True,
+                      "resolution_note": "Porte di rete dello stesso apparato (multi-NIC/bond): non e' una sostituzione"}})
+        return
     # MAC di un altro device gestito, o visto su IP estranei al gruppo (gateway/proxy ARP) → non e' una NIC nuova
     if new_mac in owned_macs or _is_laa(new_mac) or not seen.get(new_mac, set()) <= group_ips:
         return
@@ -168,7 +194,7 @@ async def apply_mac_follow(client_id: str, endpoints: list[dict], source: str = 
     mds = await db.managed_devices.find(
         {"client_id": client_id, "$or": [{"mac": {"$nin": [None, ""]}}, {"mac_address": {"$nin": [None, ""]}}]},
         {"_id": 0, "id": 1, "ip": 1, "ip_address": 1, "mac": 1, "mac_address": 1, "name": 1, "device_name": 1,
-         "follow_mac": 1, "mac_is_random": 1, "is_vital": 1, "mac_change_pending": 1},
+         "follow_mac": 1, "mac_is_random": 1, "is_vital": 1, "mac_change_pending": 1, "nic_macs": 1},
     ).to_list(5000)
     managed_ips: set[str] = set()
     owners: dict[str, list[dict]] = {}

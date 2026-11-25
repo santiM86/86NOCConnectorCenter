@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from database import db
 
@@ -277,12 +277,21 @@ async def _evaluate_anomalies(client_id: str, host: str, docs: list[dict]) -> No
         if not is_access or not d.get("user"):
             continue
         user = d["user"].lower()
+        ux = {"ueba_user": user}
+        try:
+            from ueba import evaluate_event as _ueba_eval
+
+            async def _ue(c, hh, sev, t, m, stype):
+                await _emit(c, hh, sev, t, m, stype, extra=ux)
+            await _ueba_eval(client_id, h, d, wh.get("tz") or "Europe/Rome", _ue)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"ueba {client_id}/{user}: {e}")
         if st.get("after_hours_alerts", True):
             out = _outside_work_hours(d["ts"], wh)
             if out:
                 await _emit(client_id, h, "medium", f"Accesso fuori orario su {h}: {d['user']} — {out.split(' (')[0]}",
                             f"L'utente {d.get('domain') + chr(92) if d.get('domain') else ''}{d['user']} ha effettuato un accesso {d.get('logon_type_label') or 'RDP'} su {h} alle {out}"
-                            f"{' da ' + d['src_ip'] if d.get('src_ip') else ''}. Verificare che sia atteso.", "seclog_after_hours")
+                            f"{' da ' + d['src_ip'] if d.get('src_ip') else ''}. Verificare che sia atteso.", "seclog_after_hours", extra=ux)
         if st.get("new_origin_alerts", True):
             origin = d.get("src_ip") or d.get("workstation")
             if origin:
@@ -295,7 +304,7 @@ async def _evaluate_anomalies(client_id: str, host: str, docs: list[dict]) -> No
                     await _emit(client_id, h, "high" if public else "medium",
                                 f"Accesso da origine mai vista su {h}: {d['user']} da {origin}",
                                 f"L'utente {d['user']} non aveva mai effettuato accessi da {origin}{' (IP pubblico!)' if public else ''} negli ultimi 90 giorni "
-                                f"(origini note: {', '.join(sorted(known)[:6]) or 'nessuna'}). Possibile credenziale compromessa.", "seclog_new_origin")
+                                f"(origini note: {', '.join(sorted(known)[:6]) or 'nessuna'}). Possibile credenziale compromessa.", "seclog_new_origin", extra=ux)
                 await db.security_login_profiles.update_one(
                     {"client_id": client_id, "user": user},
                     {"$addToSet": {"origins": origin}, "$set": {"last_seen": now.isoformat(), "expire_at": now + timedelta(days=90)},

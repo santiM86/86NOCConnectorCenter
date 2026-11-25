@@ -60,6 +60,7 @@ const VaultPage = lazyRetry(() => import("@/pages/VaultPage"));
 const ReportsPage = lazyRetry(() => import("@/pages/ReportsPage"));
 const InventoryPage = lazyRetry(() => import("@/pages/InventoryPage"));
 const IncidentsPage = lazyRetry(() => import("@/pages/IncidentsPage"));
+const ExecutiveDashboardPage = lazyRetry(() => import("@/pages/ExecutiveDashboardPage"));
 const PortMonitorPage = lazyRetry(() => import("@/pages/PortMonitorPage"));
 const SwitchPortsPage = lazyRetry(() => import("@/pages/SwitchPortsPage"));
 const PrintersPage = lazyRetry(() => import("@/pages/PrintersPage"));
@@ -302,6 +303,7 @@ function App() {
               <Route path="reports" element={<ReportsPage />} />
               <Route path="inventory" element={<InventoryPage />} />
               <Route path="incidents" element={<IncidentsPage />} />
+              <Route path="executive" element={<ExecutiveDashboardPage />} />
               <Route path="port-monitor" element={<PortMonitorPage />} />
               <Route path="switch-ports/:deviceIp" element={<SwitchPortsPage />} />
               <Route path="printers" element={<PrintersPage />} />
