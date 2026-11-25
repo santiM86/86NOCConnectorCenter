@@ -9959,3 +9959,7 @@ Health null è normale HPE (usa i sottosistemi).
 - GET /api/executive/summary: rischio 0-100, KPI, MTTA/MTTR, checklist NIS2/GDPR (8 voci), utenti a rischio. Pagina /executive "Dashboard Direzione".
 - middleware/request_timeout: 120s per investigate/correlate-now (fix tester). iteration_167 + fix (stato, background, re.escape, gap su ora evento, KPI attivi, nome cliente).
 - Prossima fase: Honeypot esca nel Go Agent, Playbook risposta automatica, Darknet (HIBP key).
+
+## 2026-06 Anti-flood Telegram
+- telegram_notifier._flood_allow: max 5 msg/ora per dispositivo, poi 1 avviso e silenzio (collezione telegram_flood)
+- hardware_alerts: alert richiuso da <30 min si riapre in silenzio (flapping), senza rientro Telegram
