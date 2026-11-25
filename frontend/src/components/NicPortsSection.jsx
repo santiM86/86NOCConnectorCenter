@@ -32,7 +32,7 @@ export const NicPortsSection = ({ deviceIp, clientId }) => {
       .then(({ data: d }) => setData(d)).catch(() => setData({ ports: [] }));
   }, [deviceIp, clientId]);
 
-  if (!data || data.ports.length === 0) return null;
+  if (!data) return null;
   return (
     <div className="rounded-lg border border-[var(--bg-border)] bg-[var(--bg-panel)] p-3" data-testid="nic-ports-section">
       <div className="flex items-center gap-1.5 mb-2">
@@ -41,6 +41,9 @@ export const NicPortsSection = ({ deviceIp, clientId }) => {
           Porte di rete dell'apparato ({data.ports.length})
         </h4>
       </div>
+      {data.ports.length === 0 && (
+        <p className="text-[10px] text-[var(--text-muted)]" data-testid="nic-ports-empty">Nessuna porta di rete (MAC) ancora rilevata su questo IP.</p>
+      )}
       <ul data-testid="nic-ports-list">
         {data.ports.map((p, i) => <PortRow key={p.mac} p={p} i={i} />)}
       </ul>

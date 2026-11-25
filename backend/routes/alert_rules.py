@@ -164,17 +164,27 @@ async def set_nic_host(client_id: str, body: NicHostIn, current_user: dict = Dep
 @router.get("/devices/by-ip/{device_ip}/nic-ports")
 async def nic_ports(device_ip: str, client_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     from routes.user_search import _locate
+    from mac_follow import is_sibling_nic as _sibling
     q = {"$or": [{"ip": device_ip}, {"ip_address": device_ip}]}
     if client_id:
         q["client_id"] = client_id
     md = await db.managed_devices.find_one(q, {"_id": 0, "client_id": 1, "mac": 1, "mac_address": 1, "nic_macs": 1,
-                                               "nic_seen": 1, "nic_active_mac": 1})
+                                               "nic_seen": 1, "nic_active_mac": 1, "mac_history": 1})
     if not md:
-        return {"ports": [], "active_mac": None}
+        md = {"client_id": client_id}
     cur = norm_mac(md.get("mac") or md.get("mac_address"))
-    macs = sorted({norm_mac(m) for m in (md.get("nic_macs") or [])} | ({cur} if cur else set()) - {""})
-    seen = md.get("nic_seen") or {}
-    active = norm_mac(md.get("nic_active_mac")) or cur
+    ep_seen: dict = {}
+    if md.get("client_id"):
+        async for ep in db.discovered_endpoints.find({"client_id": md["client_id"], "ip": device_ip, "mac": {"$nin": [None, ""]}},
+                                                     {"_id": 0, "mac": 1, "last_seen_at": 1}):
+            m = norm_mac(ep.get("mac"))
+            if m and (ep.get("last_seen_at") or "") > ep_seen.get(m, ""):
+                ep_seen[m] = ep.get("last_seen_at") or ""
+    hist = {norm_mac(h.get(k)) for h in (md.get("mac_history") or []) for k in ("from", "to")}
+    macs = sorted(({norm_mac(m) for m in (md.get("nic_macs") or [])} | set(ep_seen)
+                   | {m for m in hist if cur and (m == cur or _sibling(m, cur))} | ({cur} if cur else set())) - {""})
+    seen = {**ep_seen, **(md.get("nic_seen") or {})}
+    active = norm_mac(md.get("nic_active_mac")) or (max(seen, key=lambda k: seen[k] or "") if seen else cur)
     ports = []
     for m in macs:
         loc = await _locate(md["client_id"], {m}, set())
