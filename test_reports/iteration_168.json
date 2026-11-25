@@ -1,0 +1,37 @@
+{
+  "summary": "NIC ports feature (Porte di rete dell'apparato) verified end-to-end. Backend: new pytest test_nic_ports_iter168.py 5/5 PASS (seeded device with nic_macs 9d/9e + nic_active_mac 9d -> 2 ports, 9d active, all keys present; MACs from discovered_endpoints for an IP are returned, normalized, most recent = active; unknown IP with/without client_id -> 200 ports:[]; no auth -> 401/403). Regression tests/test_mac_follow_iter154.py PASS 13/13. Frontend: logged in as admin + TOTP, opened /client/da3d6e40-... -> tab Dispositivi Vitali -> filter Tutti + Tabella -> device-info-10.10.1.10. nic-ports-section is visible in Identità above mac-history-section, with real data (1 row: 00:15:5D:01:79:0D 'Risponde ora'), with mocked 2-port response (2 rows, active/In attesa, switch·porta, last seen, bond/failover note), and with mocked empty response (nic-ports-empty shown).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/devices/by-ip/{ip}/nic-ports", "issue": "When no nic_seen/discovered_endpoints data exists, active falls back to managed_devices.mac, so the UI shows 'Risponde ora' together with 'mai visto' (contradictory, seen on 10.10.1.10)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "DeviceInfoCard > Identità", "issues": [
+        "Identità shows 'MAC non disponibile' (id.mac_primary empty) while the NIC ports section just below lists MAC 00:15:5D:01:79:0D for 10.10.1.10. The two data sources disagree.",
+        "State label 'RISPONDE ORA' / 'IN ATTESA' wraps onto 2 lines in the narrow 1/3 column. Add whitespace-nowrap or shrink the w-36 MAC column."
+      ]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_nic_ports_iter168.py", "/app/backend/tests/test_mac_follow_iter154.py", "/app/test_reports/pytest/pytest_iter168.xml"],
+  "action_items": [
+    "Optional: when no last_seen data exists for any MAC, don't mark a port 'Risponde ora' (or show 'stato non noto').",
+    "Optional: make Identità 'MAC primario' fall back to managed_devices.mac so it matches the NIC ports section.",
+    "Optional: whitespace-nowrap on nic-port-state-*."
+  ],
+  "critical_code_review_comments": [
+    "NicPortsSection renders `${p.switch_name} · porta ...` whenever switch_ip is set. If switch_name is null it shows 'null · porta X'. Fall back to switch_ip.",
+    "nic_ports calls _locate once per MAC (N sequential DB lookups). Fine for 2-4 NICs.",
+    "nic_seen keys are merged without norm_mac. If they are stored un-normalized, seen.get(m) misses them.",
+    "NicPortsSection: the fetch error silently becomes an empty state. There is no loading indicator, and the section renders null until the response arrives (acceptable)."
+  ],
+  "updated_files": ["/app/backend/tests/test_nic_ports_iter168.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Temporary TEST_nicports_* managed_devices (10.250.99.99, 10.250.99.98) and discovered_endpoints, removed by id in the fixture teardown. Count after the run was 0.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Client page route is /client/:id (not /clients). The device-info-* buttons appear only in tab-devices with vital-filter-all-btn + devices-view-table-btn. Grouped view uses grouped-device-info-*. Login: password, then a TOTP on /2fa (first input)."
+}

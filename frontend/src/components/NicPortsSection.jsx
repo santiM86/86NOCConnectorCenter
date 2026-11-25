@@ -12,9 +12,9 @@ const fmt = (iso) => {
 const PortRow = ({ p, i }) => (
   <li className="flex items-center gap-2 text-[11px] py-1 border-b border-white/5 last:border-0" data-testid={`nic-port-row-${i}`}>
     <span className={`h-2 w-2 rounded-full shrink-0 ${p.active ? "bg-emerald-400 animate-pulse" : "bg-zinc-600"}`} />
-    <span className="font-mono text-white w-36 shrink-0" data-testid={`nic-port-mac-${i}`}>{p.mac.toUpperCase()}</span>
-    <span className={`text-[10px] font-semibold uppercase ${p.active ? "text-emerald-300" : "text-[var(--text-muted)]"}`} data-testid={`nic-port-state-${i}`}>
-      {p.active ? "Risponde ora" : "In attesa"}
+    <span className="font-mono text-white w-32 shrink-0" data-testid={`nic-port-mac-${i}`}>{p.mac.toUpperCase()}</span>
+    <span className={`text-[10px] font-semibold uppercase whitespace-nowrap ${p.active ? "text-emerald-300" : "text-[var(--text-muted)]"}`} data-testid={`nic-port-state-${i}`}>
+      {p.active ? "Risponde ora" : p.last_seen ? "In attesa" : "Registrata"}
     </span>
     <span className="ml-auto text-[10px] text-[var(--text-muted)] text-right" data-testid={`nic-port-where-${i}`}>
       {p.switch_ip ? `${p.switch_name} · porta ${p.port_name || p.port}` : "posizione switch non nota"}

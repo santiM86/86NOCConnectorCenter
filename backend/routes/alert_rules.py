@@ -184,7 +184,7 @@ async def nic_ports(device_ip: str, client_id: Optional[str] = None, current_use
     macs = sorted(({norm_mac(m) for m in (md.get("nic_macs") or [])} | set(ep_seen)
                    | {m for m in hist if cur and (m == cur or _sibling(m, cur))} | ({cur} if cur else set())) - {""})
     seen = {**ep_seen, **(md.get("nic_seen") or {})}
-    active = norm_mac(md.get("nic_active_mac")) or (max(seen, key=lambda k: seen[k] or "") if seen else cur)
+    active = norm_mac(md.get("nic_active_mac")) or (max(seen, key=lambda k: seen[k] or "") if seen else None)
     ports = []
     for m in macs:
         loc = await _locate(md["client_id"], {m}, set())
